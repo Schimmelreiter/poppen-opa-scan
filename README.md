@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.3.1 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.4 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -102,7 +102,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 ## Oberfläche
 
 - **Kopfleiste:** Opa-Symbol mit der Zahl der Blockierten (Tooltip: „X geblockt, Y in der Warteschlange“); Klick öffnet die Einstellungen. Ein **gelber Punkt** zeigt offene Gruppenanfragen in verwalteten Gruppen; Klick öffnet die Anfragenseite.
-- **Profil-Menü** (Klick auf das eigene Profilbild): *Opa-Scan* (vor „Profil bearbeiten“), *Opa-Schutz konfigurieren* (danach) und der Schalter **Opa-Schutz** (vor „Unsichtbar“) für die Automatik.
+- **Profil-Menü** (Klick auf das eigene Profilbild): *Fickliste* und *Opa-Scan* (vor „Profil bearbeiten“), *Opa-Schutz konfigurieren* (danach) und der Schalter **Opa-Schutz** (vor „Unsichtbar“) für die Automatik.
 - **Einstellungen:** In der linken Spalte stehen **Meine Fickliste** (nach „Meine Kontaktanzeigen“) und **Opa-Schutz** (vor „Privatsphäre“).
 
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
@@ -141,7 +141,7 @@ Funktionen, die ein Profil aufrufen (Prüfung von Gruppenanfragen, „Trotzdem �
 
 ## Gruppen-Beitrittsanfragen
 
-Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name auf das Muster passt) prüft **Automatische Annahme/Ablehnung** jedes Profil unsichtbar: Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen, sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
+Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name „BBC“, „Black“ oder „interracial“ enthält) prüft **Automatische Annahme/Ablehnung** jedes Profil unsichtbar: Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen; Typ leer, kein Profilbild (nur Platzhalter und kein öffentliches Foto) und als einzige Sprache Deutsch → ablehnen; sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
 
 ---
 
@@ -155,7 +155,7 @@ Nur für dich sichtbar.
 - **Kasten im eigenen Profil** über den Statistiken: Zähler und die letzten Ficks mit drei verschiedenen Personen.
 - **Profil-Archiv:** Bei jedem Profilaufruf und jeder Statusänderung wird ein Stand gespeichert; Navigation ‹ › und « » (direkt vor/nach einem Treffen).
 - **Externe Ficks:** Personen ohne poppen-Profil mit eigenem Bild, Typ, Ort und Texten.
-- **Andere Plattformen** (Popup **„Auch auf …“**: im Menü des Fickliste-Buttons, im Fickliste-Kasten über „+ Profil anderswo“ und in „Meine Fickliste“ je Person): JOYclub, xHamster, Eronity, SpicyMatch, Kaufmich, Fetish.com, Gays.com, Telegram (`@Name`/`t.me/Name` → `https://t.me/Name`), WhatsApp (Nummer/`wa.me` → `https://wa.me/49…`, „00“ wird „+“, ohne Vorwahl +49), Threema (`https://threema.id/ID`), Signal (Nummer → `https://signal.me/#p/+49…`, Benutzername nur als Text mit ⧉) und „Andere …“ mit eigenem Plattformnamen. Je Profil Häkchen „Profil gelöscht“ (durchgestrichen) und ✕ zum Entfernen. Symbole und Farben wie im JOYclub-Skript (J, P, xH, Er, SM, KM, Fe, G, TG, WA, Th, Si; bei „Andere“ die ersten 2 Buchstaben). **Vorschläge:** Importierte Einträge der gewählten Plattform ohne poppen-Profil lassen sich mit einem Klick zusammenführen (neuerer Status gewinnt, Treffen, Profile und Verlauf werden übernommen, Anmerkungen angehängt).
+- **Andere Plattformen** (Popup **„Auch auf …“**: im Menü des Fickliste-Buttons, im Fickliste-Kasten über den Knopf **+** hinter „Auch auf:“ und in „Meine Fickliste“ je Person): JOYclub, xHamster, Eronity, SpicyMatch, Kaufmich, Fetish.com, Gays.com, Telegram (`@Name`/`t.me/Name` → `https://t.me/Name`), WhatsApp (Nummer/`wa.me` → `https://wa.me/49…`, „00“ wird „+“, ohne Vorwahl +49), Threema (`https://threema.id/ID`), Signal (Nummer → `https://signal.me/#p/+49…`, Benutzername nur als Text mit ⧉) und „Andere …“ mit eigenem Plattformnamen. Je Profil Häkchen „Profil gelöscht“ (durchgestrichen) und ✕ zum Entfernen. Als Symbole dienen die echten Favicons der Seiten, fest ins Skript eingebaut (es wird nichts nachgeladen); Eronity und „Andere“ zeigen ein Kürzel (bei „Andere“ die ersten 2 Buchstaben). Die Favicons gehören den jeweiligen Markeninhabern. **Vorschläge:** Importierte Einträge der gewählten Plattform ohne poppen-Profil lassen sich mit einem Klick zusammenführen (neuerer Status gewinnt, Treffen, Profile und Verlauf werden übernommen, Anmerkungen angehängt).
 - **Links von Treffen** öffnen immer in einem neuen Tab auf der Plattform, für die sie eingetragen sind.
 - **Gelöschte Konten** im Posteingang: früherer Name durchgestrichen, Link aufs Profil-Archiv, Bild aus dem Archiv.
 
@@ -180,6 +180,14 @@ Inhalt: { format:'fickliste', version:1, platform, exported, persons:[
 - Unbekannte Felder werden unverändert durchgereicht.
 
 ---
+
+## Messenger: Termine
+
+In der rechten Spalte eines Chats steht zwischen „Aktionen“ und „Anhänge“ der Abschnitt **Termine** (nur Chrome/Edge). Er liest eine lokale Textdatei, die einmal gewählt wird (im Abschnitt selbst oder auf der Seite *Opa-Schutz* unter „Party-Termine“). Jede Zeile hat das Format `wann - wo - was - Link`; `was` und `Link` sind optional, `wann` darf ein Zeitraum sein (`14.09.-23.09.2026`, `14.-23.09.2026`, `28.12.2026 - 02.01.2027`).
+
+- Gelesen wird von oben; vergangene Termine werden übersprungen (ein Zeitraum zählt bis zu seinem letzten Tag), nach den ersten **5 kommenden** ist Schluss.
+- Jeder Termin ist eine Zeile mit „wann - wo - was“ als Beschriftung; ein Klick fügt die vollständige Zeile (mit Link) ins Eingabefeld ein. Abgeschickt wird nichts.
+- Die Datei wird beim Aufklappen neu gelesen. Chrome fragt gelegentlich, ob der Zugriff weiter erlaubt ist („Zugriff auf die Datei erlauben“).
 
 ## Mitgliedersuche: Figur
 

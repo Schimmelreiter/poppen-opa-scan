@@ -1,6 +1,14 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.4 (24.10.2026)
+- Fickliste: echte Favicons statt Kürzel für die Plattformen (fest eingebaut, kein Nachladen); Eronity und „Andere“ behalten das Kürzel; Datei favicons.json im Repo
+- Fickliste-Kasten: breiter Knopf „+“ hinter „Auch auf:“ öffnet das Popup „Auch auf …“, größerer Abstand zwischen den Profil-Links; „+ Profil anderswo“ entfällt
+- Profil-Menü: Eintrag „Fickliste“ vor dem Opa-/Oma-Scan (wie im JOYclub-Skript)
+- Gruppenanfragen: auch in Gruppen mit „interracial“ im Namen
+- Gruppenanfragen: automatisch ablehnen bei leerem Typ, ohne Profilbild (nur Platzhalter und kein öffentliches Foto) und Deutsch als einziger Sprache
+- Messenger: Abschnitt „Termine“ zwischen „Aktionen“ und „Anhänge“ – die nächsten 5 Termine aus einer lokalen Textdatei („wann - wo - was - Link“), Klick fügt die Zeile ins Eingabefeld ein; Datei wählen auch auf der Seite Opa-Schutz
+
 2.3.1 (24.10.2026)
 - Fickliste-Import: Enthält ein importierter Eintrag (z. B. von JOYclub) ein poppen.de-Profil, wird daraus ein poppen-Eintrag – sofort, wenn das Mitglied im Gedächtnis bekannt ist, sonst beim nächsten Aufruf des Profils. Das fremde Hauptprofil bleibt als Profil erhalten; Status, Treffen und Verlauf werden übernommen
 - Meine Fickliste: Der Name öffnet bei solchen Einträgen das poppen.de-Profil statt des fremden
