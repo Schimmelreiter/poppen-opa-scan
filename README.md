@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.1 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.1.1 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -107,7 +107,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Ohne bek
 
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
 
-- Kopfzeile: derzeit blockiert, nach Anwenden der neuen Einstellungen (aus dem Gedächtnis berechnet), Warteliste.
+- Kopfzeile: derzeit blockiert, nach Anwenden der neuen Einstellungen (derzeit blockiert − fallen weg + kommen dazu, aus dem Gedächtnis berechnet), Warteliste. Damit die Zahl stimmt, liest das Skript nach jedem Update und danach wöchentlich die Blockierliste still ins Gedächtnis ein (ohne etwas zu ändern).
 - Je Gruppe: Schalter, Grenzen je Quelle (Schieberegler), „Werte der ersten Zeile übernehmen“, Bezeichnungen, Profiltypen; bei Paaren Paar-Regel, getrenntes Alter, Sugar Daddy/Mom.
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.

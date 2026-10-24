@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.1
+// @version      2.1.1
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.1';
+  const VERSION = '2.1.1';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -1990,6 +1990,39 @@
     return out;
   }
 
+  // Blockierliste still ins Gedächtnis einlesen (ändert nichts auf poppen.de): einmal je Version und danach wöchentlich.
+  // Ohne das kennt das Gedächtnis nach einem Update nur die Mitglieder, die seitdem aufgetaucht sind.
+  const INGEST_KEY = 'bl_ingest';
+  const ingestDue = () => { const g = G.get(INGEST_KEY, null); return !g || g.v !== VERSION || now() - g.at > 7 * DAY; };
+  async function ingestBlocklist(onStep) {
+    const list = await BL.all((count, page) => { if (onStep) onStep(count, page); return true; });
+    G.set('blocked_count', list.length); G.set('blocked_count_at', now());
+    const onList = new Set();
+    let opa = 0, manual = 0;
+    for (const e of list) {
+      if (!e || !e.user || !e.user.uid) continue;
+      const uid = String(e.user.uid);
+      onList.add(uid);
+      await seen(e.user, 'Blockierliste', { images: false });
+      const pn = parseNote(e.note);
+      if (pn) {
+        opa++;
+        await Members.update(uid, (x) => { if (!x.blk || !x.blk.opa || x.unblk) x.blk = { at: pn.at, src: pn.src || 'Sync', note: e.note, opa: true }; else if (!x.blk.note) x.blk.note = e.note; delete x.unblk; });
+      } else {
+        manual++;
+        await Members.update(uid, (x) => { if (!x.blk || x.unblk) { x.blk = { at: now(), note: e.note || '', opa: false }; delete x.unblk; } });
+      }
+    }
+    // von Hand Blockierte, die nicht mehr auf der Liste stehen: Vermerk entfernen (Opa-Sperren bleiben „Reparieren“ überlassen)
+    const stale = [];
+    await Members.each((m) => { if (m.blk && !m.blk.opa && !m.unblk && !onList.has(m.uid)) stale.push(m.uid); });
+    for (const uid of stale) await Members.update(uid, (x) => { x.blk = null; });
+    G.set(INGEST_KEY, { v: VERSION, at: now(), n: list.length, opa, manual });
+    Bus.emit('ingested', { n: list.length, opa, manual });
+    log(`Blockierliste eingelesen: ${list.length} Einträge, davon ${opa} mit ${word()}-Notiz.`);
+    return { n: list.length, opa, manual };
+  }
+
   async function runIgnoreJob(kind, opts = {}) {
     if (ilJob.running) return;
     if (!(await Lock.take('blocklist', kind))) { toast('Ein anderer Tab arbeitet gerade an der Blockierliste.'); return; }
@@ -2748,9 +2781,17 @@
     const e = document.getElementById('vaf-after-n');
     if (!e || !draft) return;
     e.textContent = 'rechne …';
+    if (ingestDue()) {
+      e.textContent = 'Blockierliste wird eingelesen …';
+      e.title = 'Nach dem Update liest das Skript die Blockierliste einmal ins Gedächtnis ein. Erst danach lässt sich die Zahl berechnen.';
+      setTimeout(projectLater, 10000);   // das Einlesen kann auch in einem anderen Tab laufen
+      return;
+    }
     const p = await projection(S(), draft);
     const lim = draft.expert.limit;
-    const after = p.keep + p.add;
+    // Basis ist die ganze Blockierliste (auch von Hand Blockierte); verändert wird nur, was die neuen Regeln wegnehmen oder hinzufügen
+    const cur = G.get('blocked_count', null);
+    const after = cur == null ? p.keep + p.add : Math.max(0, cur - p.drop + p.add);
     e.textContent = `${fmtN(after)} / ${fmtN(lim)}${p.unclear ? ' +' : ''}`;
     e.style.color = after > lim ? '#ff7875' : lim - after < 50 ? '#ffa940' : '';
     e.title = `bleiben ${fmtN(p.keep)}, fallen weg ${fmtN(p.drop)}, kommen dazu ${fmtN(p.add)}, unklar ${fmtN(p.unclear)}`;
@@ -2765,8 +2806,8 @@
   async function projection(oldS, newS) {
     const res = { keep: 0, drop: 0, add: 0, notes: 0, unclear: 0, dropList: [], addList: [], noteList: [] };
     await Members.each((m) => {
-      if (!m.ages || !m.ages.length) return;
       const blocked = m.blk && m.blk.opa && !m.unblk;
+      if (!m.ages || !m.ages.length) { if (blocked) res.keep++; return; }
       const src = blocked && m.blk.src ? m.blk.src : srcOfMember(m);
       const ages = m.birth && m.birth.length ? m.birth.map((b) => ageToday(b)) : m.ages;
       const cn = classify({ ...m, ages }, src, newS);
@@ -4621,6 +4662,13 @@
     if (now() - G.get('blocked_count_at', 0) > 3600000) {
       BL.uids().then((l) => { G.set('blocked_count', l.length); G.set('blocked_count_at', now()); }).catch(() => {});
     }
+    // Blockierliste nach einem Update (und wöchentlich) still ins Gedächtnis einlesen
+    setTimeout(async () => {
+      if (!ingestDue()) return;
+      if (!(await Lock.take('blocklist', 'ingest'))) return;
+      try { await ingestBlocklist(); } catch (e) { warn('Blockierliste einlesen', e); }
+      finally { Lock.release('blocklist'); }
+    }, 8000);
     // Gruppen-Whitelist einmal täglich im Hintergrund
     setTimeout(async () => {
       if (!isOn() || now() - G.get('grp_wl_at', 0) < DAY) return;

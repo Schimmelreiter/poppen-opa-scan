@@ -1,6 +1,11 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.1.1 (24.10.2026)
+- Nach einem Update (und danach wöchentlich) liest das Skript die Blockierliste still ins Gedächtnis ein: Opa-Sperren mit Quelle und Notiz, von Hand Blockierte nur als solche vermerkt; auf poppen.de wird dabei nichts geändert
+- Einstellungen: „Nach Anwenden der neuen Einstellungen“ rechnet mit der ganzen Blockierliste (derzeit blockiert − fallen weg + kommen dazu); vor dem ersten Einlesen steht dort „Blockierliste wird eingelesen …“
+- Vom Opa-Schutz Geblockte ohne bekanntes Alter zählen als „bleiben“
+
 2.1 (24.10.2026)
 - Fickliste, Austauschformat: profiles[] mit eigenem status/statusAt und sync; meets[] mit uid (zusammen mit pf); unbekannte Felder werden durchgereicht
 - Statusänderung gilt für die Person und alle Profile mit sync:true; Profile mit eigenem Status bleiben unverändert
