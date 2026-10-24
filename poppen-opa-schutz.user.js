@@ -169,7 +169,7 @@
     warnYears: 1,                 // so viele Jahre vor „Ignorieren ab“: dunkelorange + vormerken
     watch: true,
     whitelist: {
-      names: [{ n: 'Wildschwein_AC', g: '' }, { n: 'Pop-MOD-Klarsinn', g: '' }],
+      names: [{ n: 'Wildschwein_AC', g: '' }],
       groups: [],
       prefixes: ['Pop-MOD-'],
     },
@@ -229,6 +229,11 @@
       if (!e || typeof e !== 'object' || !('v' in e)) continue;
       const def = p in flatDef ? flatDef[p] : getPath(DEFAULTS, p);
       // Quelltext geändert → der neue Quelltext-Wert gilt
+      // 2.1: Pop-MOD-Klarsinn aus dem Quelltext entfernt (über das Präfix „Pop-MOD-“ abgedeckt) – eigene Namen bleiben
+      if (p === 'whitelist.names' && Array.isArray(e.v) && Array.isArray(e.src)) {
+        const drop = (a) => a.filter((x) => (x && x.n) !== 'Pop-MOD-Klarsinn');
+        if (same(def, drop(e.src))) { setPath(s, p, clone(drop(e.v))); continue; }
+      }
       if (def !== undefined && !same(def, e.src)) continue;
       setPath(s, p, clone(e.v));
     }

@@ -6,6 +6,7 @@ Neueste Version oben.
 - Statusänderung gilt für die Person und alle Profile mit sync:true; Profile mit eigenem Status bleiben unverändert
 - Import: verknüpfte Personen behalten das fremde Hauptprofil als Profil; nicht verknüpfte behalten main unverändert
 - Treffen: Felder heißen „Was“ (Party, Anlass) und „Wo“ (Club, Ort)
+- Whitelist: Pop-MOD-Klarsinn aus den Voreinstellungen entfernt (über das Präfix „Pop-MOD-“ abgedeckt); eigene Namen bleiben erhalten
 - Veröffentlichung auf GitHub mit @updateURL/@downloadURL
 
 2.0 (24.10.2026)
