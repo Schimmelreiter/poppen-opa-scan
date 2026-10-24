@@ -1,0 +1,4639 @@
+// ==UserScript==
+// @name         Poppen.de – Besucher nach Alter ignorieren
+// @namespace    local.visitor-age-filter
+// @version      2.1
+// @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
+// @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
+// @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
+// @updateURL    https://raw.githubusercontent.com/Schimmelreiter/poppen-opa-scan/main/poppen-opa-schutz.user.js
+// @downloadURL  https://raw.githubusercontent.com/Schimmelreiter/poppen-opa-scan/main/poppen-opa-schutz.user.js
+// @match        https://www.poppen.de/*
+// @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzAiIGZpbGw9IiMyYjJiMmIiIHN0cm9rZT0iI2U1MzkzNSIgc3Ryb2tlLXdpZHRoPSI1Ii8+PHRleHQgeD0iMzIiIHk9IjQxIiBmb250LWZhbWlseT0iQXJpYWwsSGVsdmV0aWNhLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj41MCs8L3RleHQ+PGxpbmUgeDE9IjEyIiB5MT0iNTIiIHgyPSI1MiIgeTI9IjEyIiBzdHJva2U9IiNlNTM5MzUiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        GM_addValueChangeListener
+// @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
+// @connect      poppen.de
+// @connect      img-z.poppen.de
+// @sandbox      JavaScript
+// @run-at       document-start
+// @noframes
+// ==/UserScript==
+
+(function () {
+  'use strict';
+  const VERSION = '2.1';
+  const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+
+  // =====================================================================================
+  // Hilfsfunktionen
+  // =====================================================================================
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+  const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const isoDay = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const deDate = (d) => `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`;
+  const deTime = (d) => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const deDateTime = (ts) => { const d = new Date(ts); return `${deDate(d)} ${deTime(d)}`; };
+  const DAY = 86400000;
+  const now = () => Date.now();
+  const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+  const uniq = (a) => [...new Set(a)];
+  const plural = (n, one, many) => `${n.toLocaleString('de-DE')} ${n === 1 ? one : many}`;
+  const fmtN = (n) => Number(n || 0).toLocaleString('de-DE');
+  const log = (...a) => console.log('[Opa-Schutz]', ...a);
+  const warn = (...a) => console.warn('[Opa-Schutz]', ...a);
+
+  async function waitFor(fn, timeout = 10000, step = 250) {
+    const t0 = now();
+    while (now() - t0 < timeout) {
+      let r = null;
+      try { r = fn(); } catch { r = null; }
+      if (r) return r;
+      await sleep(step);
+    }
+    return null;
+  }
+  function onReady(fn) {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn, { once: true });
+    else fn();
+  }
+  const isVisible = (e) => !!e && e.isConnected && e.getClientRects().length > 0;
+
+  // Profilpfad <-> Benutzername: /p/<name in Kleinbuchstaben, URL-kodiert>
+  const slugOf = (path) => { try { return decodeURIComponent(String(path).replace(/^\/p\//, '').replace(/\/.*$/, '')).toLowerCase(); } catch { return String(path).toLowerCase(); } };
+  const pathOfName = (name) => '/p/' + encodeURIComponent(String(name).trim().toLowerCase());
+  const profileUrl = (name) => location.origin + pathOfName(name);
+
+  // Benutzer-ID aus einer Profilbild-Adresse: …/fsk16/B/D/4/8194027-BD4B…_350_sq.jpg
+  function uidFromAvatar(src) {
+    const m = /\/(\d{3,10})-[0-9A-F]{16,}/i.exec(String(src || ''));
+    return m ? m[1] : '';
+  }
+  const isPlaceholderAvatar = (src) => !src || /image_null_|avatar-(man|woman|couple|female|male)|plc-images|\/v2-static\//i.test(src);
+
+  // Alter aus "Mann · 48 Jahre · 15 km" (Paare: "45/42 Jahre", "45 & 42 Jahre" …)
+  function agesFromText(text) {
+    const re = /\b(1[89]|[2-9]\d)\b(?=(?:\s*(?:\/|&|\+|und|,|\||·)\s*(?:1[89]|[2-9]\d)\b)*\s*Jahre)/gi;
+    const out = [];
+    let m;
+    while ((m = re.exec(text || '')) && out.length < 2) out.push(Number(m[1]));
+    return out;
+  }
+  const TYPE_WORDS = { mann: 'm', frau: 'w', paar: 'p', trans: 'ts', 'nicht-binär': 'tv', 'nicht binär': 'tv', 'non-binary': 'tv', transvestit: 'tv' };
+  function genderFromText(text) {
+    const t = norm(String(text || '').split('·')[0]);
+    if (TYPE_WORDS[t]) return t === 'paar' ? ['w', 'm'] : [TYPE_WORDS[t]];
+    if (/paar/.test(t)) return ['w', 'm'];
+    return [];
+  }
+
+  // Datei herunterladen
+  function download(name, text, type = 'application/json') {
+    const blob = new Blob([text], { type: type + ';charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+  function pickFile(accept = '.json,application/json') {
+    return new Promise((resolve) => {
+      const inp = document.createElement('input');
+      inp.type = 'file'; inp.accept = accept;
+      inp.onchange = async () => { const f = inp.files && inp.files[0]; resolve(f ? await f.text() : null); };
+      inp.click();
+    });
+  }
+  const stamp = () => { const d = new Date(); return `${isoDay(d)}_${pad2(d.getHours())}${pad2(d.getMinutes())}`; };
+
+  // Schlanker Ereignis-Bus innerhalb des Tabs
+  const Bus = (() => {
+    const map = new Map();
+    return {
+      on(ev, fn) { if (!map.has(ev)) map.set(ev, new Set()); map.get(ev).add(fn); return () => map.get(ev).delete(fn); },
+      emit(ev, data) { (map.get(ev) || []).forEach((fn) => { try { fn(data); } catch (e) { warn(ev, e); } }); },
+    };
+  })();
+
+  // Tab-Kennung (bleibt beim Seitenwechsel im selben Tab erhalten)
+  const TAB_ID = (() => {
+    try {
+      const m = /(?:^|;)vaf:([a-z0-9]+)/.exec(W.name || '');
+      if (m) return m[1];
+      const id = Math.random().toString(36).slice(2, 10);
+      W.name = (W.name ? W.name + ';' : '') + 'vaf:' + id;
+      return id;
+    } catch { return Math.random().toString(36).slice(2, 10); }
+  })();
+
+  // SVG-Symbol aus Pfaddaten
+  const svgIcon = (inner, vb = '0 0 24 24', extra = '') => `<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="${vb}" fill="currentColor" ${extra}>${inner}</svg>`;
+
+  // =====================================================================================
+  // Einstellungen (Quelltext-Werte). Auf der Seite „Opa-Schutz“ änderbar; dort geänderte Werte
+  // gelten, solange der Quelltext-Wert unverändert bleibt (Abweichungen sind mit „°“ markiert).
+  // =====================================================================================
+  const SRC_KEYS = ['interaktionen', 'besucher', 'party', 'gruppen', 'suche'];
+  const SOURCES = {
+    interaktionen: { label: 'Interaktionen', avail: true, tip: 'Mitglieder, die dir ein Like, einen Sticker oder eine Nachricht geschickt haben' },
+    besucher: { label: 'Profilbesucher', avail: true, tip: 'Mitglieder, die dein Profil besucht haben' },
+    party: { label: 'Partygäste', avail: false, tip: 'Mitglieder, die auf denselben Partys angemeldet sind wie du (gibt es auf poppen.de nicht)' },
+    gruppen: { label: 'Gruppen', avail: true, tip: 'Mitglieder deiner Gruppen' },
+    suche: { label: 'Mitgliedersuche', avail: true, tip: 'Alle poppen.de-Mitglieder, die auf die Einstellungen passen' },
+  };
+  // Quelle in der Notiz → Spalte der Altersgrenzen
+  const NOTE_SOURCES = {
+    Likes: 'interaktionen', Sticker: 'interaktionen', Nachrichten: 'interaktionen', Interaktionen: 'interaktionen',
+    Besucher: 'besucher', Profilbesucher: 'besucher', Gruppen: 'gruppen', Suche: 'suche', Mitgliedersuche: 'suche',
+    Vorgemerkt: 'suche', Sync: 'sync', Profil: 'besucher', Warteliste: 'suche',
+  };
+  const ages3 = (a, b, c) => ({ interaktionen: [a, b, c], besucher: [a, b, c], party: [a, b, c], gruppen: [a, b, c], suche: [a, b, c] });
+
+  const DEFAULTS = {
+    groups: {
+      m: { visual: true, ignore: true, types: ['m'], src: ages3(29, 48, 50),
+        labels: ['Jungspund', 'Jungspunde', 'Mann', 'Männer', 'Opa', 'Opas'] },
+      w: { visual: false, ignore: false, types: ['w'], src: ages3(29, 48, 50),
+        labels: ['junge Frau', 'junge Frauen', 'Frau', 'Frauen', 'Oma', 'Omas'] },
+      p: { visual: false, ignore: false, types: ['p'], separate: false, coupleMode: 'any',
+        src: ages3(29, 48, 50), srcW: ages3(29, 48, 50), srcM: ages3(29, 48, 50),
+        sugarDaddy: { on: false, gap: 15 }, sugarMom: { on: false, gap: 15 },
+        labels: ['junges Paar', 'junge Paare', 'Paar', 'Paare', 'Geronto-Paar', 'Geronto-Paare'] },
+    },
+    warnYears: 1,                 // so viele Jahre vor „Ignorieren ab“: dunkelorange + vormerken
+    watch: true,
+    whitelist: {
+      names: [{ n: 'Wildschwein_AC', g: '' }, { n: 'Pop-MOD-Klarsinn', g: '' }],
+      groups: [],
+      prefixes: ['Pop-MOD-'],
+    },
+    auto: { besucher: true, suche: true, interaktionen: true },   // auf der Seite automatisch auf die Warteliste
+    autoLogin: true,
+    autoLoginPauseMin: 30,
+    maintenanceMin: 15,
+    groupReq: { match: 'bbc|black', accept: ['Afroamerikanisch'], reject: ['Europäisch'], photos: 6,
+      fields: ['Geschlecht', 'Sexualität', 'Typ', 'Herkunft', 'Sprachen'] },
+    groupScan: {},                // cms_id → false = beim Gruppen-Scan auslassen (Standard: alle)
+    managedWhitelist: {},         // cms_id → false = Mitglieder NICHT whitelisten (Standard: whitelisten)
+    expert: {
+      debug: false,
+      dryRun: false,
+      firstScanMax: 1000,
+      limit: 10000000,
+      rank: ['interaktionen', 'besucher', 'party', 'gruppen', 'suche', 'sync'],
+      writeNote: true,
+      noteRequired: false,
+      noteText: '{bezeichnung} ({quelle}) geblockt am {datum} um {uhrzeit}',
+      maxPerRun: 50,
+      pauseMin: 1,
+      pauseMax: 3,
+      etappeMin: 5,
+      bodyValidDays: 90,
+      bodyUnknownDays: 30,
+      groupGraceDays: 30,
+      recorder: false,
+    },
+  };
+
+  // ---------- flach ↔ verschachtelt ----------
+  function flatten(o, pre = '', out = {}) {
+    for (const [k, v] of Object.entries(o)) {
+      const p = pre ? pre + '.' + k : k;
+      if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length) flatten(v, p, out);
+      else out[p] = v;
+    }
+    return out;
+  }
+  function getPath(o, p) { return p.split('.').reduce((x, k) => (x == null ? undefined : x[k]), o); }
+  function setPath(o, p, v) {
+    const ks = p.split('.'); let x = o;
+    for (let i = 0; i < ks.length - 1; i++) { if (x[ks[i]] == null || typeof x[ks[i]] !== 'object') x[ks[i]] = {}; x = x[ks[i]]; }
+    x[ks[ks.length - 1]] = v;
+  }
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  const K_SETTINGS = 'vaf2_settings';      // { path: { v, src } }  nur Abweichungen vom Quelltext
+  let SETTINGS = null;
+
+  function loadSettings() {
+    const stored = GM_getValue(K_SETTINGS, {}) || {};
+    const s = clone(DEFAULTS);
+    const flatDef = flatten(DEFAULTS);
+    for (const [p, e] of Object.entries(stored)) {
+      if (!e || typeof e !== 'object' || !('v' in e)) continue;
+      const def = p in flatDef ? flatDef[p] : getPath(DEFAULTS, p);
+      // Quelltext geändert → der neue Quelltext-Wert gilt
+      if (def !== undefined && !same(def, e.src)) continue;
+      setPath(s, p, clone(e.v));
+    }
+    SETTINGS = s;
+    return s;
+  }
+  // Ganze Einstellungen speichern: nur Abweichungen vom Quelltext werden abgelegt
+  function saveSettings(s) {
+    const flat = flatten(s);
+    const flatDef = flatten(DEFAULTS);
+    const out = {};
+    const paths = new Set([...Object.keys(flat), ...Object.keys(flatDef)]);
+    // Container ohne Unterschlüssel (z. B. groupScan = {}) als Ganzes vergleichen
+    for (const p of paths) {
+      const v = p in flat ? flat[p] : getPath(s, p);
+      const def = p in flatDef ? flatDef[p] : getPath(DEFAULTS, p);
+      if (!same(v, def)) out[p] = { v: clone(v), src: clone(def) };
+    }
+    GM_setValue(K_SETTINGS, out);
+    SETTINGS = clone(s);
+    Bus.emit('settings', SETTINGS);
+  }
+  const S = () => SETTINGS || loadSettings();
+  // Weicht ein Wert vom Quelltext ab?
+  const deviates = (path, s = S()) => !same(getPath(s, path), getPath(DEFAULTS, path));
+
+  // Schalter „Opa-Schutz“ im Profil-Menü (Automatik an/aus)
+  const K_ON = 'vaf2_on';
+  const isOn = () => GM_getValue(K_ON, true) !== false;
+  const setOn = (v) => { GM_setValue(K_ON, !!v); Bus.emit('on', !!v); };
+  const dry = () => !!S().expert.dryRun;
+
+  // =====================================================================================
+  // Speicher
+  //  - Kleine Daten (Einstellungen, Zustände, Sperren der Tabs): Tampermonkey-Speicher
+  //  - Gesamtliste aller Mitglieder, Bilder, Profil-Archiv, Warteliste, Fickliste, Rekorder:
+  //    Datenbank des Browsers (IndexedDB) – jeder Eintrag wird einzeln gelesen/geschrieben.
+  // =====================================================================================
+  const DB_NAME = 'opa-schutz';
+  const DB_VER = 1;
+  const STORES = {
+    members: { keyPath: 'uid', indexes: [['nl', 'nl']] },
+    images: { keyPath: 'uid' },
+    archive: { keyPath: 'id', autoIncrement: true, indexes: [['uid', 'uid']] },
+    queue: { keyPath: 'uid' },
+    fick: { keyPath: 'id' },
+    kv: { keyPath: 'k' },
+  };
+  let dbP = null;
+  function db() {
+    if (dbP) return dbP;
+    dbP = new Promise((resolve, reject) => {
+      const rq = W.indexedDB.open(DB_NAME, DB_VER);
+      rq.onupgradeneeded = () => {
+        const d = rq.result;
+        for (const [name, def] of Object.entries(STORES)) {
+          if (d.objectStoreNames.contains(name)) continue;
+          const st = d.createObjectStore(name, { keyPath: def.keyPath, autoIncrement: !!def.autoIncrement });
+          for (const [iname, kp] of def.indexes || []) st.createIndex(iname, kp, { unique: false });
+        }
+      };
+      rq.onsuccess = () => resolve(rq.result);
+      rq.onerror = () => reject(rq.error);
+    });
+    return dbP;
+  }
+  const reqP = (rq) => new Promise((res, rej) => { rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+  async function tx(store, mode = 'readonly') { return (await db()).transaction(store, mode).objectStore(store); }
+  const DB = {
+    async get(store, key) { return reqP((await tx(store)).get(key)); },
+    async put(store, val) { return reqP((await tx(store, 'readwrite')).put(val)); },
+    async del(store, key) { return reqP((await tx(store, 'readwrite')).delete(key)); },
+    async clear(store) { return reqP((await tx(store, 'readwrite')).clear()); },
+    async all(store) { return reqP((await tx(store)).getAll()); },
+    async keys(store) { return reqP((await tx(store)).getAllKeys()); },
+    async count(store) { return reqP((await tx(store)).count()); },
+    async byIndex(store, index, key) { return reqP((await tx(store)).index(index).getAll(key)); },
+    async putMany(store, vals) {
+      if (!vals.length) return;
+      const d = await db();
+      await new Promise((res, rej) => {
+        const t = d.transaction(store, 'readwrite');
+        const st = t.objectStore(store);
+        for (const v of vals) st.put(v);
+        t.oncomplete = res; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+      });
+    },
+    async delMany(store, keys) {
+      if (!keys.length) return;
+      const d = await db();
+      await new Promise((res, rej) => {
+        const t = d.transaction(store, 'readwrite');
+        const st = t.objectStore(store);
+        for (const k of keys) st.delete(k);
+        t.oncomplete = res; t.onerror = () => rej(t.error);
+      });
+    },
+    // Alle Einträge durchgehen, ohne alles auf einmal in den Speicher zu laden
+    async each(store, fn) {
+      const d = await db();
+      await new Promise((res, rej) => {
+        const rq = d.transaction(store).objectStore(store).openCursor();
+        rq.onsuccess = () => { const c = rq.result; if (!c) return res(); try { fn(c.value); } catch (e) { warn(e); } c.continue(); };
+        rq.onerror = () => rej(rq.error);
+      });
+    },
+  };
+  const KV = {
+    async get(k, def = null) { const r = await DB.get('kv', k); return r ? r.v : def; },
+    async set(k, v) { await DB.put('kv', { k, v }); chan.post({ t: 'kv', k }); },
+  };
+
+  // ---------- Tab-übergreifende Benachrichtigung ----------
+  const chan = (() => {
+    let bc = null;
+    try { bc = new BroadcastChannel('opa-schutz'); } catch {}
+    const h = new Set();
+    if (bc) bc.onmessage = (e) => h.forEach((f) => { try { f(e.data); } catch {} });
+    return { post(m) { try { bc && bc.postMessage(m); } catch {} }, on(f) { h.add(f); } };
+  })();
+
+  // ---------- Mitglieder-Gesamtliste mit Zwischenspeicher ----------
+  // Ein Eintrag je Mitglied (Schlüssel: Benutzer-ID). Änderungen werden gesammelt und etwa
+  // alle 2 Sekunden auf einmal geschrieben, beim Verlassen der Seite sofort.
+  //   { uid, nick, nl, nicks[], g[], ages[], ageAt, birth[{lo,hi}], by[], zod[], pay, avatar, img,
+  //     first, last, seen{Quelle: ts}, body[{h,wlo,whi,at}], bodyUnk, blk{at,src,note,opa}, unblk,
+  //     auto{admin, friend, grp{cms:ts}, gone}, friend, friendAt, del, city }
+  const Members = (() => {
+    const cache = new Map();
+    const dirty = new Set();
+    let timer = null;
+    chan.on((m) => { if (m && m.t === 'm') for (const u of m.u) cache.delete(u); });
+    async function flush() {
+      timer = null;
+      if (!dirty.size) return;
+      const ids = [...dirty]; dirty.clear();
+      const vals = ids.map((u) => cache.get(u)).filter(Boolean);
+      try { await DB.putMany('members', vals); chan.post({ t: 'm', u: ids }); }
+      catch (e) { warn('Speichern fehlgeschlagen', e); ids.forEach((u) => dirty.add(u)); }
+    }
+    W.addEventListener('pagehide', () => { flush(); });
+    const sched = () => { if (!timer) timer = setTimeout(flush, 2000); };
+    return {
+      async get(uid) {
+        uid = String(uid);
+        if (cache.has(uid)) return cache.get(uid);
+        const m = await DB.get('members', uid);
+        if (m) cache.set(uid, m);
+        return m || null;
+      },
+      async byNick(nick) {
+        const l = norm(nick);
+        for (const m of cache.values()) if (m.nl === l) return m;
+        const r = await DB.byIndex('members', 'nl', l);
+        if (!r.length) return null;
+        r.sort((a, b) => (b.last || 0) - (a.last || 0));
+        cache.set(r[0].uid, r[0]);
+        return r[0];
+      },
+      // Eintrag ändern: fn(m) bekommt den (ggf. neuen) Eintrag und ändert ihn
+      async update(uid, fn) {
+        uid = String(uid);
+        if (!uid || uid === 'undefined') return null;
+        const m = (await this.get(uid)) || { uid, first: now() };
+        fn(m);
+        if (m.nick) m.nl = norm(m.nick);
+        cache.set(uid, m);
+        dirty.add(uid); sched();
+        return m;
+      },
+      put(m) { cache.set(m.uid, m); dirty.add(m.uid); sched(); },
+      flush,
+      cached: () => cache,
+      async all() { await flush(); return DB.all('members'); },
+      async each(fn) { await flush(); return DB.each('members', fn); },
+      async count() { await flush(); return DB.count('members'); },
+    };
+  })();
+
+  // ---------- Tab-Sperre: nur ein Tab arbeitet an einer Aufgabe ----------
+  const Lock = (() => {
+    const STALE = 30000;
+    const key = (what) => 'vaf2_lock_' + what;
+    const held = new Set();
+    setInterval(() => {
+      for (const w of held) {
+        const l = GM_getValue(key(w), null);
+        if (l && l.tab === TAB_ID) GM_setValue(key(w), { ...l, ts: now() });
+        else held.delete(w);
+      }
+    }, 5000);
+    return {
+      async take(what, info = '') {
+        const l = GM_getValue(key(what), null);
+        if (l && l.tab !== TAB_ID && now() - l.ts < STALE) return false;
+        GM_setValue(key(what), { tab: TAB_ID, ts: now(), info, page: location.pathname });
+        await sleep(200 + Math.random() * 300);
+        const l2 = GM_getValue(key(what), null);
+        if (l2 && l2.tab === TAB_ID) { held.add(what); return true; }
+        return false;
+      },
+      release(what) { const l = GM_getValue(key(what), null); if (l && l.tab === TAB_ID) GM_deleteValue(key(what)); held.delete(what); },
+      other(what) { const l = GM_getValue(key(what), null); return l && l.tab !== TAB_ID && now() - l.ts < STALE ? l : null; },
+    };
+  })();
+  W.addEventListener('pagehide', () => { try { for (const k of GM_listValues()) if (k.startsWith('vaf2_lock_')) { const l = GM_getValue(k, null); if (l && l.tab === TAB_ID) GM_deleteValue(k); } } catch {} });
+
+  // ---------- kleine Zustände ----------
+  const G = {
+    get: (k, d) => GM_getValue('vaf2_' + k, d),
+    set: (k, v) => GM_setValue('vaf2_' + k, v),
+    del: (k) => GM_deleteValue('vaf2_' + k),
+  };
+
+  // =====================================================================================
+  // Schnittstellen (v2-api)
+  //  - eigene Abfragen laufen über das Original-fetch (ohne Umweg über die Mitschnitte)
+  //  - Abfragen der Seite selbst werden beobachtet: Mitglieder-Infos nebenbei merken,
+  //    API-Rekorder, Antworten der Suche umsortieren (Figur-Badges)
+  //  - Kopfzeilen, die die Seite selbst mitschickt, werden für eigene Abfragen übernommen
+  //    (nur im Arbeitsspeicher, nie gespeichert oder exportiert)
+  // =====================================================================================
+  const origFetch = W.fetch.bind(W);
+  const XO = W.XMLHttpRequest && W.XMLHttpRequest.prototype;
+  const xOpen = XO && XO.open, xSend = XO && XO.send, xSet = XO && XO.setRequestHeader;
+  const descRT = XO && Object.getOwnPropertyDescriptor(XO, 'responseText');
+  const descR = XO && Object.getOwnPropertyDescriptor(XO, 'response');
+  let mirror = null;              // Kopfzeilen der Seite (ohne Cookie/Länge)
+  const SKIP_HEADERS = /^(content-length|cookie|host|content-type)$/i;
+
+  function captureHeaders(h) {
+    if (!h) return;
+    const out = {};
+    try {
+      if (typeof h.forEach === 'function' && !Array.isArray(h)) h.forEach((v, k) => { out[k] = v; });
+      else if (Array.isArray(h)) h.forEach(([k, v]) => { out[k] = v; });
+      else Object.assign(out, h);
+    } catch { return; }
+    const m = {};
+    for (const [k, v] of Object.entries(out)) if (!SKIP_HEADERS.test(k)) m[k] = String(v);
+    if (Object.keys(m).length || !mirror) mirror = m;
+  }
+
+  // ---------- Beobachter für Antworten der Seite ----------
+  const RespHooks = [];   // { re, onData(data, info), rewrite(data, info) → neue Daten oder null }
+  function onApi(re, onData, rewrite) { RespHooks.push({ re, onData, rewrite }); }
+
+  function parseBody(b) {
+    if (b == null) return null;
+    if (typeof b === 'string') { try { return JSON.parse(b); } catch { try { return Object.fromEntries(new URLSearchParams(b)); } catch { return b; } } }
+    if (b instanceof W.URLSearchParams) return Object.fromEntries(b);
+    if (b instanceof W.FormData) { const o = {}; b.forEach((v, k) => { o[k] = typeof v === 'string' ? v : '[Datei]'; }); return o; }
+    return null;
+  }
+  function handleResponse(method, url, reqBody, text) {
+    let u;
+    try { u = new URL(url, location.origin); } catch { return null; }
+    const path = u.pathname.replace(/^\/v2-api\//, '');
+    const info = { method: String(method || 'GET').toUpperCase(), path, query: Object.fromEntries(u.searchParams), body: parseBody(reqBody), page: location.pathname };
+    let json;
+    try { json = JSON.parse(text); } catch { return null; }
+    try { Recorder.add(info, json); } catch (e) { warn('Rekorder', e); }
+    if (!json || json.code !== 0) return null;
+    let data = json.data, changed = false;
+    for (const h of RespHooks) {
+      if (!h.re.test(path)) continue;
+      if (h.onData) { try { const r = h.onData(data, info); if (r && r.catch) r.catch((e) => warn('Hook', path, e)); } catch (e) { warn('Hook', path, e); } }
+      if (h.rewrite) { try { const nd = h.rewrite(data, info); if (nd) { data = nd; changed = true; } } catch (e) { warn('Umschreiben', path, e); } }
+    }
+    return changed ? JSON.stringify({ ...json, data }) : null;
+  }
+
+  // fetch der Seite
+  W.fetch = async function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (!/\/v2-api\//.test(url)) return origFetch(input, init);
+    let method = (init && init.method) || (input && input.method) || 'GET';
+    let body = init && init.body;
+    try { captureHeaders((init && init.headers) || (input && input.headers)); } catch {}
+    if (body == null && input && typeof input.clone === 'function' && method !== 'GET') { try { body = await input.clone().text(); } catch {} }
+    const res = await origFetch(input, init);
+    try {
+      const ct = res.headers.get('content-type') || '';
+      if (!/json/i.test(ct)) return res;
+      const text = await res.clone().text();
+      const nt = handleResponse(method, url, body, text);
+      if (nt != null) return new Response(nt, { status: res.status, statusText: res.statusText, headers: res.headers });
+    } catch (e) { warn('fetch-Beobachter', e); }
+    return res;
+  };
+
+  // XMLHttpRequest der Seite
+  if (XO) {
+    XO.open = function (m, u) { this.__vaf = { m, u: String(u), h: {} }; return xOpen.apply(this, arguments); };
+    XO.setRequestHeader = function (k, v) { if (this.__vaf) this.__vaf.h[k] = v; return xSet.apply(this, arguments); };
+    XO.send = function (body) {
+      const inf = this.__vaf;
+      if (inf && /\/v2-api\//.test(inf.u)) {
+        captureHeaders(inf.h);
+        const xhr = this;
+        let done = false, rewritten = null;
+        const ensure = () => {
+          if (done || xhr.readyState !== 4) return;
+          done = true;
+          try {
+            const rt = descRT.get.call(xhr);
+            rewritten = handleResponse(inf.m, inf.u, body, rt);
+          } catch { rewritten = null; }
+        };
+        try {
+          Object.defineProperty(xhr, 'responseText', { configurable: true, get() { ensure(); return rewritten != null ? rewritten : descRT.get.call(xhr); } });
+          Object.defineProperty(xhr, 'response', { configurable: true, get() {
+            ensure();
+            if (rewritten == null) return descR.get.call(xhr);
+            return xhr.responseType === 'json' ? JSON.parse(rewritten) : rewritten;
+          } });
+        } catch {}
+        xhr.addEventListener('readystatechange', ensure);
+      }
+      return xSend.apply(this, arguments);
+    };
+  }
+
+  // ---------- eigene Abfragen ----------
+  class ApiError extends Error { constructor(msg, code, status) { super(msg); this.code = code; this.status = status; } }
+  let apiCount = 0;
+  async function api(path, { method = 'GET', query = null, body = null } = {}) {
+    const qs = query ? '?' + new URLSearchParams(Object.entries(query).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString() : '';
+    const url = location.origin + '/v2-api/' + path + qs;
+    const attempt = async () => {
+      const headers = { Accept: 'application/json, text/plain, */*', ...(mirror || {}) };
+      if (body != null) headers['Content-Type'] = 'application/json';
+      const res = await origFetch(url, { method, credentials: 'include', headers, body: body != null ? JSON.stringify(body) : undefined });
+      apiCount++;
+      let j = null;
+      try { j = await res.json(); } catch { throw new ApiError(`Antwort ist kein JSON (HTTP ${res.status})`, -1, res.status); }
+      if (!res.ok && (!j || j.code === undefined)) throw new ApiError(`HTTP ${res.status}`, -1, res.status);
+      if (!j || j.code !== 0) throw new ApiError((j && (j.msg || j.message || j.error)) || `Fehlercode ${j && j.code}`, j && j.code, res.status);
+      return j.data;
+    };
+    try { return await attempt(); }
+    catch (e) {
+      // Noch keine Kopfzeilen der Seite gesehen? Kurz warten und einmal wiederholen
+      if (!mirror && (e.status === 401 || e.status === 403 || e.code === -1)) {
+        await waitFor(() => mirror, 8000);
+        return attempt();
+      }
+      throw e;
+    }
+  }
+  const apiGet = (path, query) => api(path, { method: 'GET', query });
+  const apiPost = (path, body, query) => api(path, { method: 'POST', body, query });
+
+  // ---------- API-Rekorder ----------
+  // Schneidet Abfragen der Seite mit (nur neue Muster, je 2 Beispiele, Listen gekürzt, Sensibles geschwärzt).
+  const KNOWN_API = ['v2/ignore/list', 'ignore/uid/list', 'ignore/add', 'ignore/delete', 'ignore/comment/add', 'user/search', 'rates',
+    'my/received/gift', 'group/my', 'group/attendee/list', 'messenger/group/list', 'messenger/p2p/profile/display', 'user/session/info',
+    'wio/state', 'messenger/message/list', 'messenger/backend/settings', 'v2/comment/list'];
+  const API_HINTS = [
+    [/^\/connection\/visitors/, '#1 Profilbesucher'], [/^\/groups\/\d+\/requests/, '#2/#3 Gruppenanfragen'],
+    [/^\/p\//, '#4/#8/#11 Profil'], [/^\/setting\/profile/, '#5 Zweitwohnsitz'], [/^\/search\/member/, '#10 Suchseite'],
+  ];
+  const REDACT_KEYS = /(e-?mail|pass(word|wd)?|token|secret|session_?id|auth|dino_client|cookie|phone|telefon|mobile)/i;
+  const TEXT_KEYS = /^(content|description|text|message|body_text|about|desc)$/i;
+  function redact(v, key = '', depth = 0) {
+    if (depth > 12) return '…';
+    if (key && REDACT_KEYS.test(key)) return '«entfernt»';
+    if (key && TEXT_KEYS.test(key) && typeof v === 'string') return v ? '«entfernt»' : '';
+    if (key && /^(geo_location|location)$/i.test(key) && v && typeof v === 'object' && !Array.isArray(v)) return { city: v.city || '' };
+    if (key && /^(lat|lon|latitude|longitude|zipcode)$/i.test(key)) return '«entfernt»';
+    if (Array.isArray(v)) {
+      const head = v.slice(0, 2).map((x) => redact(x, '', depth + 1));
+      if (v.length > 2) head.push(`… ${v.length - 2} weitere`);
+      return head;
+    }
+    if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = redact(x, k, depth + 1); return o; }
+    if (typeof v === 'string') {
+      const t = v.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '«E-Mail»');
+      if (/^https?:\/\//i.test(t) || /^\/\w/.test(t)) return t;
+      return t.replace(/(?<![\w-])(\+?\d[\d\s/()-]{7,}\d)(?![\w-])/g, '«Telefon»');
+    }
+    return v;
+  }
+  const shapeOf = (o) => (o && typeof o === 'object' && !Array.isArray(o) ? Object.keys(o).sort().join(',') : typeof o);
+  const Recorder = (() => {
+    let data = null, saveT = null, loading = null;
+    const load = async () => { if (data) return data; if (!loading) loading = KV.get('recorder', {}).then((d) => (data = d || {})); return loading; };
+    return {
+      add(info, json) {
+        if (!S().expert.recorder) return;
+        load().then(() => {
+          const key = `${info.method} ${info.path} ?${shapeOf(info.query)} ${shapeOf(info.body)}`;
+          const e = data[key] || (data[key] = { method: info.method, path: info.path, known: KNOWN_API.includes(info.path), first: now(), n: 0, examples: [], pages: [] });
+          e.n++; e.last = now();
+          if (!e.pages.includes(info.page) && e.pages.length < 10) e.pages.push(info.page);
+          if (e.examples.length < 2) e.examples.push({ page: info.page, query: redact(info.query), body: redact(info.body), response: redact(json) });
+          const hint = API_HINTS.find(([re]) => re.test(info.page));
+          if (hint && !e.known) e.hint = 'Kandidat für ' + hint[1];
+          clearTimeout(saveT); saveT = setTimeout(() => KV.set('recorder', data), 1500);
+          Bus.emit('recorder');
+        });
+      },
+      async stats() { await load(); const v = Object.values(data); return { total: v.length, fresh: v.filter((x) => !x.known).length }; },
+      async export() { await load(); return { version: VERSION, at: new Date().toISOString(), entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
+      async clear() { data = {}; await KV.set('recorder', {}); Bus.emit('recorder'); },
+    };
+  })();
+
+  // =====================================================================================
+  // Regelwerk: Gruppen, Altersgrenzen je Quelle, Paare, Whitelist, Bezeichnungen, Notizen
+  // =====================================================================================
+  const GROUP_KEYS = ['m', 'w', 'p'];
+  const GROUP_NAMES = { m: 'Männer', w: 'Frauen', p: 'Paare' };
+  const TYPE_NAMES = { m: 'Mann', w: 'Frau', p: 'Paar', ts: 'Trans', tv: 'Nicht-binär' };
+
+  // poppen-Typcode eines Mitglieds: m, w, p (zwei Personen), ts, tv
+  function typeCode(g) {
+    if (!g || !g.length) return '';
+    if (g.length > 1 || g[0] === 'p') return 'p';
+    return g[0];
+  }
+  function groupOf(g, s = S()) {
+    const t = typeCode(g);
+    if (!t) return null;
+    return GROUP_KEYS.find((k) => (s.groups[k].types || []).includes(t)) || null;
+  }
+
+  // ---------- eigenes Profil, Region ----------
+  // Ruhrgebiet (Regionalverband Ruhr): kreisfreie Städte und Kreise
+  const RUHR = ['bochum', 'bottrop', 'dortmund', 'duisburg', 'essen', 'gelsenkirchen', 'hagen', 'hamm', 'herne', 'mülheim an der ruhr', 'mülheim',
+    'oberhausen', 'castrop-rauxel', 'datteln', 'dorsten', 'gladbeck', 'haltern am see', 'herten', 'marl', 'oer-erkenschwick', 'recklinghausen', 'waltrop',
+    'bergkamen', 'bönen', 'fröndenberg', 'holzwickede', 'kamen', 'lünen', 'schwerte', 'selm', 'unna', 'werne', 'breckerfeld', 'ennepetal', 'gevelsberg',
+    'hattingen', 'herdecke', 'schwelm', 'sprockhövel', 'wetter', 'witten', 'alpen', 'dinslaken', 'hamminkeln', 'hünxe', 'kamp-lintfort', 'moers',
+    'neukirchen-vluyn', 'rheinberg', 'schermbeck', 'sonsbeck', 'voerde', 'wesel', 'xanten'];
+  const RHEINLAND = ['aachen', 'herzogenrath', 'alsdorf', 'würselen', 'stolberg', 'eschweiler', 'baesweiler', 'monschau', 'roetgen', 'simmerath',
+    'köln', 'bonn', 'düsseldorf', 'neuss', 'mönchengladbach', 'krefeld', 'leverkusen', 'solingen', 'remscheid', 'wuppertal', 'düren', 'euskirchen',
+    'heinsberg', 'viersen', 'kleve', 'bergheim', 'frechen', 'hürth', 'kerpen', 'pulheim', 'siegburg', 'troisdorf', 'jülich', 'geilenkirchen', 'erkelenz',
+    'hückelhoven', 'übach-palenberg', 'grevenbroich', 'ratingen', 'mettmann', 'langenfeld (rheinland)', 'langenfeld', 'hilden', 'velbert'];
+  // Gebiete mit Sonderregeln (das Rheinland ist angelegt, hat aber noch keine Sonderregeln)
+  const REGIONS = { ruhr: { cities: RUHR, special: true }, rheinland: { cities: RHEINLAND, special: false } };
+  function regionOf(city) {
+    const c = norm(city).replace(/\s*\(.*\)$/, '');
+    for (const [k, r] of Object.entries(REGIONS)) if (r.cities.includes(c) || r.cities.includes(norm(city))) return k;
+    return '';
+  }
+  // eigenes Profil: { uid, nick, g, cities: [Hauptwohnsitz, Zweitwohnsitz] }
+  const Me = {
+    get: () => G.get('me', null),
+    set: (m) => { G.set('me', m); Bus.emit('me', m); },
+    uid: () => (G.get('me', null) || {}).uid || '',
+    region() {
+      const me = Me.get();
+      const special = ((me && me.cities) || []).map(regionOf).filter((r) => r && REGIONS[r].special);
+      return special[0] || '';      // genau eines oder mehrere → das zuerst genannte
+    },
+    male() { const me = Me.get(); return !!me && typeCode(me.g) === 'm'; },
+  };
+  // „Opa“ / „Oma“ / „Oppa“ / „Omma“
+  function word() {
+    const ruhr = Me.region() === 'ruhr';
+    if (Me.male()) return ruhr ? 'Omma' : 'Oma';
+    return ruhr ? 'Oppa' : 'Opa';
+  }
+  const wordPl = () => word() + 's';
+  const REGIONAL = { Opa: 'Oppa', Opas: 'Oppas', Oma: 'Omma', Omas: 'Ommas' };
+  function labelsOf(gk, s = S()) {
+    const l = [...(s.groups[gk].labels || DEFAULTS.groups[gk].labels)];
+    if (Me.region() === 'ruhr') for (const i of [4, 5]) if (REGIONAL[l[i]]) l[i] = REGIONAL[l[i]];
+    return l;
+  }
+
+  // ---------- Altersgrenzen ----------
+  // je Quelle [Stufe 1 bis, Stufe 2 bis, Ignorieren ab]
+  function limitsOf(gk, src, person = -1, s = S()) {
+    const grp = s.groups[gk];
+    const key = SRC_KEYS.includes(src) ? src : 'suche';
+    if (gk === 'p' && grp.separate && person >= 0) return (person === 0 ? grp.srcW : grp.srcM)[key];
+    return grp.src[key];
+  }
+  const srcKeyOf = (src) => (SRC_KEYS.includes(src) ? src : (NOTE_SOURCES[src] || 'suche'));
+
+  // ---------- Whitelist ----------
+  function manualWhite(nick, s = S()) {
+    const n = norm(nick);
+    if (!n) return '';
+    if ((s.whitelist.names || []).some((x) => norm(x.n) === n)) return 'Whitelist';
+    if ((s.whitelist.prefixes || []).some((p) => p && n.startsWith(norm(p)))) return 'Whitelist (Präfix)';
+    return '';
+  }
+  // automatische Whitelist: Mitarbeiter, Freunde, verwaltete Gruppen (mit Schonfrist)
+  function autoWhite(m, s = S()) {
+    if (!m) return '';
+    if (m.pay === 'site_admin') return 'poppen-Mitarbeiter';
+    const a = m.auto || {};
+    if (a.friend) return 'Freund';
+    const grp = Object.entries(a.grp || {}).filter(([cms]) => s.managedWhitelist[cms] !== false);
+    if (grp.length) {
+      const grace = s.expert.groupGraceDays * DAY;
+      const live = grp.filter(([, ts]) => now() - ts < grace);
+      if (live.length) {
+        const names = G.get('groupnames', {});
+        return 'Mitglied in ' + live.map(([c]) => names[c] || ('Gruppe ' + c)).join(', ');
+      }
+    }
+    return '';
+  }
+  const whiteReason = (m, nick) => manualWhite(nick || (m && m.nick)) || autoWhite(m);
+
+  // ---------- Einstufung ----------
+  // x = { uid, nick, g, ages, pay, auto } (Mitglied oder Treffer), src = Quelle
+  // Ergebnis: { gk, stage 0–3, ignore, near, white, unclear, sugar, label }
+  function classify(x, src, s = S()) {
+    const r = { gk: null, stage: 0, ignore: false, near: false, white: '', unclear: false, sugar: '', label: '', reason: '' };
+    const ages = (x.ages || []).filter((a) => a > 0);
+    r.gk = groupOf(x.g, s);
+    r.white = whiteReason(x, x.nick);
+    if (ages.some((a) => a >= 99)) { r.unclear = true; r.reason = 'Alter 99 (unklar)'; return r; }
+    if (!ages.length || !r.gk) return r;
+    const grp = s.groups[r.gk];
+    const sk = srcKeyOf(src);
+    const mode = r.gk === 'p' ? grp.coupleMode : 'any';
+    const per = ages.map((a, i) => {
+      const lim = limitsOf(r.gk, sk, ages.length > 1 ? i : -1, s);
+      const stage = a <= lim[0] ? 1 : a <= lim[1] ? 2 : 3;
+      return { a, lim, stage, over: a >= lim[2], near: a < lim[2] && a + (s.warnYears || 0) >= lim[2] };
+    });
+    const pick = (f) => (mode === 'all' ? per.every(f) : per.some(f));
+    r.stage = mode === 'all' ? Math.min(...per.map((p) => p.stage)) : Math.max(...per.map((p) => p.stage));
+    const over = pick((p) => p.over);
+    r.near = !over && pick((p) => p.over || p.near) && s.watch;
+    // Sugar Daddy / Sugar Mom (nur Paare: [Frau, Mann])
+    if (r.gk === 'p' && ages.length === 2 && x.g && x.g.length === 2) {
+      const iw = x.g.indexOf('w'), im = x.g.indexOf('m');
+      if (iw >= 0 && im >= 0) {
+        const gap = ages[im] - ages[iw];
+        if (grp.sugarDaddy.on && gap >= grp.sugarDaddy.gap) r.sugar = 'Sugar Daddy';
+        else if (grp.sugarMom.on && -gap >= grp.sugarMom.gap) r.sugar = 'Sugar Mom';
+      }
+    }
+    const lbl = labelsOf(r.gk, s);
+    r.label = r.sugar || lbl[(Math.max(1, r.stage) - 1) * 2];
+    r.ignore = !!grp.ignore && (over || !!r.sugar) && !r.white;
+    if (r.ignore) r.reason = r.sugar ? r.sugar : `über der Grenze (${per.map((p) => p.a).join('/')} ≥ ${per.map((p) => p.lim[2]).join('/')})`;
+    if (r.white) { r.near = false; r.reason = r.white; }
+    return r;
+  }
+  // Bezeichnung für Notizen: Stufe-3-Bezeichnung der Gruppe (bzw. Sugar Daddy/Mom)
+  function noteWord(x, s = S()) {
+    const gk = groupOf(x.g, s) || 'm';
+    const c = classify(x, 'suche', s);
+    return c.sugar || labelsOf(gk, s)[4];
+  }
+
+  // ---------- Notizen ----------
+  function makeNote(x, src, when = new Date(), s = S()) {
+    const pad = (n) => String(n).padStart(2, '0');
+    let t = s.expert.noteText;
+    t = src ? t.replace('{quelle}', src) : t.replace(/\s*\(\{quelle\}\)|\s*\{quelle\}/, '');
+    return t.replace('{bezeichnung}', noteWord(x, s)).replace('{datum}', `${pad(when.getDate())}.${pad(when.getMonth() + 1)}.${when.getFullYear()}`)
+      .replace('{uhrzeit}', `${pad(when.getHours())}:${pad(when.getMinutes())}`);
+  }
+  // Erkennt Opa-Schutz-Notizen (auch ältere: „Alter Sack (Suche) geblockt am …“)
+  const NOTE_RE = /^(.{1,40}?)(?:\s+\(([^)]{1,30})\))?\s+geblockt am\s+(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+um\s+(\d{1,2}):(\d{2}))?/i;
+  function parseNote(note) {
+    const m = NOTE_RE.exec(String(note || '').trim());
+    if (!m) return null;
+    const at = new Date(+m[5], +m[4] - 1, +m[3], +(m[6] || 0), +(m[7] || 0)).getTime();
+    return { word: m[1], src: m[2] || '', at };
+  }
+  const isOpaNote = (note) => !!parseNote(note);
+
+  // ---------- Geburtszeiträume ----------
+  function birthRange(age, when = new Date()) {
+    const hi = new Date(when.getFullYear() - age, when.getMonth(), when.getDate());
+    const lo = new Date(when.getFullYear() - age - 1, when.getMonth(), when.getDate() + 1);
+    return { lo: isoDay(lo), hi: isoDay(hi) };
+  }
+  const intersect = (a, b) => { if (!a) return b; if (!b) return a; const lo = a.lo > b.lo ? a.lo : b.lo; const hi = a.hi < b.hi ? a.hi : b.hi; return lo <= hi ? { lo, hi } : null; };
+  const yearRange = (y) => ({ lo: `${y}-01-01`, hi: `${y}-12-31` });
+  // Sternzeichen (Beginn MM-DD)
+  const ZODIAC = [['Steinbock', '12-22'], ['Wassermann', '01-20'], ['Fische', '02-19'], ['Widder', '03-21'], ['Stier', '04-20'], ['Zwillinge', '05-21'],
+    ['Krebs', '06-21'], ['Löwe', '07-23'], ['Jungfrau', '08-23'], ['Waage', '09-23'], ['Skorpion', '10-23'], ['Schütze', '11-22']];
+  function zodiacRanges(sign, y1, y2) {
+    const i = ZODIAC.findIndex(([n]) => norm(n) === norm(sign));
+    if (i < 0) return [];
+    const start = ZODIAC[i][1], end = ZODIAC[(i + 1) % 12][1];
+    const out = [];
+    for (let y = y1 - 1; y <= y2; y++) {
+      const s0 = `${y}-${start}`;
+      const ey = end < start ? y + 1 : y;
+      const e = new Date(`${ey}-${end}T00:00:00`); e.setDate(e.getDate() - 1);
+      out.push({ lo: s0, hi: isoDay(e) });
+    }
+    return out;
+  }
+  function applyZodiac(range, sign) {
+    if (!range) return range;
+    const hits = zodiacRanges(sign, +range.lo.slice(0, 4), +range.hi.slice(0, 4)).map((z) => intersect(range, z)).filter(Boolean);
+    return hits.length === 1 ? hits[0] : hits.length ? { lo: hits[0].lo, hi: hits[hits.length - 1].hi } : range;
+  }
+  function yearText(p) { if (!p) return ''; const y1 = +p.lo.slice(0, 4), y2 = +p.hi.slice(0, 4); return y1 === y2 ? String(y1) : `${y1}/${String(y2).slice(-2)}`; }
+  function ageToday(p, today = new Date()) {
+    if (!p) return null;
+    const [y, m, d] = p.hi.split('-').map(Number);
+    let a = today.getFullYear() - y; if (today < new Date(today.getFullYear(), m - 1, d)) a--;
+    return a;
+  }
+
+  // =====================================================================================
+  // Mitglieder-Wissen: aus jeder Quelle nebenbei merken
+  // =====================================================================================
+  const IMG_SOURCES = new Set(['Likes', 'Sticker', 'Nachrichten', 'Besucher', 'Profil', 'Gruppenanfrage']);
+
+  // Ein Benutzerobjekt der Schnittstelle vereinheitlichen
+  function normUser(u) {
+    if (!u) return null;
+    const uid = String(u.uid || u.user_id || u.id || '');
+    if (!uid || uid === '0') return null;
+    const g = Array.isArray(u.gender) ? u.gender.filter(Boolean) : u.gender_string ? (u.gender_string === 'p' ? ['w', 'm'] : [u.gender_string]) : [];
+    return {
+      uid, nick: u.nickname || u.name || '', g,
+      ages: Array.isArray(u.age) ? u.age.map(Number).filter((a) => a > 0) : u.age ? [Number(u.age)] : [],
+      by: Array.isArray(u.birthday) ? u.birthday.map((b) => (b && /^\d{4}/.test(b) ? +b.slice(0, 4) : 0)) : [],
+      avatar: u.avatar || '', pay: u.payclass || u.membership || '',
+      city: (u.geo_location && u.geo_location.city) || (u.location && u.location.city) || '',
+      note: typeof u.note === 'string' ? u.note : undefined,
+      active: u.is_active, lastLogin: u.last_visible_login || 0, fake: u.fakecheck,
+    };
+  }
+
+  // Gesehenes Mitglied verbuchen. src = „Likes“, „Sticker“, „Nachrichten“, „Besucher“, „Gruppen“, „Suche“, „Profil“, „Blockierliste“ …
+  async function seen(u, src, { images = true } = {}) {
+    const x = u && u.uid && u.g ? u : normUser(u);
+    if (!x) return null;
+    const today = new Date();
+    const m = await Members.update(x.uid, (m) => {
+      if (x.nick && m.nick && m.nick !== x.nick) { m.nicks = uniq([...(m.nicks || []), m.nick]).slice(-10); }
+      if (x.nick) m.nick = x.nick;
+      if (x.g && x.g.length) m.g = x.g;
+      if (x.ages && x.ages.length) {
+        // Geburtszeiträume eingrenzen (Paare: gleiche Reihenfolge, sonst neu)
+        const fresh = x.ages.map((a) => birthRange(a, today));
+        const old = m.birth || [];
+        let birth = fresh.map((f, i) => (old.length === fresh.length ? intersect(old[i], f) : f) || f);
+        (x.by || []).forEach((y, i) => { if (y > 1900 && birth[i]) birth[i] = intersect(birth[i], yearRange(y)) || birth[i]; });
+        m.birth = birth;
+        m.ages = x.ages; m.ageAt = isoDay(today);
+        if (x.by && x.by.some(Boolean)) m.by = x.by;
+      }
+      if (x.avatar && !isPlaceholderAvatar(x.avatar)) { if (m.avatar !== x.avatar) m.avatarNew = true; m.avatar = x.avatar; }
+      if (x.pay) {
+        m.pay = x.pay;
+        m.auto = m.auto || {};
+        if (x.pay === 'site_admin') m.auto.admin = now(); else delete m.auto.admin;
+      }
+      if (x.city) m.city = x.city;
+      if (x.note !== undefined) {
+        const pn = parseNote(x.note);
+        if (pn && (!m.blk || !m.blk.opa)) m.blk = { at: pn.at, src: pn.src, note: x.note, opa: true };
+      }
+      if (x.lastLogin) m.lastLogin = x.lastLogin;
+      if (m.del && src !== 'Blockierliste') delete m.del;
+      m.last = now();
+      m.seen = m.seen || {};
+      if (src) m.seen[src] = now();
+    });
+    if (legacy && !m.legacyDone) { await legacyApply(m); m.legacyDone = 1; Members.put(m); }
+    if ((x.ages || []).some((a) => a >= 99)) log99(x.uid, x.nick);
+    if (images && IMG_SOURCES.has(src) && m.avatar && (m.avatarNew || !m.img)) Images.want(m.uid, m.avatar);
+    return m;
+  }
+  async function seenMany(list, src, opts) { const out = []; for (const u of list || []) { const m = await seen(u, src, opts); if (m) out.push(m); } return out; }
+
+  // ---------- Alter 99: mitloggen ----------
+  async function log99(uid, nick) {
+    const l = await KV.get('log99', {});
+    if (l[uid]) return;
+    l[uid] = { nick, at: now() };
+    await KV.set('log99', l);
+  }
+
+  // ---------- Profilbilder als kleine Kopie ----------
+  // Die Bildadressen von poppen.de sind nur begrenzt gültig – deshalb eine eigene, kleine Kopie (~150 px).
+  const Images = (() => {
+    const want = new Map();
+    let busy = false;
+    async function load(url) {
+      const u300 = url.replace(/_(\d+)(_sq)?(\.jpe?g)/i, '_300_sq$3');
+      let blob = await new Promise((resolve) => {
+        try {
+          GM_xmlhttpRequest({ method: 'GET', url: u300, responseType: 'blob', timeout: 20000,
+            onload: (r) => resolve(r.status === 200 && r.response ? r.response : null), onerror: () => resolve(null), ontimeout: () => resolve(null) });
+        } catch { resolve(null); }
+      });
+      if (!blob) {
+        // Rückfall: Bild über ein <img>-Element (klappt nur, wenn der Bildserver es erlaubt)
+        blob = await new Promise((resolve) => {
+          const im = new Image(); im.crossOrigin = 'anonymous';
+          im.onload = () => { try { const c = document.createElement('canvas'); c.width = im.naturalWidth; c.height = im.naturalHeight; c.getContext('2d').drawImage(im, 0, 0); c.toBlob(resolve, 'image/jpeg', 0.8); } catch { resolve(null); } };
+          im.onerror = () => resolve(null);
+          im.src = url;
+        });
+      }
+      if (!blob) return null;
+      const bmp = await createImageBitmap(blob);
+      const size = 150, c = document.createElement('canvas');
+      const sc = Math.max(size / bmp.width, size / bmp.height);
+      c.width = size; c.height = size;
+      c.getContext('2d').drawImage(bmp, (size - bmp.width * sc) / 2, (size - bmp.height * sc) / 2, bmp.width * sc, bmp.height * sc);
+      return c.toDataURL('image/jpeg', 0.72);
+    }
+    async function pump() {
+      if (busy) return;
+      busy = true;
+      try {
+        while (want.size) {
+          const [uid, url] = want.entries().next().value;
+          want.delete(uid);
+          try {
+            const data = await load(url);
+            if (data) {
+              await DB.put('images', { uid, data, src: url, at: now() });
+              await Members.update(uid, (m) => { m.img = now(); delete m.avatarNew; });
+            }
+          } catch (e) { /* Bild nicht ladbar – beim nächsten Mal erneut */ }
+          await sleep(300);
+        }
+      } finally { busy = false; }
+    }
+    return {
+      want(uid, url) { want.set(String(uid), url); setTimeout(pump, 1500); },
+      async get(uid) { const r = await DB.get('images', String(uid)); return r ? r.data : ''; },
+    };
+  })();
+
+  // ---------- eigenes Profil ----------
+  // Aus session/info werden NUR uid, Nickname, Geschlecht und Wohnort gelesen.
+  async function loadMe(force = false) {
+    const me = Me.get();
+    if (me && !force && now() - (me.at || 0) < 6 * 3600000) return me;
+    try {
+      const d = await apiGet('user/session/info', { _version: 2 });
+      const a = d && d.account;
+      if (!a) return me;
+      const nm = { uid: String(a.uid), nick: a.nickname, g: a.gender || [], cities: [(a.geo_location && a.geo_location.city) || ''], second: !!a.secondary_location_status, at: now() };
+      if (me && me.cities && me.cities[1]) nm.cities[1] = me.cities[1];
+      if (a.geo_location && a.geo_location.geo_id) { const { distance, distance_unit, ...geo } = a.geo_location; G.set('mygeo', geo); }
+      Me.set(nm);
+      return nm;
+    } catch (e) { warn('Eigenes Profil nicht lesbar', e); return me; }
+  }
+  // Zweitwohnsitz: aus der Einstellungsseite (Zeile „Zweitwohnsitz“), höchstens einmal täglich
+  async function loadSecondHome() {
+    const me = Me.get();
+    if (!me || !me.second) return;
+    if (now() - (G.get('second_at', 0)) < DAY) return;
+    G.set('second_at', now());
+    const doc = await Frame.load('/setting/profile', (d) => d.querySelector('a[href="/setting/profile/second-home"]'), 20000);
+    if (!doc) return;
+    const a = doc.querySelector('a[href="/setting/profile/second-home"] .ant-list-item-meta-description');
+    const city = a ? a.textContent.split(',')[0].trim() : '';
+    const m2 = Me.get();
+    m2.cities = [m2.cities[0] || '', city];
+    Me.set(m2);
+  }
+  // Eigenes Profil auf der Einstellungsseite direkt mitlesen (wenn der Nutzer sie öffnet)
+  function readSecondHomeFromPage() {
+    const a = document.querySelector('a[href="/setting/profile/second-home"] .ant-list-item-meta-description');
+    const me = Me.get();
+    if (!a || !me) return;
+    const city = a.textContent.split(',')[0].trim();
+    if (city && city !== me.cities[1]) { me.cities = [me.cities[0] || '', city]; Me.set(me); }
+  }
+
+  // ---------- unsichtbarer Rahmen zum Laden von poppen-Seiten ----------
+  const Frame = (() => {
+    let f = null;
+    function el() {
+      if (f && f.isConnected) return f;
+      f = document.createElement('iframe');
+      f.setAttribute('aria-hidden', 'true');
+      f.style.cssText = 'position:fixed;left:-20000px;top:0;width:1280px;height:1000px;border:0;visibility:hidden;pointer-events:none';
+      document.body.appendChild(f);
+      return f;
+    }
+    return {
+      async load(url, ready, timeout = 25000) {
+        const fr = el();
+        await new Promise((res) => { const h = () => { fr.removeEventListener('load', h); res(); }; fr.addEventListener('load', h); fr.src = url; setTimeout(res, timeout); });
+        const doc = () => { try { return fr.contentDocument; } catch { return null; } };
+        return waitFor(() => { const d = doc(); return d && (!ready || ready(d)) ? d : null; }, timeout);
+      },
+      doc() { try { return f && f.contentDocument; } catch { return null; } },
+      remove() { if (f) { f.remove(); f = null; } },
+    };
+  })();
+
+  // =====================================================================================
+  // Blocken: Warteliste, Etappen, Vorprüfungen
+  // =====================================================================================
+  const RANK = () => S().expert.rank;
+  const rankOf = (src) => { const i = RANK().indexOf(srcKeyOf(src)); return i < 0 ? 9 : i; };
+
+  const Queue = {
+    async add(x, src) {
+      const m = x.uid ? await Members.get(x.uid) : null;
+      if (m && m.blk && m.blk.at && !m.unblk) return false;
+      const old = x.uid ? await DB.get('queue', String(x.uid)) : null;
+      const oldest = Math.max(...(x.ages || [0]));
+      const item = {
+        uid: String(x.uid || ('nick:' + norm(x.nick))), nick: x.nick || (m && m.nick) || '', g: x.g || (m && m.g) || [], ages: x.ages || (m && m.ages) || [],
+        src: old && rankOf(old.src) <= rankOf(src) ? old.src : src, added: (old && old.added) || now(), tries: (old && old.tries) || 0,
+      };
+      item.prio = rankOf(item.src) * 1000 + (200 - oldest);
+      await DB.put('queue', item);
+      Queue.changed();
+      return !old;
+    },
+    async remove(uid) { await DB.del('queue', String(uid)); Queue.changed(); },
+    async list() { const l = await DB.all('queue'); l.sort((a, b) => a.prio - b.prio || a.added - b.added); return l; },
+    async count() { return DB.count('queue'); },
+    async clear() { await DB.clear('queue'); Queue.changed(); },
+    changed: (() => { let t; return () => { clearTimeout(t); t = setTimeout(async () => { G.set('qcount', await DB.count('queue')); Bus.emit('queue'); }, 300); }; })(),
+  };
+
+  // ---------- Vormerken: knapp unter der Grenze ----------
+  async function watchMark(m, on) {
+    const w = await KV.get('watch', {});
+    if (on && !w[m.uid]) { w[m.uid] = now(); await KV.set('watch', w); }
+    if (!on && w[m.uid]) { delete w[m.uid]; await KV.set('watch', w); }
+  }
+  // Vorgemerkte, die laut Geburtszeitraum inzwischen sicher über der Grenze sind → Warteliste
+  async function watchDue() {
+    const w = await KV.get('watch', {});
+    let n = 0;
+    for (const uid of Object.keys(w)) {
+      const m = await Members.get(uid);
+      if (!m || !m.birth || !m.birth.length) continue;
+      if (m.blk && !m.unblk) { delete w[uid]; continue; }
+      const ages = m.birth.map((b) => ageToday(b));
+      const c = classify({ ...m, ages }, 'Vorgemerkt');
+      if (c.white || c.unclear) { delete w[uid]; continue; }
+      if (c.ignore) { await Queue.add({ ...m, ages }, 'Vorgemerkt'); delete w[uid]; n++; }
+    }
+    await KV.set('watch', w);
+    return n;
+  }
+
+  // Treffer einer Quelle verarbeiten: einstufen, vormerken, ggf. auf die Warteliste
+  // Ergebnis: { hits, white, near, unclear, queued }
+  async function judge(list, src, { enqueue = true } = {}) {
+    const res = { total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0 };
+    for (const x of list) {
+      res.total++;
+      const m = x.uid ? await Members.get(x.uid) : null;
+      const c = classify({ ...(m || {}), ...x }, src);
+      if (c.unclear) { res.unclear++; continue; }
+      if (c.white) { res.white++; continue; }
+      if (c.near && m) { res.near++; await watchMark(m, true); }
+      if (!c.ignore) continue;
+      res.hits++;
+      if (m && m.blk && !m.unblk) { res.known++; continue; }
+      if (enqueue && await Queue.add(x, src)) res.queued++;
+    }
+    return res;
+  }
+
+  // ---------- Schnittstellen der Blockierliste ----------
+  const BL = {
+    async page(page, nickname = '') { return apiPost('v2/ignore/list', { page, nickname, sort: 'recently_added' }); },
+    async uids() {
+      let d;
+      try { d = await apiGet('ignore/uid/list'); } catch { d = await apiPost('ignore/uid/list', {}); }
+      return ((d && d.list) || []).map(String);
+    },
+    // ganze Liste lesen (30 je Seite)
+    async all(onPage) {
+      const out = [];
+      let page = 1;
+      for (let guard = 0; guard < 100000; guard++) {
+        const d = await BL.page(page);
+        const l = (d && d.list) || [];
+        out.push(...l);
+        if (onPage && onPage(out.length, page, l) === false) break;
+        if (!l.length || !d.next_page || d.next_page === page) break;
+        page = d.next_page;
+      }
+      return out;
+    },
+    async find(nick) {
+      const d = await BL.page(1, nick);
+      return ((d && d.list) || []).find((e) => e.user && norm(e.user.nickname) === norm(nick)) || null;
+    },
+    add: (uid, nickname) => apiPost('ignore/add', { uid: String(uid), nickname }),
+    del: (uid, nickname) => apiPost('ignore/delete', { uid: String(uid), nickname }),
+    note: (uid, comment) => apiPost('ignore/comment/add', { igrid: String(uid), comment }),
+  };
+
+  // Profil-Kurzinfo (Alter, Notiz, Freundschaft) – ohne Profilaufruf
+  async function profileShort(nick) {
+    try { return await apiPost('messenger/p2p/profile/display', { nickname: nick }); } catch { return null; }
+  }
+
+  // Ein Mitglied blockieren (mit Notiz). Gibt 'ok' | 'bereits' | Fehlertext zurück
+  async function blockOne(m, src, { note = true } = {}) {
+    const s = S();
+    const when = new Date();
+    const text = makeNote(m, src, when);
+    if (dry()) { log('Testlauf – würde blockieren:', m.nick, src, text); return 'Test'; }
+    try { await BL.add(m.uid, m.nick); }
+    catch (e) {
+      const there = /already|bereits|schon/i.test(e.message) || await BL.find(m.nick).then(Boolean).catch(() => false);
+      if (!there) return 'Fehler: ' + e.message;
+    }
+    let noted = false;
+    if (note && s.expert.writeNote) {
+      try { await BL.note(m.uid, text); noted = true; }
+      catch (e) {
+        warn('Notiz fehlgeschlagen', m.nick, e);
+        if (s.expert.noteRequired) { try { await BL.del(m.uid, m.nick); } catch {} return 'Fehler: Notiz ließ sich nicht schreiben'; }
+      }
+    }
+    await Members.update(m.uid, (x) => { x.blk = { at: when.getTime(), src, note: noted ? text : '', opa: true }; delete x.unblk; });
+    G.set('blocked_count', (G.get('blocked_count', 0) || 0) + 1);
+    return 'ok';
+  }
+  async function unblockOne(m, { keepMemory = false } = {}) {
+    if (dry()) { log('Testlauf – würde entsperren:', m.nick); return 'Test'; }
+    try { await BL.del(m.uid, m.nick); } catch (e) { return 'Fehler: ' + e.message; }
+    if (!keepMemory) await Members.update(m.uid, (x) => { x.unblk = now(); x.blk = null; });
+    G.set('blocked_count', Math.max(0, (G.get('blocked_count', 0) || 0) - 1));
+    return 'ok';
+  }
+
+  // Ohne bekannte Benutzer-ID: über „Benutzer hinzufügen“ auf der Blockierliste (im unsichtbaren Rahmen)
+  async function blockByNickDom(nick) {
+    const doc = await Frame.load('/setting/privacy/ignore-list', (d) => d.querySelector('main input#nickname'), 25000);
+    if (!doc) return 'Fehler: Blockierliste nicht ladbar';
+    const w = doc.defaultView;
+    const inp = () => doc.querySelector('main input#nickname');
+    const setVal = (el, v) => {
+      el.focus();
+      Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value').set.call(el, v);
+      el.dispatchEvent(new w.Event('input', { bubbles: true }));
+      el.dispatchEvent(new w.Event('change', { bubbles: true }));
+    };
+    const l = norm(nick);
+    const opts = () => [...doc.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')];
+    const match = (o) => norm(o.getAttribute('title')) === l || norm(o.textContent) === l || norm(o.textContent).startsWith(l + ' ') ||
+      [...o.querySelectorAll('*')].some((e) => !e.children.length && norm(e.textContent) === l);
+    inp().dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+    setVal(inp(), '');
+    for (let i = 1; i <= nick.length; i++) { setVal(inp(), nick.slice(0, i)); await sleep(60); }
+    const opt = await waitFor(() => opts().find(match), 6000);
+    if (!opt) { setVal(inp(), ''); return 'Fehler: Name nicht in der Vorschlagsliste'; }
+    opt.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    opt.click();
+    const addBtn = () => { const f = inp() && inp().closest('form'); const b = f && [...f.querySelectorAll('button')].find((x) => norm(x.textContent) === 'hinzufügen'); return b && !b.disabled ? b : null; };
+    if (!(await waitFor(addBtn, 3000))) return 'Fehler: „Hinzufügen“ bleibt gesperrt';
+    if (dry()) { setVal(inp(), ''); return 'Test'; }
+    addBtn().click();
+    await sleep(1500);
+    const e = await BL.find(nick).catch(() => null);
+    return e && e.user ? { uid: String(e.user.uid), user: e.user } : 'Fehler: Name erscheint nicht in der Liste';
+  }
+
+  // ---------- eine Etappe ----------
+  const Etappe = {
+    running: false, stopFlag: false, last: null,
+    status() { return { running: this.running, last: G.get('etappe_last', null) }; },
+    async run(reason = 'automatisch', onProgress) {
+      if (this.running) return null;
+      if (!(await Lock.take('etappe', reason))) return null;
+      this.running = true; this.stopFlag = false;
+      const s = S();
+      const st = { ok: 0, fail: 0, dropped: 0, test: 0, items: [], started: now(), reason };
+      Bus.emit('etappe', { running: true, st });
+      try {
+        await watchDue();
+        const blocked = G.get('blocked_count', 0) || 0;
+        if (blocked >= s.expert.limit) { st.limit = true; return st; }
+        const list = (await Queue.list()).slice(0, s.expert.maxPerRun);
+        let i = 0;
+        for (const q of list) {
+          if (this.stopFlag) break;
+          i++;
+          if (onProgress) onProgress(i, list.length, q);
+          Bus.emit('etappe', { running: true, st, i, n: list.length, cur: q });
+          let m = q.uid.startsWith('nick:') ? await Members.byNick(q.nick) : await Members.get(q.uid);
+          if (!m && !q.uid.startsWith('nick:')) m = { uid: q.uid, nick: q.nick, g: q.g, ages: q.ages };
+          // Vorprüfung 1: Profil-Kurzinfo (Freund? schon geblockt? aktuelles Alter)
+          const ps = await profileShort(q.nick);
+          if (ps) {
+            if (ps.friend_status && ps.friend_status !== 'none') {
+              if (m && m.uid && !String(m.uid).startsWith('nick:')) await Members.update(m.uid, (x) => { x.auto = x.auto || {}; x.auto.friend = now(); x.friend = ps.friend_status; });
+              await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: 'Freund – nicht blockiert' }); continue;
+            }
+            if (Array.isArray(ps.age) && ps.age.length && m) m = { ...m, ages: ps.age };
+            if (ps.note && isOpaNote(ps.note) && m && m.uid) {
+              const pn = parseNote(ps.note);
+              await Members.update(m.uid, (x) => { x.blk = { at: pn.at, src: pn.src, note: ps.note, opa: true }; });
+              await Queue.remove(q.uid); st.dropped++; continue;
+            }
+          }
+          // Vorprüfung 2: Regeln (Whitelist, Mitarbeiter, verwaltete Gruppen, Alter 99, Grenzen)
+          const c = classify({ ...(m || q), nick: q.nick }, q.src);
+          if (!c.ignore) { await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: c.white ? 'Whitelist: ' + c.white : c.unclear ? 'Alter unklar' : 'nicht mehr über der Grenze' }); continue; }
+          // ohne Benutzer-ID: über die Blockierliste
+          if (!m || !m.uid || String(m.uid).startsWith('nick:')) {
+            const r = await blockByNickDom(q.nick);
+            if (typeof r === 'string') { if (r === 'Test') { st.test++; continue; } await this.fail(q, r, st); continue; }
+            m = await seen(r.user, 'Blockierliste', { images: false });
+            if (s.expert.writeNote && !dry()) { try { await BL.note(m.uid, makeNote(m, q.src)); } catch {} }
+            await Members.update(m.uid, (x) => { x.blk = { at: now(), src: q.src, note: makeNote(m, q.src), opa: true }; delete x.unblk; });
+            await Queue.remove(q.uid); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' });
+          } else {
+            const r = await blockOne(m, q.src);
+            if (r === 'ok') { await Queue.remove(q.uid); await watchMark(m, false); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' }); }
+            else if (r === 'Test') { st.test++; st.items.push({ nick: q.nick, res: 'Testlauf' }); }
+            else await this.fail(q, r, st);
+          }
+          if (i < list.length && !this.stopFlag) await sleep(rand(s.expert.pauseMin * 1000, s.expert.pauseMax * 1000));
+        }
+        return st;
+      } finally {
+        this.running = false;
+        st.ended = now();
+        G.set('etappe_last', { at: now(), ok: st.ok, fail: st.fail, dropped: st.dropped, reason });
+        Lock.release('etappe');
+        Bus.emit('etappe', { running: false, st });
+        Queue.changed();
+      }
+    },
+    async fail(q, msg, st) {
+      st.fail++; st.items.push({ nick: q.nick, res: msg });
+      q.tries = (q.tries || 0) + 1;
+      if (q.tries >= 3) { await Queue.remove(q.uid); await KV.set('failed', { ...(await KV.get('failed', {})), [q.uid]: { nick: q.nick, msg, at: now() } }); }
+      else await DB.put('queue', q);
+    },
+    stop() { this.stopFlag = true; },
+    // Zeitgeber: alle 30 s prüfen, ob eine Etappe fällig ist
+    start() {
+      setInterval(async () => {
+        if (!isOn() || this.running) return;
+        const last = (G.get('etappe_last', null) || {}).at || 0;
+        if (now() - last < S().expert.etappeMin * 60000) return;
+        if (Lock.other('etappe')) return;
+        if (!(await Queue.count()) && !Object.keys(await KV.get('watch', {})).length) return;
+        this.run('automatisch').catch((e) => warn('Etappe', e));
+      }, 30000);
+    },
+  };
+
+  // =====================================================================================
+  // Quellen (Scans). Jede liefert Mitglieder an judge(); Fortschritt über ctx.
+  //   ctx = { stop: () => bool, step(i, n, text), add(res) }
+  // =====================================================================================
+  const newRes = () => ({ total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0, unblocked: 0, whitelisted: 0 });
+  const addRes = (a, b) => { for (const k of Object.keys(b)) a[k] = (a[k] || 0) + (b[k] || 0); return a; };
+
+  // ---------- Interaktionen: Likes ----------
+  async function scanLikes(ctx) {
+    const res = newRes();
+    const st = G.get('scan_rates', { newest: 0, complete: false });
+    const firstMax = S().expert.firstScanMax;
+    const seenU = new Set();
+    let page = null, read = 0, newest = st.newest, stopOld = false;
+    for (let guard = 0; guard < 5000 && !ctx.stop(); guard++) {
+      const d = await apiGet('rates', page ? { _version: 2, page } : { _version: 2 });
+      const l = (d && d.rates) || [];
+      const users = [];
+      for (const r of l) {
+        read++;
+        const ts = r.timestemp || 0;
+        if (ts > newest) newest = ts;
+        if (st.complete && ts && ts <= st.newest) { stopOld = true; break; }
+        const u = r.user && normUser(r.user);
+        if (u && !seenU.has(u.uid)) { seenU.add(u.uid); users.push(u); }
+      }
+      await seenMany(users, 'Likes');
+      addRes(res, await judge(users, 'Likes'));
+      ctx.step(read, null, `Likes: ${fmtN(read)} gelesen, ${fmtN(seenU.size)} Mitglieder`);
+      if (stopOld || !l.length || !d.next_page) break;
+      if (!st.complete && read >= firstMax) break;
+      page = d.next_page;
+    }
+    if (!ctx.stop()) G.set('scan_rates', { newest, complete: true, at: now() });
+    return res;
+  }
+
+  // ---------- Interaktionen: Sticker ----------
+  async function scanStickers(ctx) {
+    const res = newRes();
+    const me = Me.get() || await loadMe();
+    if (!me || !me.uid) throw new Error('Eigene Benutzer-ID unbekannt');
+    const st = G.get('scan_gift', { newest: 0, complete: false });
+    const firstMax = S().expert.firstScanMax;
+    const seenU = new Set();
+    let page = null, read = 0, newest = st.newest, stopOld = false;
+    for (let guard = 0; guard < 5000 && !ctx.stop(); guard++) {
+      const q = { uid: me.uid, limit: 30 };
+      if (page) q.page = page;
+      const d = await apiGet('my/received/gift', q);
+      const l = (d && d.list) || [];
+      const users = [];
+      for (const g of l) {
+        read++;
+        const id = +g.id || 0;
+        if (id > newest) newest = id;
+        if (st.complete && id && id <= st.newest) { stopOld = true; break; }
+        const u = normUser(g.user || g);
+        if (u && !seenU.has(u.uid)) { seenU.add(u.uid); users.push(u); }
+      }
+      await seenMany(users, 'Sticker');
+      addRes(res, await judge(users, 'Sticker'));
+      ctx.step(read, null, `Sticker: ${fmtN(read)} gelesen, ${fmtN(seenU.size)} Mitglieder`);
+      if (stopOld || !l.length || !d.next_page) break;
+      if (!st.complete && read >= firstMax) break;
+      page = d.next_page;
+    }
+    if (!ctx.stop()) G.set('scan_gift', { newest, complete: true, at: now() });
+    return res;
+  }
+
+  // ---------- Interaktionen: Nachrichten (Unterhaltungsliste, ohne Nachrichtentexte) ----------
+  const DELETED_NICK = /^gelöschter popster$/i;
+  async function scanMessages(ctx) {
+    const res = newRes();
+    const st = G.get('scan_msg', { newest: 0, complete: false });
+    const firstMax = S().expert.firstScanMax;
+    const seenU = new Set();
+    let offset = 0, read = 0, newest = st.newest, stopOld = false;
+    for (let guard = 0; guard < 5000 && !ctx.stop(); guard++) {
+      const d = await apiPost('messenger/group/list', { offset, filter: 0 });
+      const l = (d && d.list) || [];
+      const users = [];
+      for (const c of l) {
+        read++;
+        const ts = c.last_updated || 0;
+        if (ts > newest) newest = ts;
+        if (st.complete && ts && ts <= st.newest) { stopOld = true; break; }
+        if (c.group_type !== 1 || !c.group_data) continue;
+        const gd = c.group_data;
+        if (DELETED_NICK.test(gd.nickname || '')) { await Members.update(gd.uid, (m) => { m.del = m.del || now(); }); continue; }
+        const u = normUser(gd);
+        if (u && !seenU.has(u.uid)) { seenU.add(u.uid); users.push(u); }
+      }
+      await seenMany(users, 'Nachrichten');
+      addRes(res, await judge(users, 'Nachrichten'));
+      ctx.step(read, null, `Nachrichten: ${fmtN(read)} Unterhaltungen`);
+      if (stopOld || !l.length || !d.next || d.next === offset) break;
+      if (!st.complete && read >= firstMax) break;
+      offset = d.next;
+    }
+    if (!ctx.stop()) G.set('scan_msg', { newest, complete: true, at: now() });
+    return res;
+  }
+
+  async function scanInteractions(ctx) {
+    const res = newRes();
+    for (const [name, fn] of [['Likes', scanLikes], ['Sticker', scanStickers], ['Nachrichten', scanMessages]]) {
+      if (ctx.stop()) break;
+      ctx.phase && ctx.phase(name);
+      try { addRes(res, await fn(ctx)); } catch (e) { ctx.error && ctx.error(name, e); }
+    }
+    return res;
+  }
+
+  // ---------- Profilbesucher (Seite, unsichtbar geladen) ----------
+  function visitorItems(doc) {
+    return [...doc.querySelectorAll('main .ant-list-items .ant-list-item, main .ant-list-item')].map((item) => {
+      const a = item.querySelector('.ant-card-meta-title a[href^="/p/"]') || item.querySelector('a[href^="/p/"]');
+      if (!a) return null;
+      const desc = (item.querySelector('.ant-card-meta-description') || item).textContent || '';
+      const img = item.querySelector('img');
+      const src = img ? img.getAttribute('src') : '';
+      const nick = a.getAttribute('title') || a.textContent.trim();
+      return { item, nick, uid: uidFromAvatar(src), ages: agesFromText(desc), g: genderFromText(desc), avatar: isPlaceholderAvatar(src) ? '' : src };
+    }).filter(Boolean);
+  }
+  function scroller(el, doc = document) {
+    const w = doc.defaultView;
+    for (let e = el; e && e !== doc.body; e = e.parentElement) {
+      const oy = w.getComputedStyle(e).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') && e.scrollHeight > e.clientHeight + 10) return e;
+    }
+    return doc.scrollingElement || doc.documentElement;
+  }
+  // Liste durchscrollen und alle Einträge einsammeln
+  async function collectList(doc, itemsFn, ctx, { max = 100000, label = 'Einträge', stopWhen } = {}) {
+    const all = new Map();
+    const first = await waitFor(() => itemsFn(doc)[0], 15000);
+    if (!first) return all;
+    const sc = scroller(first.item, doc);
+    sc.scrollTop = 0;
+    await sleep(500);
+    let idle = 0;
+    for (let i = 0; i < 20000 && idle < 5 && !ctx.stop(); i++) {
+      const before = all.size;
+      for (const x of itemsFn(doc)) if (!all.has(x.nick)) all.set(x.nick, x);
+      ctx.step(all.size, null, `${label}: ${fmtN(all.size)} gelesen`);
+      if (all.size >= max) break;
+      if (stopWhen && stopWhen(all)) break;
+      const atBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 5;
+      idle = all.size === before && atBottom ? idle + 1 : 0;
+      sc.scrollTop += Math.max(300, sc.clientHeight * 0.8);
+      await sleep(atBottom ? 1000 : 350);
+    }
+    return all;
+  }
+  async function scanVisitors(ctx) {
+    const res = newRes();
+    const st = G.get('scan_vis', { complete: false, at: 0 });
+    const onPage = location.pathname.startsWith('/connection/visitors');
+    const doc = onPage ? document : await Frame.load('/connection/visitors', (d) => visitorItems(d).length || d.querySelector('main .ant-empty'), 30000);
+    if (!doc) throw new Error('Besucherliste nicht ladbar');
+    let knownRun = 0;
+    const all = await collectList(doc, visitorItems, ctx, {
+      max: st.complete ? 100000 : S().expert.firstScanMax, label: 'Profilbesucher',
+      // Folgescans: aufhören, sobald 30 Mitglieder hintereinander schon beim letzten Scan gesehen wurden
+      stopWhen: (map) => {
+        if (!st.complete) return false;
+        knownRun = 0;
+        for (const x of [...map.values()].slice(-30)) { const m = x.uid && Members.cached().get(x.uid); if (m && m.seen && m.seen.Besucher && m.seen.Besucher < st.at) knownRun++; }
+        return knownRun >= 30;
+      },
+    });
+    const list = [...all.values()].map(({ item, ...x }) => x);
+    for (const x of list) {
+      if (!x.uid) { const m = await Members.byNick(x.nick); if (m) x.uid = m.uid; }
+      if (x.uid) await seen(x, 'Besucher');
+    }
+    addRes(res, await judge(list, 'Besucher'));
+    if (!onPage) Frame.remove();
+    if (!ctx.stop()) G.set('scan_vis', { complete: true, at: now() });
+    return res;
+  }
+
+  // ---------- Gruppen ----------
+  async function myGroups(subset) {
+    const out = [];
+    let page = 1;
+    for (let guard = 0; guard < 200; guard++) {
+      const d = await apiGet('group/my', { _version: 2, page, subset, limit: 25, ...(subset === 'managed' ? { sort: 'pending_count' } : {}) });
+      const l = (d && d.cms_list) || [];
+      out.push(...l.map((g) => ({ cms: String(g.cms_id), name: g.name, url: g.profile_url, count: g.attendee_count || 0, pending: g.pending_count || 0, role: g.creator_status || '', subset })));
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+    }
+    return out;
+  }
+  async function loadGroups() {
+    const [managed, attended] = await Promise.all([myGroups('managed'), myGroups('attended')]);
+    const names = { ...G.get('groupnames', {}) };
+    for (const g of [...managed, ...attended]) names[g.cms] = g.name;
+    G.set('groupnames', names);
+    G.set('groups', { managed, attended: attended.filter((a) => !managed.some((m) => m.cms === a.cms)), at: now() });
+    G.set('pending', { n: managed.reduce((s, g) => s + g.pending, 0), groups: managed.filter((g) => g.pending).map((g) => ({ cms: g.cms, name: g.name, n: g.pending })), at: now() });
+    Bus.emit('pending');
+    return G.get('groups');
+  }
+  async function groupMembers(cms, ctx, onPage) {
+    let page = 1, n = 0, meta = null;
+    for (let guard = 0; guard < 100000 && !ctx.stop(); guard++) {
+      const d = await apiGet('group/attendee/list', { _version: 2, page, cms_id: cms, limit: 30 });
+      const l = (d && d.users) || [];
+      if (!meta) meta = { total: d.total || 0, invisible: d.invisible_count || 0 };
+      n += l.length;
+      await onPage(l.map(normUser).filter(Boolean), page, meta);
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+    }
+    return { n, meta };
+  }
+  // Verwaltete Gruppen: alle Mitglieder auf die automatische Whitelist, Geblockte entsperren
+  async function refreshManagedWhitelist(ctx, groups) {
+    const res = newRes();
+    const s = S();
+    const managed = (groups || (await loadGroups())).managed.filter((g) => s.managedWhitelist[g.cms] !== false);
+    const inv = G.get('grp_invisible', {});
+    for (const g of managed) {
+      if (ctx.stop()) break;
+      ctx.phase && ctx.phase(`Whitelist: ${g.name}`);
+      const t0 = now();
+      const seenIds = new Set();
+      const { meta } = await groupMembers(g.cms, ctx, async (users, page, meta) => {
+        for (const u of users) {
+          seenIds.add(u.uid);
+          const m = await seen(u, 'Gruppen', { images: false });
+          const was = !!(m.auto && m.auto.grp && m.auto.grp[g.cms]);
+          await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[g.cms] = now(); });
+          if (!was) res.whitelisted++;
+          if (m.blk && m.blk.opa && !m.unblk) {
+            const r = await unblockOne(m);
+            if (r === 'ok' || r === 'Test') { res.unblocked++; (ctx.notes || []).push(`${u.nick}: entsperrt, weil Mitglied in ${g.name}`); }
+          }
+        }
+        ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: ${fmtN(seenIds.size)} Mitglieder`);
+      });
+      if (ctx.stop() || !meta) break;
+      // Verschwundene: unsichtbar geworden? Dann Schonfrist verlängern
+      const gone = [];
+      await Members.each((m) => { if (m.auto && m.auto.grp && m.auto.grp[g.cms] && m.auto.grp[g.cms] < t0 && !seenIds.has(m.uid)) gone.push(m.uid); });
+      const prev = inv[g.cms];
+      if (prev && gone.length && meta.invisible - prev >= gone.length) {
+        for (const uid of gone) await Members.update(uid, (x) => { x.auto.grp[g.cms] = now(); });
+      }
+      inv[g.cms] = meta.invisible;
+      G.set('grp_invisible', inv);
+      G.set('grp_wl_at', now());
+    }
+    return res;
+  }
+  async function scanGroups(ctx) {
+    const res = newRes();
+    const groups = await loadGroups();
+    addRes(res, await refreshManagedWhitelist(ctx, groups));
+    const s = S();
+    const list = groups.attended.filter((g) => s.groupScan[g.cms] !== false);
+    let gi = 0;
+    for (const g of list) {
+      if (ctx.stop()) break;
+      gi++;
+      ctx.phase && ctx.phase(`Gruppe ${gi}/${list.length}: ${g.name}`);
+      ctx.outer && ctx.outer(gi - 1, list.length);
+      await groupMembers(g.cms, ctx, async (users, page, meta) => {
+        for (const u of users) await seen(u, 'Gruppen', { images: false });
+        addRes(res, await judge(users, 'Gruppen'));
+        res.total += 0;
+        ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: Seite ${page}`);
+      });
+    }
+    ctx.outer && ctx.outer(list.length, list.length);
+    return res;
+  }
+
+  // ---------- Mitgliedersuche, systematisch (Alter für Alter, ganz Deutschland) ----------
+  function searchBase() {
+    const loc = G.get('mygeo', null) || { country_iso: 'DE', country_name: 'Germany' };
+    return {
+      location: { ...loc, distance: 0, distance_unit: 'km' }, has_image: 0, online: false, enable_search_gender: false,
+      sort: ['last_riseup'], order: ['desc'], preference_conjunction: 'or', second_preference_conjunction: 'or',
+      size_min: 130, size_max: 220, weight_min: 0, weight_max: 300, enable_fakecheck_status: false,
+    };
+  }
+  async function searchAll(payload, ctx, onUsers, label) {
+    let page = 1, n = 0, total = 0;
+    for (let guard = 0; guard < 100000 && !ctx.stop(); guard++) {
+      const d = await apiPost('user/search', { ...payload, page, limit: 20 });
+      const l = (d && d.users) || [];
+      total = d.total || total;
+      n += l.length;
+      await onUsers(l.map(normUser).filter(Boolean), page, total);
+      if (label) ctx.step(n, total, `${label}: ${fmtN(n)} von ${fmtN(total)}`);
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+    }
+    return { n, total };
+  }
+  async function scanSearch(ctx) {
+    const res = newRes();
+    const s = S();
+    const base = searchBase();
+    const plan = [];
+    for (const gk of GROUP_KEYS) {
+      const grp = s.groups[gk];
+      if (!grp.ignore) continue;
+      const lims = gk === 'p' && grp.separate ? [grp.srcW.suche[2], grp.srcM.suche[2]] : [grp.src.suche[2]];
+      let from = Math.min(...lims);
+      if (gk === 'p' && (grp.sugarDaddy.on || grp.sugarMom.on)) from = 18;
+      for (const t of grp.types) plan.push({ gk, t, from });
+    }
+    const steps = plan.reduce((a, p) => a + (99 - p.from + 1), 0);
+    let done = 0;
+    for (const p of plan) {
+      for (let age = 98; age >= p.from && !ctx.stop(); age--) {
+        ctx.outer && ctx.outer(done++, steps);
+        ctx.phase && ctx.phase(`Mitgliedersuche: ${TYPE_NAMES[p.t]} · ${age} Jahre`);
+        await searchAll({ ...base, genders: [p.t], age_min: age, age_max: age }, ctx, async (users) => {
+          for (const u of users) await seen(u, 'Suche', { images: false });
+          addRes(res, await judge(users, 'Suche'));
+        }, `${TYPE_NAMES[p.t]}, ${age} Jahre`);
+      }
+    }
+    ctx.outer && ctx.outer(steps, steps);
+    return res;
+  }
+
+  // Treffer der Seite (Hooks): Antworten, die die Seite selbst lädt, nebenbei verbuchen
+  function installPassiveHooks() {
+    onApi(/^rates$/, (d) => seenMany(((d && d.rates) || []).map((r) => r.user).filter(Boolean), 'Likes'));
+    onApi(/^my\/received\/gift$/, (d) => seenMany(((d && d.list) || []).map((g) => g.user).filter(Boolean), 'Sticker'));
+    onApi(/^messenger\/group\/list$/, (d) => seenMany(((d && d.list) || []).filter((c) => c.group_type === 1 && c.group_data && !DELETED_NICK.test(c.group_data.nickname || '')).map((c) => c.group_data), 'Nachrichten'));
+    onApi(/^group\/attendee\/list$/, (d) => seenMany((d && d.users) || [], 'Gruppen', { images: false }));
+    onApi(/^user\/search$/, (d, info) => {
+      if (info.body && info.body.location && info.body.location.geo_id && !G.get('mygeo', null)) {
+        const { distance, distance_unit, ...geo } = info.body.location; G.set('mygeo', geo);
+      }
+      return seenMany((d && d.users) || [], 'Suche', { images: false });
+    });
+    onApi(/^v2\/ignore\/list$/, (d) => {
+      const l = (d && d.list) || [];
+      return Promise.all(l.map(async (e) => {
+        const m = await seen(e.user, 'Blockierliste', { images: false });
+        if (m) await Members.update(m.uid, (x) => { const pn = parseNote(e.note); x.blk = { at: pn ? pn.at : (x.blk && x.blk.at) || now(), src: pn ? pn.src : '', note: e.note || '', opa: !!pn }; delete x.unblk; });
+      }));
+    });
+    onApi(/^messenger\/p2p\/profile\/display$/, () => {});
+  }
+
+  // =====================================================================================
+  // Oberfläche: Stile, Popups im poppen-Stil, Markierungen
+  // =====================================================================================
+  const OLD_MAN_PATH = 'M3408 12790 c-235 -43 -487 -227 -651 -477 -33 -50 -47 -63 -67 -63 -37 0 -119 -24 -168 -49 -102 -52 -148 -120 -201 -298 -48 -164 -73 -337 -69 -483 3 -112 6 -131 30 -180 15 -30 41 -64 58 -75 29 -19 30 -23 30 -92 0 -39 -3 -74 -8 -77 -4 -2 -86 -1 -182 4 -273 12 -411 -7 -566 -80 -227 -105 -387 -276 -518 -551 -127 -266 -203 -574 -253 -1019 -22 -199 -25 -1016 -5 -1265 20 -240 60 -603 82 -750 12 -82 15 -131 9 -133 -6 -3 -6 -8 0 -16 7 -8 -3 -51 -30 -136 -109 -339 -191 -737 -235 -1140 -22 -191 -25 -693 -6 -845 33 -258 72 -434 158 -699 234 -721 431 -1986 554 -3566 12 -145 22 -265 23 -266 1 -1 52 -16 114 -34 98 -29 113 -36 121 -59 45 -127 347 -276 743 -366 622 -140 1209 -69 1131 137 l-10 28 168 0 c273 0 423 30 492 100 62 62 50 120 -43 204 -59 53 -250 150 -377 191 l-84 27 6 77 c35 439 116 2702 166 4611 15 587 12 548 44 595 65 94 130 255 161 400 9 44 19 87 21 97 4 13 23 4 102 -49 201 -134 411 -220 617 -252 109 -16 209 -22 222 -14 18 13 32 57 39 126 l6 64 69 -35 69 -36 0 -156 c0 -170 4 -186 60 -215 37 -19 64 -19 104 0 55 26 61 45 66 214 l5 155 28 7 27 7 0 -2924 c0 -3216 -5 -2965 60 -2999 62 -32 136 -10 164 49 15 31 16 279 16 3052 l0 3017 25 64 c99 246 -33 525 -286 604 -33 10 -83 19 -110 19 -27 0 -60 6 -72 14 -37 24 -132 36 -367 46 -124 6 -272 15 -330 20 -98 9 -467 74 -476 83 -3 2 -9 91 -14 198 -27 543 -53 829 -125 1389 l-6 45 53 35 c141 94 296 282 422 513 20 37 42 67 49 67 7 0 46 -17 87 -38 59 -29 78 -45 93 -74 30 -59 36 -140 25 -308 -13 -195 -6 -359 17 -424 26 -71 104 -148 178 -175 200 -73 369 48 421 302 9 42 16 81 16 86 0 17 -87 71 -148 92 -72 26 -220 28 -308 5 -34 -9 -66 -16 -72 -16 -5 0 -11 71 -15 173 -4 137 -9 186 -26 239 -28 89 -88 155 -173 193 -35 15 -65 29 -66 31 -2 1 10 39 27 83 40 105 106 337 122 433 11 69 16 78 40 88 77 32 105 336 42 457 -16 31 -21 68 -27 190 -4 84 -14 199 -21 255 -14 100 -13 104 6 120 23 19 35 74 25 113 -6 24 -10 26 -39 21 l-32 -6 -19 82 c-10 46 -35 137 -57 203 -171 527 -466 883 -824 994 -79 25 -249 36 -327 21z';
+  const oldManSvg = (scale = 1.25) => `<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 640 1280" preserveAspectRatio="xMidYMid meet" fill="currentColor" style="transform:scale(${scale})"><g transform="translate(0,1280) scale(0.1,-0.1)"><path d="${OLD_MAN_PATH}"></path></g></svg>`;
+
+  const UI_CSS = `
+  .vaf-ov{position:fixed;inset:0;z-index:2147483640;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1.45;color:#e8e8e8}
+  .vaf-ov, .vaf-ov button, .vaf-ov input, .vaf-ov select, .vaf-ov textarea{font-family:inherit}
+  .vaf-md{width:min(640px,94vw);max-height:92vh;overflow:auto;background:#1f1f1f;border-radius:18px;padding:24px 24px 20px;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+  .vaf-md.vaf-wide{width:min(900px,96vw)}
+  .vaf-md h2{margin:0;font-size:22px;font-weight:700;color:#fff}
+  .vaf-md h3{margin:14px 0 6px;font-size:15px;color:#fff}
+  .vaf-sub{color:#a6a6a6;margin:4px 0 16px}
+  .vaf-warn{background:rgba(255,194,26,.14);color:#ffd35c;border-radius:10px;padding:8px 12px;margin-bottom:14px}
+  .vaf-err{background:rgba(229,57,53,.15);color:#ff8a80;border-radius:10px;padding:8px 12px;margin-bottom:14px}
+  .vaf-bar{height:10px;background:#333;border-radius:6px;overflow:hidden;margin:6px 0 4px}
+  .vaf-bar>div{height:100%;background:#ffc21a;width:0;transition:width .3s}
+  .vaf-cur{color:#a6a6a6;font-size:13px;margin-bottom:10px;min-height:19px}
+  .vaf-stats{display:grid;grid-template-columns:1fr auto;gap:4px 16px;background:#2a2a2a;border-radius:12px;padding:12px 14px;margin-bottom:16px}
+  .vaf-stats b{color:#fff;text-align:right}
+  .vaf-btns{display:flex;flex-direction:column;gap:10px}
+  .vaf-btns.vaf-row{flex-direction:row;flex-wrap:wrap}
+  .vaf-big{width:100%;border:0;border-radius:12px;padding:12px;font-weight:700;font-size:15px;cursor:pointer;background:#3a3a3a;color:#fff}
+  .vaf-row .vaf-big{width:auto;flex:1 1 auto}
+  .vaf-big.vaf-pri{background:#ffc21a;color:#141414}
+  .vaf-big:disabled{opacity:.45;cursor:default}
+  .vaf-big.vaf-focus{outline:2px solid #fff;outline-offset:-2px}
+  .vaf-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+  .vaf-tile{background:#2a2a2a;border:0;border-radius:12px;padding:12px;text-align:left;color:#e8e8e8;cursor:pointer}
+  .vaf-tile b{display:block;color:#fff;font-size:15px}
+  .vaf-tile span{color:#a6a6a6;font-size:12.5px}
+  .vaf-tile:disabled{opacity:.4;cursor:default}
+  .vaf-tile.vaf-on{outline:2px solid #ffc21a}
+  .vaf-list{max-height:40vh;overflow:auto;background:#2a2a2a;border-radius:12px;padding:8px 12px;margin-bottom:12px;font-size:13px}
+  .vaf-list div{padding:2px 0;border-bottom:1px solid #333}
+  .vaf-in{width:100%;background:#141414;border:1px solid #3a3a3a;border-radius:10px;padding:8px 12px;color:#e8e8e8;font-size:14px;box-sizing:border-box}
+  .vaf-chk{display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer}
+  .vaf-mark{font:600 11px/1.3 system-ui,sans-serif;padding:2px 6px;border-radius:4px;display:inline-block;margin:2px 4px 2px 0;white-space:nowrap}
+  .vaf-prev{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);max-width:90vw;max-height:90vh;border-radius:10px;box-shadow:0 10px 50px rgba(0,0,0,.8);z-index:2147483646;pointer-events:none;display:none}
+  .vaf-toast{position:fixed;right:16px;bottom:16px;z-index:2147483645;background:#1f1f1f;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:12px;padding:10px 14px;max-width:340px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+  .vaf-toast b{color:#ffc21a}
+  .vaf-hdr-dot{position:absolute;top:-4px;left:-6px;background:#ffc21a;color:#141414;border-radius:10px;font:700 11px/16px system-ui;min-width:16px;padding:0 4px;text-align:center;cursor:pointer;z-index:2}
+  .vaf-strike{text-decoration:line-through}
+  `;
+  function ensureStyle() {
+    if (document.getElementById('vaf-style')) return;
+    const st = document.createElement('style');
+    st.id = 'vaf-style';
+    st.textContent = UI_CSS;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  // Popup-Gerüst; buttons = [{ label, fn, primary, focus, disabled }]
+  function modal({ title = '', sub = '', html = '', wide = false, closable = true, onClose = null } = {}) {
+    ensureStyle();
+    const ov = document.createElement('div');
+    ov.className = 'vaf-ov';
+    const md = document.createElement('div');
+    md.className = 'vaf-md' + (wide ? ' vaf-wide' : '');
+    md.innerHTML = (title ? `<h2>${esc(title)}</h2>` : '') + (sub ? `<div class="vaf-sub">${sub}</div>` : '') + `<div class="vaf-body">${html}</div><div class="vaf-btns"></div>`;
+    ov.appendChild(md);
+    document.body.appendChild(ov);
+    const m = {
+      ov, md, closable, body: md.querySelector('.vaf-body'),
+      close() { if (!ov.isConnected) return; ov.remove(); document.removeEventListener('keydown', onKey, true); if (onClose) onClose(); },
+      buttons(list, row = false) {
+        const box = md.querySelector('.vaf-btns');
+        box.className = 'vaf-btns' + (row ? ' vaf-row' : '');
+        box.innerHTML = '';
+        m.focusBtn = null;
+        for (const b of list) {
+          const el = document.createElement('button');
+          el.type = 'button';
+          el.className = 'vaf-big' + (b.primary ? ' vaf-pri' : '') + (b.focus ? ' vaf-focus' : '');
+          el.textContent = b.label;
+          el.disabled = !!b.disabled;
+          if (b.title) el.title = b.title;
+          el.addEventListener('click', () => b.fn(el));
+          if (b.focus) m.focusBtn = el;
+          box.appendChild(el);
+        }
+      },
+    };
+    const onKey = (e) => {
+      if (!ov.isConnected) return;
+      if (e.key === 'Escape' && m.closable) { e.preventDefault(); e.stopPropagation(); m.close(); }
+      if (e.key === 'Enter' && m.focusBtn && !m.focusBtn.disabled && !/input|textarea|select/i.test((document.activeElement || {}).tagName || '')) { e.preventDefault(); m.focusBtn.click(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov && m.closable) m.close(); });
+    return m;
+  }
+  // Rückfrage mit mehreren Antworten; liefert den Wert der gewählten Antwort (Esc = Wert der focus-Antwort mit cancel)
+  function ask(title, html, answers) {
+    return new Promise((resolve) => {
+      let done = false;
+      const fin = (v) => { if (done) return; done = true; m.close(); resolve(v); };
+      const cancel = answers.find((a) => a.cancel);
+      const m = modal({ title, html, onClose: () => { if (!done) { done = true; resolve(cancel ? cancel.value : null); } } });
+      m.buttons(answers.map((a) => ({ label: a.label, primary: a.primary, focus: a.focus, fn: () => fin(a.value) })));
+    });
+  }
+  function toast(html, ms = 6000) {
+    ensureStyle();
+    let t = document.getElementById('vaf-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'vaf-toast'; t.className = 'vaf-toast'; document.body.appendChild(t); }
+    t.innerHTML = html;
+    clearTimeout(t._t);
+    if (ms) t._t = setTimeout(() => t.remove(), ms);
+    return t;
+  }
+
+  // ---------- Markierung eines Mitglieds auf Listen ----------
+  const COLORS = { 1: '#43a047', 2: '#ffb74d', near: '#e65100', 3: '#e53935', white: '#ffffff', unclear: '#8c8c8c', blocked: '#7b1fa2' };
+  function markInfo(x, src, m) {
+    const s = S();
+    const c = classify({ ...(m || {}), ...x }, src, s);
+    const gk = c.gk;
+    const visual = gk ? s.groups[gk].visual : false;
+    const blocked = m && m.blk && !m.unblk;
+    const jg = m && m.birth && m.birth.length ? m.birth.map(yearText).join('/') : '';
+    let color = '', text = '';
+    const ages = (x.ages && x.ages.length ? x.ages : (m && m.ages) || []).join('/');
+    if (c.unclear) { color = COLORS.unclear; text = `${ages}? unklar`; }
+    else if (c.white) { color = COLORS.white; text = `${ages} · ${c.white}`; }
+    else if (blocked) { color = COLORS[3]; text = `${c.label || word()} · ${ages} · blockiert`; }
+    else if (c.ignore) { color = COLORS[3]; text = `${c.label} · ${ages} → Warteliste`; }
+    else if (c.near && visual) { color = COLORS.near; text = `${c.label} · ${ages} · vorgemerkt`; }
+    else if (visual && c.stage) { color = COLORS[c.stage]; text = `${c.label} · ${ages}`; }
+    if (!text) return null;
+    if (jg && (blocked || c.white || c.near)) text += ` (Jg. ${jg})`;
+    return { color, text, dark: color === COLORS.white || color === COLORS[2], c };
+  }
+  function putMark(host, info, cls = 'vaf-mark') {
+    if (!host) return;
+    let b = host.querySelector(':scope > .' + cls);
+    if (!info) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.className = cls; host.prepend(b); }
+    if (b.textContent !== info.text) b.textContent = info.text;
+    b.style.cssText = `background:${info.color};color:${info.dark ? '#111' : '#fff'}`;
+  }
+
+  // =====================================================================================
+  // Listen-Seiten markieren (Besucher, Likes, Sticker, Posteingang, Suche, Gruppen-Mitglieder)
+  // und – wenn der Schalter „Opa-Schutz“ und die Automatik an sind – Treffer auf die Warteliste setzen.
+  // =====================================================================================
+  const PAGE_SOURCES = [
+    { re: /^\/connection\/visitors/, src: 'Besucher', auto: 'besucher' },
+    { re: /^\/connection\/image\/rating/, src: 'Likes', auto: 'interaktionen' },
+    { re: /^\/connection\/gift\/received/, src: 'Sticker', auto: 'interaktionen' },
+    { re: /^\/inbox/, src: 'Nachrichten', auto: 'interaktionen' },
+    { re: /^\/search\/member/, src: 'Suche', auto: 'suche' },
+    { re: /^\/groups\//, src: 'Gruppen', auto: null },
+  ];
+  const pageSource = () => PAGE_SOURCES.find((p) => p.re.test(location.pathname)) || null;
+  const autoDone = new Set();
+
+  // Karten mit Profil-Link einsammeln
+  function cardsOn(root = document) {
+    const out = new Map();
+    for (const a of root.querySelectorAll('a[href^="/p/"]')) {
+      if (a.closest('header, .vaf-ov, #vaf-fick-sec, [data-vaf-skip]')) continue;
+      const card = a.closest('.ant-list-item, [data-item-id], .ant-card, [data-index]');
+      if (!card || out.has(card)) continue;
+      const nick = (a.getAttribute('title') || a.textContent || '').trim() || slugOf(a.getAttribute('href'));
+      const descEl = [...card.querySelectorAll('span, div')].find((e) => e.children.length === 0 && /\d+\s*Jahre/.test(e.textContent || ''));
+      const desc = descEl ? descEl.textContent : '';
+      const img = card.querySelector('img');
+      const src = img ? img.getAttribute('src') : '';
+      out.set(card, { card, nick, uid: card.getAttribute('data-item-id') || uidFromAvatar(src), ages: agesFromText(desc), g: genderFromText(desc), host: descEl ? descEl.parentElement : card });
+    }
+    // Posteingang: Einträge ohne Profil-Link
+    for (const it of root.querySelectorAll('[data-item-id]')) {
+      if (out.has(it) || it.closest('.vaf-ov')) continue;
+      const nameEl = it.querySelector('span[title]');
+      if (!nameEl) continue;
+      out.set(it, { card: it, nick: nameEl.getAttribute('title'), uid: it.getAttribute('data-item-id'), ages: [], g: [], host: nameEl.closest('div') || it, inbox: true });
+    }
+    return [...out.values()];
+  }
+
+  let markBusy = false, markAgain = false;
+  async function markPage() {
+    if (markBusy) { markAgain = true; return; }
+    markBusy = true;
+    try {
+      const ps = pageSource();
+      if (!ps) return;
+      const s = S();
+      const auto = isOn() && ps.auto && s.auto[ps.auto];
+      for (const x of cardsOn(document)) {
+        if (DELETED_NICK.test(x.nick)) { await showDeleted(x); continue; }
+        let m = x.uid ? await Members.get(x.uid) : await Members.byNick(x.nick);
+        if (m && !x.uid) x.uid = m.uid;
+        if (!x.ages.length && m) { x.ages = m.ages || []; x.g = m.g || []; }
+        if (m && (!x.g || !x.g.length)) x.g = m.g || [];
+        if (x.uid && x.ages.length && !x.inbox && (!m || !m.ageAt || m.ageAt !== isoDay(new Date()))) m = await seen(x, ps.src);
+        const info = markInfo(x, ps.src, m);
+        putMark(x.inbox ? x.card : x.host, info);
+        if (auto && info && info.c.ignore && !(m && m.blk && !m.unblk) && !autoDone.has(x.nick)) {
+          autoDone.add(x.nick);
+          await Queue.add(x, ps.src);
+        }
+      }
+    } catch (e) { warn('Markieren', e); }
+    finally { markBusy = false; if (markAgain) { markAgain = false; setTimeout(markPage, 300); } }
+  }
+
+  // ---------- Gelöschte Konten im Posteingang ----------
+  async function showDeleted(x) {
+    if (!x.uid) return;
+    const m = await Members.get(x.uid);
+    if (!m || !m.nick || DELETED_NICK.test(m.nick)) return;
+    if (!m.del) await Members.update(x.uid, (y) => { y.del = now(); });
+    const nameEl = x.card.querySelector('span[title]');
+    if (nameEl && !nameEl.dataset.vafDel) {
+      nameEl.dataset.vafDel = '1';
+      nameEl.style.display = 'none';
+      const s = document.createElement('span');
+      s.className = (nameEl.className || '') + ' vaf-strike';
+      s.textContent = m.nick;
+      s.title = `Gelöschter Popster – früher: ${m.nick}`;
+      nameEl.after(s);
+    }
+    const img = x.card.querySelector('img');
+    if (img && !img.dataset.vafDel) {
+      const data = await Images.get(x.uid);
+      if (data) { img.dataset.vafDel = '1'; img.src = data; }
+    }
+    x.card.addEventListener('click', () => { try { sessionStorage.setItem('vaf_inbox_uid', x.uid); } catch {} }, { once: true });
+  }
+  // Kopf des geöffneten Chats mit einem gelöschten Konto
+  async function fixDeletedChatHeader() {
+    const a = document.querySelector('a[href="/p/gel%C3%B6schter-popster"], a[href="/p/gelöschter-popster"]');
+    if (!a || a.dataset.vafDel) return;
+    let uid = '';
+    try { uid = sessionStorage.getItem('vaf_inbox_uid') || ''; } catch {}
+    if (!uid) {
+      const dels = cardsOn(document).filter((c) => DELETED_NICK.test(c.nick));
+      if (dels.length === 1) uid = dels[0].uid;
+    }
+    const m = uid ? await Members.get(uid) : null;
+    if (!m || !m.nick || DELETED_NICK.test(m.nick)) return;
+    a.dataset.vafDel = '1';
+    a.textContent = m.nick;
+    a.title = `Gelöschter Popster – früher: ${m.nick}. Klick öffnet das Profil-Archiv.`;
+    a.href = '/setting/profile#archiv=' + encodeURIComponent(uid);
+    a.target = '_blank';
+    a.style.textDecorationLine = 'line-through';
+    a.addEventListener('click', (e) => { e.stopPropagation(); }, true);
+  }
+
+  function initListPages() {
+    let t = null;
+    const run = () => { clearTimeout(t); t = setTimeout(() => { markPage(); if (location.pathname.startsWith('/inbox')) fixDeletedChatHeader(); }, 250); };
+    new MutationObserver(run).observe(document.body, { childList: true, subtree: true });
+    Bus.on('settings', run);
+    run();
+  }
+
+  // =====================================================================================
+  // Sichtbarkeit (wio/state)
+  // =====================================================================================
+  const Vis = {
+    userChanged: 0,
+    async state() {
+      try { const d = await apiGet('wio/state'); const v = d && (d.value || d.state || d); if (v === 'visible' || v === 'invisible') return v; } catch {}
+      const sw = [...document.querySelectorAll('button[role=switch]')].find((b) => /unsichtbar/i.test((b.closest('li,div') || {}).textContent || ''));
+      if (sw) return sw.getAttribute('aria-checked') === 'true' ? 'invisible' : 'visible';
+      return G.get('vis_state', null);
+    },
+    async set(v) { await apiPost('wio/state', { value: v }); G.set('vis_state', v); },
+    // Vor einer Funktion mit Profilaufruf: warnen und ggf. unsichtbar schalten
+    // Ergebnis: null = abgebrochen, { restore: bool }
+    async guard(what) {
+      const st = await this.state();
+      if (st === 'invisible') return { restore: false };
+      const v = await ask('Sichtbarkeit', `<p>${esc(what)} ruft ein Profil auf. Dein Besuch erscheint dann beim Mitglied in der Besucherliste.</p>` +
+        (st ? '' : '<p style="color:#a6a6a6">Ob du gerade sichtbar bist, ließ sich nicht feststellen.</p>'), [
+        { label: 'Unsichtbar schalten und fortfahren', value: 'inv', primary: true, focus: true },
+        { label: 'Sichtbar fortfahren', value: 'vis' },
+        { label: 'Abbrechen', value: null, cancel: true },
+      ]);
+      if (!v) return null;
+      if (v === 'vis') return { restore: false };
+      await this.set('invisible');
+      const t0 = now();
+      this.userChanged = 0;
+      const tt = toast('Unsichtbar geschaltet – warte 15 Sekunden …', 0);
+      while (now() - t0 < 15000) { tt.innerHTML = `Unsichtbar geschaltet – noch <b>${Math.ceil((15000 - (now() - t0)) / 1000)}</b> s …`; await sleep(500); }
+      tt.remove();
+      return { restore: true, at: now() };
+    },
+    async restore(tok) {
+      if (!tok || !tok.restore) return;
+      if (this.userChanged > (tok.at || 0)) return;     // selbst umgeschaltet → nichts zurückstellen
+      try { await this.set('visible'); } catch {}
+    },
+  };
+  onApi(/^wio\/state$/, (d, info) => { if (info.method === 'POST' && info.body && info.body.value) { G.set('vis_state', info.body.value); Vis.userChanged = now(); } });
+
+  // =====================================================================================
+  // Blockierliste (/setting/privacy/ignore-list): Reparieren, Synchronisieren, Mülleimer
+  // =====================================================================================
+  const IGNORE_LIST_PATH = '/setting/privacy/ignore-list';
+
+  function ignoreListUi() {
+    if (!location.pathname.startsWith(IGNORE_LIST_PATH)) return;
+    const inp = document.querySelector('main input#nickname');
+    const form = inp && inp.closest('form');
+    if (!form || document.getElementById('vaf-il-box')) return;
+    const box = document.createElement('div');
+    box.id = 'vaf-il-box';
+    box.style.cssText = 'margin:12px 0 16px';
+    box.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button type="button" class="ant-btn ant-theme ant-btn-default ant-btn-color-default ant-btn-variant-outlined" data-a="repair"><span>Reparieren</span></button>
+        <button type="button" class="ant-btn ant-theme ant-btn-default ant-btn-color-default ant-btn-variant-outlined" data-a="sync"><span>Synchronisieren</span></button>
+        <button type="button" class="ant-btn ant-theme ant-btn-text" data-a="stop" style="display:none"><span>Abbrechen</span></button>
+      </div>
+      <div id="vaf-il-status" class="ant-typography ant-typography-secondary" style="margin-top:8px;font-size:13px"></div>`;
+    form.after(box);
+    box.querySelector('[data-a=repair]').addEventListener('click', () => runIgnoreJob('repair'));
+    box.querySelector('[data-a=sync]').addEventListener('click', () => syncDialog());
+    box.querySelector('[data-a=stop]').addEventListener('click', () => { ilJob.stop = true; });
+    const last = G.get('il_last', null);
+    if (last) ilStatus(`Zuletzt: ${last.text} (${deDateTime(last.at)})`);
+  }
+  const ilStatus = (t) => { const s = document.getElementById('vaf-il-status'); if (s) s.textContent = t; };
+  const ilJob = { running: false, stop: false };
+
+  // Liest die komplette Blockierliste über die Schnittstelle
+  async function readWholeBlocklist() {
+    let n = 0;
+    const list = await BL.all((count, page) => { n = count; ilStatus(`Lese Blockierliste … ${fmtN(count)} Einträge (Seite ${page})`); return !ilJob.stop; });
+    if (ilJob.stop) throw new Error('abgebrochen');
+    G.set('blocked_count', list.length);
+    return list;
+  }
+  // Script-Gedächtnis: alle vom Opa-Schutz Geblockten
+  async function memoryBlocked() {
+    const out = [];
+    await Members.each((m) => { if (m.blk && m.blk.opa && !m.unblk) out.push(m); });
+    return out;
+  }
+
+  async function runIgnoreJob(kind, opts = {}) {
+    if (ilJob.running) return;
+    if (!(await Lock.take('blocklist', kind))) { toast('Ein anderer Tab arbeitet gerade an der Blockierliste.'); return; }
+    ilJob.running = true; ilJob.stop = false;
+    const stopBtn = document.querySelector('#vaf-il-box [data-a=stop]');
+    if (stopBtn) stopBtn.style.display = '';
+    try {
+      const list = await readWholeBlocklist();
+      const onList = new Map(list.filter((e) => e.user).map((e) => [String(e.user.uid), e]));
+      const mem = await memoryBlocked();
+      let text = '';
+      if (kind === 'repair') {
+        let gone = 0, notes = 0, adopted = 0;
+        // 1. nicht mehr blockiert → aus dem Gedächtnis
+        for (const m of mem) if (!onList.has(m.uid)) { await Members.update(m.uid, (x) => { x.unblk = now(); x.blk = null; }); gone++; }
+        // 2. Einträge mit Opa-Notiz ins Gedächtnis, fehlende Notizen ergänzen
+        let i = 0;
+        for (const [uid, e] of onList) {
+          if (ilJob.stop) break;
+          if (++i % 200 === 0) ilStatus(`Prüfe Einträge … ${fmtN(i)} / ${fmtN(onList.size)}`);
+          let m = await Members.get(uid);
+          const pn = parseNote(e.note);
+          if (!pn && !e.note && legacy && legacy.done[norm(e.user.nickname)] && !(m && m.legacyDone)) m = await seen(e.user, 'Blockierliste', { images: false });
+          if (pn) { if (!m || !m.blk || !m.blk.opa) { await seen(e.user, 'Blockierliste', { images: false }); await Members.update(uid, (x) => { x.blk = { at: pn.at, src: pn.src, note: e.note, opa: true }; delete x.unblk; }); adopted++; } continue; }
+          if (m && m.blk && m.blk.opa && !e.note && S().expert.writeNote) {
+            const t = makeNote(m, m.blk.src, new Date(m.blk.at || now()));
+            if (!dry()) { try { await BL.note(uid, t); notes++; } catch {} }
+            await Members.update(uid, (x) => { x.blk.note = t; });
+          }
+        }
+        text = `Reparieren: ${fmtN(list.length)} Einträge, ${gone} nicht mehr blockiert, ${adopted} übernommen, ${notes} Notizen ergänzt`;
+      } else if (kind === 'sync-poppen') {
+        let adopted = 0, dropped = 0, notes = 0;
+        for (const [uid, e] of onList) {
+          const pn = parseNote(e.note);
+          if (!pn) continue;                                   // von Hand Blockierte: nichts tun
+          await seen(e.user, 'Blockierliste', { images: false });
+          await Members.update(uid, (x) => { if (!x.blk || !x.blk.opa) adopted++; x.blk = { at: pn.at, src: pn.src || 'Sync', note: e.note, opa: true }; delete x.unblk; });
+          if (opts.notes) notes += await alignNote(uid, e, pn);
+        }
+        for (const m of mem) if (!onList.has(m.uid)) { await Members.update(m.uid, (x) => { x.unblk = now(); x.blk = null; }); await Queue.remove(m.uid); dropped++; }
+        text = `Sync (poppen.de hat Vorrang): ${adopted} übernommen, ${dropped} als entsperrt vermerkt${opts.notes ? `, ${notes} Notizen angepasst` : ''}`;
+      } else if (kind === 'sync-script') {
+        const reblock = mem.filter((m) => !onList.has(m.uid));
+        const unblock = [];
+        for (const [uid, e] of onList) {
+          const pn = parseNote(e.note);
+          if (!pn) continue;
+          const m = await Members.get(uid);
+          const x = m || normUser(e.user);
+          const white = whiteReason(m || {}, e.user.nickname);
+          if ((m && m.unblk) || white) unblock.push({ uid, nick: e.user.nickname, why: white || 'im Skript entsperrt' });
+        }
+        const ok = await ask('Synchronisieren – Script hat Vorrang',
+          `<div class="vaf-stats"><span>Neu blockieren (im Skript blockiert, auf poppen.de nicht)</span><b>${fmtN(reblock.length)}</b>` +
+          `<span>Entsperren (Opa-Notiz, im Skript entsperrt oder auf der Whitelist)</span><b>${fmtN(unblock.length)}</b>` +
+          `<span>Von Hand Blockierte (ohne Opa-Notiz)</span><b>bleiben unberührt</b></div>`,
+          [{ label: 'Jetzt ausführen', value: true, primary: true }, { label: 'Abbrechen', value: false, focus: true, cancel: true }]);
+        if (!ok) { text = 'Synchronisieren abgebrochen'; }
+        else {
+          let a = 0, b = 0, notes = 0;
+          for (const m of reblock) { if (ilJob.stop) break; await Queue.add(m, (m.blk && m.blk.src) || 'Sync'); a++; }
+          for (const u of unblock) {
+            if (ilJob.stop) break;
+            const r = await unblockOne({ uid: u.uid, nick: u.nick });
+            if (r === 'ok' || r === 'Test') b++;
+            ilStatus(`Entsperre … ${b} / ${unblock.length}`);
+            await sleep(rand(S().expert.pauseMin * 1000, S().expert.pauseMax * 1000));
+          }
+          if (opts.notes) for (const [uid, e] of onList) { const pn = parseNote(e.note); if (pn) notes += await alignNote(uid, e, pn); }
+          text = `Sync (Script hat Vorrang): ${a} auf die Warteliste zum Neu-Blockieren, ${b} entsperrt${opts.notes ? `, ${notes} Notizen angepasst` : ''}`;
+          if (a) Etappe.run('Synchronisieren').catch(() => {});
+        }
+      }
+      G.set('il_last', { text, at: now() });
+      ilStatus(text);
+    } catch (e) { ilStatus(e.message === 'abgebrochen' ? 'Abgebrochen.' : 'Fehler: ' + e.message); }
+    finally {
+      ilJob.running = false;
+      Lock.release('blocklist');
+      if (stopBtn) stopBtn.style.display = 'none';
+    }
+  }
+  // Notiz an die aktuelle Vorlage angleichen (gleiche Quelle, gleicher Zeitpunkt)
+  async function alignNote(uid, e, pn) {
+    const m = await Members.get(uid) || normUser(e.user);
+    const want = makeNote(m, pn.src, new Date(pn.at));
+    if (want === e.note) return 0;
+    if (dry()) return 1;
+    try { await BL.note(uid, want); await Members.update(uid, (x) => { if (x.blk) x.blk.note = want; }); return 1; } catch { return 0; }
+  }
+  async function syncDialog() {
+    const m = modal({ title: 'Synchronisieren', sub: 'Gleicht die Blockierliste von poppen.de mit dem Gedächtnis des Opa-Schutzes ab. Von Hand Blockierte (ohne Opa-Notiz) bleiben immer unberührt.',
+      html: `<label class="vaf-chk"><input type="checkbox" id="vaf-sync-notes"> Notizen abgleichen (an die aktuelle Vorlage anpassen)</label>` });
+    const notes = () => m.md.querySelector('#vaf-sync-notes').checked;
+    m.buttons([
+      { label: 'poppen.de hat Vorrang', primary: true, fn: () => { const n = notes(); m.close(); runIgnoreJob('sync-poppen', { notes: n }); } },
+      { label: 'Script hat Vorrang', fn: () => { const n = notes(); m.close(); runIgnoreJob('sync-script', { notes: n }); } },
+      { label: 'Abbrechen', focus: true, fn: () => m.close() },
+    ]);
+  }
+
+  // ---------- Mülleimer: Rückfrage bei vom Opa-Schutz Blockierten ----------
+  let trashBypass = false;
+  function hookTrash() {
+    document.addEventListener('click', async (e) => {
+      if (trashBypass || !location.pathname.startsWith(IGNORE_LIST_PATH)) return;
+      const btn = e.target.closest && e.target.closest('main .ant-list-item button');
+      if (!btn || btn.closest('#vaf-il-box')) return;
+      const item = btn.closest('.ant-list-item');
+      const isTrash = btn.querySelector('svg') && !norm(btn.textContent) && !btn.closest('form');
+      if (!isTrash) return;
+      const nameEl = item.querySelector('span.df-text-weight-semi-bold') || item.querySelector('a[href^="/p/"]');
+      const nick = nameEl ? nameEl.textContent.trim() : '';
+      const note = (item.querySelector('input') || {}).value || '';
+      const m = nick ? await Members.byNick(nick) : null;
+      const byOpa = isOpaNote(note) || (m && m.blk && m.blk.opa && !m.unblk);
+      if (!byOpa) return;
+      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+      const v = await confirmUnblock(nick);
+      if (!v) return;
+      if (v === 'white') addToWhitelist(nick);
+      if (m) await Members.update(m.uid, (x) => { x.unblk = now(); x.blk = null; });
+      trashBypass = true;
+      try { btn.click(); } finally { setTimeout(() => { trashBypass = false; }, 500); }
+    }, true);
+  }
+  function confirmUnblock(nick) {
+    return ask(`${nick} entsperren`, `<p>${esc(nick)} wurde durch den ${esc(word())}-Schutz ignoriert.</p>`, [
+      { label: 'Trotzdem entsperren', value: 'yes' },
+      { label: 'Trotzdem entsperren & Whitelist', value: 'white' },
+      { label: 'Abbrechen', value: null, focus: true, primary: true, cancel: true },
+    ]);
+  }
+  function addToWhitelist(nick, group = '') {
+    const s = clone(S());
+    if (!s.whitelist.names.some((x) => norm(x.n) === norm(nick))) s.whitelist.names.push({ n: nick, g: group });
+    saveSettings(s);
+  }
+
+  // =====================================================================================
+  // Profil eines Geblockten: „Du hast diesen Popster blockiert“
+  // =====================================================================================
+  const isBlockedProfilePage = () => /^\/p\/[^/]+\/?$/.test(location.pathname) && /Du hast diesen Popster blockiert/.test((document.querySelector('main') || {}).textContent || '');
+  async function blockedProfileUi() {
+    if (!isBlockedProfilePage() || document.getElementById('vaf-bp')) return;
+    const unb = [...document.querySelectorAll('main button')].find((b) => norm(b.textContent) === 'diesen benutzer entblockieren');
+    if (!unb) return;
+    const nick = slugOf(location.pathname);
+    let m = await Members.byNick(nick);
+    if (!m) { const e = await BL.find(nick).catch(() => null); if (e && e.user) m = await seen(e.user, 'Blockierliste', { images: false }); }
+    const realNick = (m && m.nick) || nick;
+    const bar = unb.parentElement;
+    const wrap = document.createElement('div');
+    wrap.id = 'vaf-bp';
+    wrap.style.cssText = 'display:contents';
+    const mk = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = unb.className; b.innerHTML = `<span>${esc(label)}</span>`; b.addEventListener('click', fn); return b; };
+    wrap.append(mk('Trotzdem öffnen', () => openBlockedOnce(m, realNick)), mk('Nicht mehr ignorieren', () => unblockForGood(m, realNick)));
+    bar.appendChild(wrap);
+    const note = m && m.blk && m.blk.note;
+    if (note) { const p = document.createElement('div'); p.className = 'ant-typography ant-typography-secondary'; p.style.marginTop = '10px'; p.textContent = 'Grund: ' + note; bar.after(p); }
+    // poppen-Knopf „Diesen Benutzer entblockieren“: gleiche Rückfrage wie der Mülleimer
+    unb.addEventListener('click', async (e) => {
+      if (trashBypass) return;
+      if (!(m && m.blk && m.blk.opa)) return;
+      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+      const v = await confirmUnblock(realNick);
+      if (!v) return;
+      if (v === 'white') addToWhitelist(realNick);
+      await Members.update(m.uid, (x) => { x.unblk = now(); x.blk = null; });
+      trashBypass = true; unb.click(); setTimeout(() => { trashBypass = false; }, 500);
+    }, true);
+  }
+  async function openBlockedOnce(m, nick) {
+    if (!m || !m.uid) { toast('Benutzer-ID unbekannt – „Trotzdem öffnen“ geht hier nicht.'); return; }
+    const vis = await Vis.guard('„Trotzdem öffnen“');
+    if (!vis) return;
+    const note = (m.blk && m.blk.note) || '';
+    const r = await unblockOne(m, { keepMemory: true });
+    if (r !== 'ok' && r !== 'Test') { toast('Entsperren fehlgeschlagen: ' + esc(r)); return; }
+    G.set('reblock', { uid: m.uid, nick, note, path: location.pathname, tab: TAB_ID, at: now(), vis });
+    location.reload();
+  }
+  async function unblockForGood(m, nick) {
+    const v = await ask(`${nick} nicht mehr ignorieren`, `<p>${esc(nick)} wird dauerhaft entsperrt.</p>`, [
+      { label: 'Entsperren', value: 'yes' }, { label: 'Entsperren & Whitelist', value: 'white' }, { label: 'Abbrechen', value: null, focus: true, primary: true, cancel: true }]);
+    if (!v) return;
+    if (v === 'white') addToWhitelist(nick);
+    if (m && m.uid) { const r = await unblockOne(m); if (r !== 'ok' && r !== 'Test') { toast('Fehler: ' + esc(r)); return; } }
+    location.reload();
+  }
+  // Nach „Trotzdem öffnen“: beim Verlassen des Profils wieder sperren (spätestens beim nächsten Seitenaufruf)
+  async function checkReblock() {
+    const rb = G.get('reblock', null);
+    if (!rb) return;
+    const here = location.pathname.replace(/\/+$/, '');
+    const stillThere = rb.tab === TAB_ID && here === rb.path.replace(/\/+$/, '');
+    if (stillThere && now() - rb.at < 6 * 3600000) {
+      if (!rb.armed) G.set('reblock', { ...rb, armed: true });
+      if (!document.getElementById('vaf-rb')) toast(`<b>${esc(rb.nick)}</b> ist vorübergehend entsperrt und wird beim Verlassen des Profils wieder gesperrt.`, 8000);
+      return;
+    }
+    if (rb.tab !== TAB_ID && now() - rb.at < 10 * 60000) return;   // anderer Tab schaut noch
+    G.del('reblock');
+    if (!dry()) {
+      try { await BL.add(rb.uid, rb.nick); if (rb.note) await BL.note(rb.uid, rb.note); }
+      catch (e) {
+        const there = await BL.find(rb.nick).catch(() => null);      // durch keepalive schon gesperrt?
+        if (there) { if (rb.note && !there.note) { try { await BL.note(rb.uid, rb.note); } catch {} } }
+        else { warn('Wiedersperren fehlgeschlagen', e); G.set('reblock', rb); return; }
+      }
+    }
+    await Members.update(rb.uid, (x) => { if (!x.blk) x.blk = { at: now(), src: 'Profil', note: rb.note, opa: !!rb.note }; delete x.unblk; });
+    if (rb.vis) await Vis.restore(rb.vis);
+  }
+  W.addEventListener('pagehide', () => {
+    let rb = null;
+    try { rb = G.get('reblock', null); } catch { return; }
+    if (!rb || rb.tab !== TAB_ID || !rb.armed || dry()) return;
+    // Seite wird verlassen: sofort wieder sperren (keepalive, damit die Abfrage den Seitenwechsel überlebt)
+    try {
+      const h = { 'Content-Type': 'application/json', ...(mirror || {}) };
+      origFetch(location.origin + '/v2-api/ignore/add', { method: 'POST', credentials: 'include', keepalive: true, headers: h, body: JSON.stringify({ uid: String(rb.uid), nickname: rb.nick }) });
+    } catch {}
+  });
+
+  // =====================================================================================
+  // Opa-Scan: Popup mit allen Scans
+  // =====================================================================================
+  const SCANS = [
+    { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
+    { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker und Nachrichten', fn: scanInteractions },
+    { k: 'party', title: 'Partygäste', sub: 'gibt es auf poppen.de nicht', fn: null },
+    { k: 'gruppen', title: 'Gruppen', sub: 'Mitglieder deiner Gruppen; verwaltete Gruppen → Whitelist', fn: scanGroups },
+    { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
+  ];
+  let scanRun = null;
+
+  async function statusLine() {
+    const q = await Queue.count().catch(() => 0);
+    const w = Object.keys(await KV.get('watch', {})).length;
+    const b = G.get('blocked_count', null);
+    return `Blockiert: <b style="color:#fff">${b == null ? '?' : fmtN(b)}</b> · Warteliste: <b style="color:#fff">${fmtN(q)}</b> · Vorgemerkt: <b style="color:#fff">${fmtN(w)}</b>` +
+      (dry() ? ' · <span style="color:#ffb300">Testlauf</span>' : '') + (isOn() ? '' : ' · <span style="color:#ff8a80">Automatik aus</span>');
+  }
+
+  async function openScanPopup() {
+    if (scanRun && scanRun.m && scanRun.m.ov) { if (!scanRun.m.ov.isConnected) document.body.appendChild(scanRun.m.ov); return; }
+    const W1 = word();
+    const m = modal({ title: `${W1}-Scan`, sub: await statusLine() });
+    const groups = G.get('groups', null);
+    const tiles = SCANS.map((sc) => {
+      let sub = sc.sub;
+      if (sc.k === 'gruppen' && groups) sub = `${groups.attended.length} Gruppen, ${groups.managed.length} verwaltet (→ Whitelist)`;
+      return `<button type="button" class="vaf-tile" data-k="${sc.k}" ${sc.fn ? '' : 'disabled'} title="${esc(SOURCES[sc.k].tip)}"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></button>`;
+    }).join('');
+    m.body.innerHTML = `<div class="vaf-grid">${tiles}</div>`;
+    m.body.querySelectorAll('.vaf-tile').forEach((b) => b.addEventListener('click', () => runScans(m, [b.dataset.k])));
+    m.buttons([
+      { label: 'Alle Scans nacheinander', primary: true, focus: true, fn: () => runScans(m, SCANS.filter((x) => x.fn).map((x) => x.k)) },
+      { label: 'Jetzt eine Etappe blockieren', fn: () => runEtappeInPopup(m) },
+      { label: 'Schließen', fn: () => m.close() },
+    ]);
+  }
+
+  async function runScans(m, keys) {
+    if (!(await Lock.take('scan', keys.join(',')))) { toast('Ein anderer Tab scannt gerade.'); return; }
+    const run = scanRun = { m, stopped: false, notes: [], errors: [] };
+    m.closable = false;
+    const guard = (e) => { e.preventDefault(); e.returnValue = ''; };
+    W.addEventListener('beforeunload', guard);
+    const total = newRes();
+    m.body.innerHTML = `<div class="vaf-warn">Bitte diese Seite nicht verlassen, solange der Scan läuft.</div>
+      <div class="vaf-cur" data-r="phase"></div>
+      <div class="vaf-bar"><div data-r="b1"></div></div><div class="vaf-bar"><div data-r="b2"></div></div>
+      <div class="vaf-cur" data-r="cur"></div><div class="vaf-stats" data-r="stats"></div>`;
+    const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
+    const showStats = () => {
+      $('stats').innerHTML = `<span>Mitglieder gelesen</span><b>${fmtN(total.total)}</b><span>Über der Grenze</span><b>${fmtN(total.hits)}</b>` +
+        `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
+        `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
+        `<span>Alter unklar (99)</span><b>${fmtN(total.unclear)}</b>` +
+        (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '');
+    };
+    showStats();
+    m.buttons([{ label: 'Abbrechen', focus: true, fn: () => { run.stopped = true; $('cur').textContent = 'Breche ab …'; } }]);
+    let si = 0;
+    for (const k of keys) {
+      if (run.stopped) break;
+      const sc = SCANS.find((x) => x.k === k);
+      const ctx = {
+        stop: () => run.stopped,
+        phase: (t) => { $('phase').textContent = `${sc.title} – ${t}`; },
+        step: (i, n, t) => { $('cur').textContent = t || ''; $('b2').style.width = n ? `${Math.min(100, Math.round(i / n * 100))}%` : `${(i % 50) * 2}%`; },
+        outer: (i, n) => { $('b1').style.width = `${Math.round(((si + (n ? i / n : 0)) / keys.length) * 100)}%`; },
+        error: (what, e) => { run.errors.push(`${what}: ${e.message}`); },
+        notes: run.notes,
+      };
+      $('phase').textContent = sc.title;
+      ctx.outer(0, 1);
+      try {
+        const r = await sc.fn(ctx);
+        addRes(total, r);
+      } catch (e) { run.errors.push(`${sc.title}: ${e.message}`); warn(sc.title, e); }
+      si++;
+      $('b1').style.width = `${Math.round(si / keys.length * 100)}%`;
+      showStats();
+      G.set('scan_last_' + k, now());
+    }
+    W.removeEventListener('beforeunload', guard);
+    Lock.release('scan');
+    scanRun = null;
+    m.closable = true;
+    const warnEl = m.body.querySelector('.vaf-warn'); if (warnEl) warnEl.remove();
+    $('phase').textContent = run.stopped ? 'Abgebrochen.' : 'Fertig.';
+    $('cur').innerHTML = await statusLine();
+    if (run.errors.length) m.body.insertAdjacentHTML('beforeend', `<div class="vaf-err">${run.errors.map(esc).join('<br>')}</div>`);
+    if (run.notes.length) m.body.insertAdjacentHTML('beforeend', `<h3>Entsperrt (Gruppen-Whitelist)</h3><div class="vaf-list">${run.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>`);
+    const q = await Queue.count();
+    m.buttons([
+      ...(q ? [{ label: `Jetzt eine Etappe blockieren (${Math.min(q, S().expert.maxPerRun)} von ${fmtN(q)})`, primary: true, fn: () => runEtappeInPopup(m) }] : []),
+      { label: 'Schließen', focus: true, fn: () => m.close() },
+    ]);
+  }
+
+  async function runEtappeInPopup(m) {
+    m.closable = false;
+    m.body.innerHTML = `<div class="vaf-cur" data-r="cur">Starte Etappe …</div><div class="vaf-bar"><div data-r="b"></div></div><div class="vaf-list" data-r="list"></div>`;
+    const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
+    m.buttons([{ label: 'Anhalten', focus: true, fn: () => Etappe.stop() }]);
+    const st = await Etappe.run('Opa-Scan', (i, n, q) => {
+      $('cur').textContent = `${i}/${n}: ${q.nick} (${(q.ages || []).join('/')}) – ${q.src}`;
+      $('b').style.width = `${Math.round(i / n * 100)}%`;
+    });
+    m.closable = true;
+    if (!st) { $('cur').textContent = 'Es läuft schon eine Etappe (evtl. in einem anderen Tab).'; }
+    else {
+      $('cur').innerHTML = `Etappe fertig: ${st.ok} blockiert, ${st.fail} Fehler, ${st.dropped} übersprungen${st.test ? `, ${st.test} Testlauf` : ''}${st.limit ? ' – Limit erreicht' : ''}.<br>` + await statusLine();
+      $('b').style.width = '100%';
+      $('list').innerHTML = st.items.map((x) => `<div>${esc(x.nick)}: ${esc(x.res)}</div>`).join('') || '<div>Nichts zu tun.</div>';
+    }
+    m.buttons([{ label: 'Schließen', focus: true, primary: true, fn: () => m.close() }]);
+  }
+
+  // =====================================================================================
+  // Einstellungsseite „Opa-Schutz“ (/setting/profile#opa-schutz) und Menüpunkte der Einstellungen
+  // =====================================================================================
+  const SETTINGS_CSS = `
+  #vaf-set{color:#e8e8e8;font-size:14px;line-height:1.45;padding-bottom:40px}
+  #vaf-set h2{font-size:18px;margin:22px 0 10px;display:flex;align-items:center;gap:12px;color:#fff}
+  #vaf-set h2 small, #vaf-set .vaf-src{font-size:12px;font-weight:400;color:#ffc21a;cursor:pointer}
+  #vaf-set .vaf-card{background:#1f1f1f;border-radius:10px;padding:4px 16px;margin-bottom:6px}
+  #vaf-set .vaf-r{display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:1px solid #2c2c2c}
+  #vaf-set .vaf-r:last-child{border-bottom:0}
+  #vaf-set .vaf-lab{flex:0 0 230px}
+  #vaf-set .vaf-lab .vaf-d{color:#8c8c8c;font-size:12px}
+  #vaf-set .vaf-ctl{flex:1;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  #vaf-set .vaf-num{width:70px;background:#141414;border:1px solid #444;border-radius:6px;color:#fff;padding:4px 8px}
+  #vaf-set .vaf-txt{flex:1;min-width:240px;background:#141414;border:1px solid #444;border-radius:6px;color:#fff;padding:5px 8px}
+  #vaf-set select{background:#141414;border:1px solid #444;border-radius:6px;padding:4px 10px;color:#fff}
+  #vaf-set .vaf-btn{background:#3a3a3a;color:#fff;border:0;border-radius:8px;padding:6px 14px;cursor:pointer;font:inherit}
+  #vaf-set .vaf-btn.vaf-y{background:#ffc21a;color:#111;font-weight:600}
+  #vaf-set .vaf-btn:disabled{opacity:.4;cursor:default}
+  #vaf-set .vaf-sw{width:40px;height:22px;border-radius:11px;background:#555;position:relative;display:inline-block;flex:none;cursor:pointer;border:0;padding:0}
+  #vaf-set .vaf-sw::after{content:"";position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
+  #vaf-set .vaf-sw.on{background:#ffc21a}
+  #vaf-set .vaf-sw.on::after{left:20px}
+  #vaf-set .vaf-dev::after{content:"°";color:#ffc21a;margin-left:2px}
+  #vaf-set .vaf-reset{font-size:11px;color:#ffc21a;cursor:pointer;margin-left:6px}
+  #vaf-set .vaf-x{outline:2px solid #ff4d4f;outline-offset:2px;opacity:.42;border-radius:6px;pointer-events:none}
+  #vaf-set .vaf-red{color:#ff7875}
+  #vaf-set .vaf-chip{background:#2b2b2b;border-radius:12px;padding:2px 10px;font-size:12px;display:inline-flex;gap:6px;align-items:center}
+  #vaf-set .vaf-chip b{cursor:pointer;color:#a6a6a6;font-weight:400}
+  #vaf-set .vaf-info{background:#1f1f1f;border-radius:10px;padding:12px 16px;display:flex;gap:40px;flex-wrap:wrap}
+  #vaf-set .vaf-info b{color:#ffc21a}
+  #vaf-set .vaf-srcgrid{display:grid;grid-template-columns:150px 1fr 1fr;gap:6px 18px;align-items:center;padding:10px 0;border-bottom:1px solid #2c2c2c}
+  #vaf-set .vaf-srcgrid .vaf-h{color:#8c8c8c;font-size:12px}
+  #vaf-set .vaf-sl{position:relative;height:26px;min-width:180px;user-select:none;touch-action:none}
+  #vaf-set .vaf-sl .t{position:absolute;top:11px;left:8px;right:8px;height:4px;background:#444;border-radius:2px}
+  #vaf-set .vaf-sl .f{position:absolute;top:11px;height:4px;background:#ffc21a;border-radius:2px}
+  #vaf-set .vaf-sl .h{position:absolute;top:5px;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #ffc21a;margin-left:-8px;cursor:grab;box-sizing:border-box}
+  #vaf-set .vaf-sl .v{position:absolute;top:-10px;font-size:11px;color:#ddd;transform:translateX(-50%)}
+  #vaf-set .vaf-exp{margin:24px 0 8px;font-size:16px;font-weight:600;cursor:pointer;color:#fff}
+  #vaf-set .vaf-foot{display:flex;gap:10px;margin:26px 0 40px}
+  #vaf-set .vaf-grp{display:flex;flex-direction:column;gap:4px;max-height:260px;overflow:auto;width:100%}
+  #vaf-set .vaf-grp label{display:flex;gap:8px;align-items:center}
+  #vaf-set .vaf-mini{font-size:12px;color:#8c8c8c}
+  `;
+
+  // ---------- Menüpunkte in der linken Spalte der Einstellungen ----------
+  function settingsMenu() {
+    const nav = document.querySelector('[data-type="secondary-navigation"]');
+    if (!nav || !location.pathname.startsWith('/setting') && !location.pathname.startsWith('/dating/my-dates')) return;
+    const links = [...nav.querySelectorAll('a[href]')];
+    if (!links.length) return;
+    // aktive Klasse = Klasse, die nur ein Link hat
+    const counts = {};
+    links.forEach((a) => a.classList.forEach((c) => { counts[c] = (counts[c] || 0) + 1; }));
+    const activeCls = Object.keys(counts).find((c) => counts[c] === 1 && links.length > 2) || '';
+    const base = links.find((a) => !a.classList.contains(activeCls)) || links[0];
+    const mk = (id, label, hash, icon) => {
+      let a = document.getElementById(id);
+      if (a) { const l = a.querySelector('[data-type="label"]'); if (l && l.textContent !== label) l.textContent = label; return a; }
+      a = base.cloneNode(true);
+      a.id = id;
+      if (activeCls) a.classList.remove(activeCls);
+      a.setAttribute('href', '/setting/profile#' + hash);
+      const lab = a.querySelector('[data-type="label"]'); if (lab) lab.textContent = label;
+      const ic = a.querySelector('[data-type="icon"]'); if (ic) ic.innerHTML = icon;
+      a.addEventListener('click', (e) => { e.preventDefault(); goHash(hash); });
+      return a;
+    };
+    const fick = mk('vaf-nav-fick', 'Meine Fickliste', 'fickliste', fickIcon(2, 18));
+    const opa = mk('vaf-nav-opa', `${word()}-Schutz`, 'opa-schutz', oldManSvg(1.1));
+    const after = nav.querySelector('a[href="/dating/my-dates"]');
+    const before = nav.querySelector('a[href="/setting/privacy/home"]');
+    if (after && fick.previousElementSibling !== after) after.after(fick);
+    if (before && opa.nextElementSibling !== before) before.before(opa);
+    const h = location.hash.replace('#', '').split('=')[0];
+    const ours = location.pathname === '/setting/profile' && ['opa-schutz', 'fickliste', 'archiv', 'extern'].includes(h);
+    if (activeCls) {
+      for (const a of nav.querySelectorAll('a[href]')) {
+        const want = ours ? ((a.id === 'vaf-nav-opa' && h === 'opa-schutz') || (a.id === 'vaf-nav-fick' && h !== 'opa-schutz'))
+          : !a.id.startsWith('vaf-nav') && location.pathname.startsWith(a.getAttribute('href'));
+        if (a.classList.contains(activeCls) !== want) a.classList.toggle(activeCls, want);
+      }
+    }
+  }
+  function goHash(hash) {
+    if (location.pathname === '/setting/profile') { if (location.hash !== '#' + hash) { location.hash = hash; } else routeSettings(); }
+    else location.href = '/setting/profile#' + hash;
+  }
+
+  // ---------- eigener Inhalt im Hauptbereich ----------
+  let ownView = null;   // { kind, el }
+  function mainArea() { return document.querySelector('main.ant-layout-content .Hg9Kid') || document.querySelector('main.ant-layout-content') || document.querySelector('main'); }
+  function showOwn(kind, render) {
+    const main = mainArea();
+    if (!main) return false;
+    if (ownView && ownView.kind === kind && ownView.el.isConnected) return true;
+    hideOwn(true);
+    for (const c of main.children) if (!c.dataset.vafOwn) { c.dataset.vafHidden = '1'; c.style.display = 'none'; }
+    const el = document.createElement('div');
+    el.dataset.vafOwn = '1';
+    main.appendChild(el);
+    ownView = { kind, el };
+    render(el);
+    return true;
+  }
+  function hideOwn(quiet = false) {
+    if (ownView && ownView.el) ownView.el.remove();
+    ownView = null;
+    for (const c of document.querySelectorAll('[data-vaf-hidden]')) { c.style.display = ''; delete c.dataset.vafHidden; }
+  }
+  function routeSettings() {
+    if (location.pathname !== '/setting/profile') { if (ownView) hideOwn(); return; }
+    const [h, arg] = location.hash.replace('#', '').split('=');
+    if (ownView && ownView.kind === 'opa' && h !== 'opa-schutz' && settingsDirty) {
+      if (!confirmLeaveSync()) { history.replaceState(null, '', '#opa-schutz'); return; }
+      settingsDirty = false;
+    }
+    if (h === 'opa-schutz') showOwn('opa', renderSettings);
+    else if (h === 'fickliste') showOwn('fick', renderFickList);
+    else if (h === 'archiv') showOwn('archiv:' + arg, (el) => renderArchive(el, decodeURIComponent(arg || '')));
+    else if (h === 'extern') showOwn('extern:' + arg, (el) => renderExternal(el, decodeURIComponent(arg || '')));
+    else if (ownView) { if (!settingsDirty || confirmLeaveSync()) hideOwn(); }
+    settingsMenu();
+  }
+  let settingsDirty = false;
+  const confirmLeaveSync = () => W.confirm('Ungespeicherte Änderungen verwerfen?');
+
+  // ---------- Bausteine ----------
+  function sw(on, fn, title = '') {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'vaf-sw' + (on ? ' on' : ''); b.title = title;
+    b.setAttribute('role', 'switch'); b.setAttribute('aria-checked', on ? 'true' : 'false');
+    b.addEventListener('click', () => { const v = !b.classList.contains('on'); b.classList.toggle('on', v); b.setAttribute('aria-checked', v ? 'true' : 'false'); fn(v); });
+    return b;
+  }
+  function numIn(v, fn, min = 0, max = 100000, step = 1) {
+    const i = document.createElement('input');
+    i.type = 'number'; i.className = 'vaf-num'; i.value = v; i.min = min; i.max = max; i.step = step;
+    i.addEventListener('change', () => { let x = Number(i.value); if (!isFinite(x)) x = min; x = Math.max(min, Math.min(max, x)); i.value = x; fn(x); });
+    return i;
+  }
+  function txtIn(v, fn, ph = '') {
+    const i = document.createElement('input'); i.type = 'text'; i.className = 'vaf-txt'; i.value = v || ''; i.placeholder = ph;
+    i.addEventListener('change', () => fn(i.value)); return i;
+  }
+  // Schieberegler mit 1–2 Griffen
+  function slider(min, max, vals, fn) {
+    const el = document.createElement('div');
+    el.className = 'vaf-sl';
+    el.innerHTML = '<div class="t"></div><div class="f"></div>' + vals.map(() => '<div class="h"><span class="v"></span></div>').join('');
+    const hs = [...el.querySelectorAll('.h')], f = el.querySelector('.f');
+    const cur = [...vals];
+    const pos = (v) => `calc(8px + (100% - 16px) * ${(v - min) / (max - min)})`;
+    const draw = () => {
+      hs.forEach((h, i) => { h.style.left = pos(cur[i]); h.querySelector('.v').textContent = cur[i]; });
+      if (cur.length === 2) { f.style.left = pos(cur[0]); f.style.width = `calc((100% - 16px) * ${(cur[1] - cur[0]) / (max - min)})`; }
+      else { f.style.left = pos(cur[0]); f.style.width = `calc((100% - 16px) * ${(max - cur[0]) / (max - min)})`; }
+    };
+    hs.forEach((h, i) => h.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); h.setPointerCapture(e.pointerId);
+      const mv = (ev) => {
+        const r = el.getBoundingClientRect();
+        let v = Math.round(min + (ev.clientX - r.left - 8) / (r.width - 16) * (max - min));
+        v = Math.max(min, Math.min(max, v));
+        if (cur.length === 2) { if (i === 0) v = Math.min(v, cur[1]); else v = Math.max(v, cur[0]); }
+        if (v !== cur[i]) { cur[i] = v; draw(); }
+      };
+      const up = () => { h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); fn([...cur]); };
+      h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+    }));
+    draw();
+    el.set = (v) => { v.forEach((x, i) => { cur[i] = x; }); draw(); };
+    return el;
+  }
+  function row(card, label, desc, ...ctl) {
+    const r = document.createElement('div');
+    r.className = 'vaf-r';
+    r.innerHTML = `<div class="vaf-lab"><span class="vaf-l">${label}</span>${desc ? `<div class="vaf-d">${desc}</div>` : ''}</div><div class="vaf-ctl"></div>`;
+    ctl.flat().filter(Boolean).forEach((c) => r.querySelector('.vaf-ctl').append(typeof c === 'string' ? document.createRange().createContextualFragment(c) : c));
+    card.appendChild(r);
+    return r;
+  }
+  function card(root, title, extra = '') {
+    const h = document.createElement('h2'); h.innerHTML = title + extra; root.appendChild(h);
+    const c = document.createElement('div'); c.className = 'vaf-card'; root.appendChild(c);
+    return c;
+  }
+
+  // ---------- Seite rendern ----------
+  let draft = null;
+  function renderSettings(el) {
+    if (!document.getElementById('vaf-set-style')) { const st = document.createElement('style'); st.id = 'vaf-set-style'; st.textContent = SETTINGS_CSS; document.head.appendChild(st); }
+    ensureStyle();
+    draft = clone(S());
+    settingsDirty = false;
+    el.id = 'vaf-set';
+    const W1 = word();
+    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz</h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div></div><div id="vaf-set-body"></div>`;
+    const body = el.querySelector('#vaf-set-body');
+    const touch = () => { settingsDirty = true; markDev(); projectLater(); };
+    const markDev = () => {
+      for (const l of el.querySelectorAll('[data-path]')) {
+        const p = l.dataset.path;
+        const dev = !same(getPath(draft, p), getPath(DEFAULTS, p));
+        l.classList.toggle('vaf-dev', dev);
+        let r = l.parentElement.querySelector(':scope > .vaf-reset');
+        if (dev && !r) { r = document.createElement('span'); r.className = 'vaf-reset'; r.textContent = 'Quelltext-Wert'; r.addEventListener('click', () => { setPath(draft, p, clone(getPath(DEFAULTS, p))); rerender(); touch(); }); l.after(r); }
+        if (!dev && r) r.remove();
+      }
+    };
+    const lab = (text, path) => `<span data-path="${path}">${text}</span>`;
+    const rerender = () => { const y = W.scrollY; body.innerHTML = ''; build(); markDev(); W.scrollTo(0, y); };
+
+    function build() {
+      // ---- Gruppen ----
+      for (const gk of GROUP_KEYS) {
+        const g = draft.groups[gk];
+        const c = card(body, GROUP_NAMES[gk], ' <small data-reset="1">Quelltext-Werte</small>');
+        body.lastElementChild.previousElementSibling.querySelector('[data-reset]').addEventListener('click', () => { draft.groups[gk] = clone(DEFAULTS.groups[gk]); rerender(); touch(); });
+        row(c, 'Schalter', '',
+          sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung (3 Stufen)', `groups.${gk}.visual`),
+          '<span style="width:20px"></span>',
+          sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`));
+        if (gk === 'p') {
+          const sel = document.createElement('select');
+          sel.innerHTML = '<option value="any">einer über der Grenze</option><option value="all">beide über der Grenze</option>';
+          sel.value = g.coupleMode; sel.addEventListener('change', () => { g.coupleMode = sel.value; touch(); });
+          row(c, lab('Paar-Regel', 'groups.p.coupleMode'), 'wann ein Paar als alt gilt', sel);
+          const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = !!g.separate;
+          chk.addEventListener('change', () => { g.separate = chk.checked; rerender(); touch(); });
+          row(c, lab('Getrenntes Alter', 'groups.p.separate'), 'je Quelle eine Zeile für die Frau und eine für den Mann', chk);
+        }
+        const rowsFor = (key, who) => {
+          const grid = document.createElement('div');
+          grid.className = 'vaf-srcgrid';
+          grid.innerHTML = `<div class="vaf-h">Quelle${who ? ' · ' + who : ''}</div><div class="vaf-h">Visuell: Stufe 1 bis · Stufe 2 bis</div><div class="vaf-h">Ignorieren ab</div>`;
+          for (const sk of SRC_KEYS) {
+            const v = g[key][sk];
+            const avail = SOURCES[sk].avail;
+            const name = document.createElement('div');
+            name.innerHTML = lab(esc(SOURCES[sk].label), `groups.${gk}.${key}.${sk}`); name.title = SOURCES[sk].tip;
+            const s1 = slider(18, 100, [v[0], v[1]], (x) => { v[0] = x[0]; v[1] = x[1]; touch(); });
+            const s2 = slider(18, 100, [v[2]], (x) => { v[2] = x[0]; touch(); });
+            if (!avail) [name, s1, s2].forEach((e) => e.classList.add('vaf-x'));
+            grid.append(name, s1, s2);
+          }
+          c.appendChild(grid);
+          const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = 'Werte der ersten Zeile für alle Quellen übernehmen';
+          b.addEventListener('click', () => { const f = g[key][SRC_KEYS[0]]; for (const sk of SRC_KEYS) g[key][sk] = [...f]; rerender(); touch(); });
+          row(c, '', '', b);
+        };
+        if (gk === 'p' && g.separate) { rowsFor('srcW', 'Frau'); rowsFor('srcM', 'Mann'); } else rowsFor('src', '');
+        if (gk === 'p') {
+          row(c, lab('Sugar Daddy', 'groups.p.sugarDaddy'), 'Mann deutlich älter als die Frau', sw(g.sugarDaddy.on, (v) => { g.sugarDaddy.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarDaddy.gap, (x) => { g.sugarDaddy.gap = x; touch(); }, 1, 60), 'Jahren');
+          row(c, lab('Sugar Mom', 'groups.p.sugarMom'), 'Frau deutlich älter als der Mann', sw(g.sugarMom.on, (v) => { g.sugarMom.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarMom.gap, (x) => { g.sugarMom.gap = x; touch(); }, 1, 60), 'Jahren');
+        }
+        const lbl = document.createElement('div'); lbl.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:100%';
+        g.labels.forEach((t, i) => { const inp = txtIn(t, (v) => { g.labels[i] = v.trim() || DEFAULTS.groups[gk].labels[i]; touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; lbl.appendChild(inp); });
+        row(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Stufe 1 · 2 · 3, je Einzahl / Mehrzahl', lbl);
+        const types = document.createElement('div'); types.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap';
+        for (const t of ['m', 'w', 'p', 'ts', 'tv']) {
+          const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:6px;align-items:center';
+          const ch = document.createElement('input'); ch.type = 'checkbox'; ch.checked = g.types.includes(t);
+          ch.addEventListener('change', () => {
+            if (ch.checked) { for (const k of GROUP_KEYS) draft.groups[k].types = draft.groups[k].types.filter((x) => x !== t); g.types.push(t); }
+            else g.types = g.types.filter((x) => x !== t);
+            rerender(); touch();
+          });
+          l.append(ch, TYPE_NAMES[t]); types.appendChild(l);
+        }
+        row(c, lab('Profiltypen', `groups.${gk}.types`), 'ein Haken entfernt den Typ aus den anderen Gruppen', types);
+      }
+
+      // ---- Allgemein ----
+      const ca = card(body, 'Allgemein');
+      row(ca, lab('Warnalter', 'warnYears'), 'so viele Jahre vor „Ignorieren ab“: dunkelorange und vormerken', numIn(draft.warnYears, (x) => { draft.warnYears = x; touch(); }, 0, 10), 'Jahr(e)',
+        sw(draft.watch, (v) => { draft.watch = v; touch(); }), lab('vormerken', 'watch'));
+      const wl = draft.whitelist;
+      const wlSum = `${wl.names.slice(0, 6).map((x) => esc(x.n)).join(', ')}${wl.names.length > 6 ? ' …' : ''}${wl.prefixes.length ? ` · Präfix ${wl.prefixes.map((p) => '„' + esc(p) + '“').join(', ')}` : ''} · ${wl.names.length} Einträge${wl.groups.length ? `, ${wl.groups.length} Gruppen` : ''}`;
+      const wb = document.createElement('button'); wb.type = 'button'; wb.className = 'vaf-btn'; wb.textContent = 'Whitelist bearbeiten';
+      wb.addEventListener('click', () => editWhitelist(() => { rerender(); touch(); }));
+      row(ca, lab('Whitelist', 'whitelist'), '', `<span>${wlSum}</span>`, wb);
+      const ab = document.createElement('button'); ab.type = 'button'; ab.className = 'vaf-btn'; ab.textContent = 'Anzeigen';
+      ab.addEventListener('click', showAutoWhitelist);
+      row(ca, 'Automatische Whitelist', 'poppen-Mitarbeiter, Freunde, Mitglieder verwalteter Gruppen', '<span id="vaf-autowl">…</span>', ab);
+      autoWhitelistCount().then((n) => { const e = el.querySelector('#vaf-autowl'); if (e) e.textContent = `${fmtN(n)} Mitglieder`; });
+      const awo = row(ca, 'AWO-Faktor', 'Anteil alter Männer und Geronto-Paare auf Partys', '<span>gibt es auf poppen.de nicht (keine Partys)</span>');
+      awo.classList.add('vaf-x');
+
+      // ---- Gruppen ----
+      const cg = card(body, 'Gruppen', ' <small data-reload="1">neu laden</small>');
+      body.lastElementChild.previousElementSibling.querySelector('[data-reload]').addEventListener('click', async () => { await loadGroups().catch(() => {}); rerender(); });
+      const gr = G.get('groups', null);
+      if (!gr) { row(cg, 'Noch nicht geladen', '', '<span class="vaf-mini">„neu laden“ klicken</span>'); loadGroups().then(() => rerender()).catch(() => {}); }
+      else {
+        const mbox = document.createElement('div'); mbox.className = 'vaf-grp';
+        for (const g of gr.managed) {
+          const l = document.createElement('label');
+          const s2 = sw(draft.managedWhitelist[g.cms] !== false, (v) => { if (v) delete draft.managedWhitelist[g.cms]; else draft.managedWhitelist[g.cms] = false; touch(); });
+          l.append(s2, `${g.name} · ${g.role === 'moderator' ? 'Moderatorin' : 'Eigentümerin'} · ${fmtN(g.count)} Mitglieder`);
+          mbox.appendChild(l);
+        }
+        row(cg, lab('Verwaltete Gruppen', 'managedWhitelist'), `Schalter = Mitglieder whitelisten (Schonfrist ${draft.expert.groupGraceDays} Tage)`, gr.managed.length ? mbox : '<span class="vaf-mini">keine</span>');
+        const abox = document.createElement('div'); abox.className = 'vaf-grp';
+        for (const g of gr.attended) {
+          const l = document.createElement('label');
+          const ch = document.createElement('input'); ch.type = 'checkbox'; ch.checked = draft.groupScan[g.cms] !== false;
+          ch.addEventListener('change', () => { if (ch.checked) delete draft.groupScan[g.cms]; else draft.groupScan[g.cms] = false; touch(); });
+          l.append(ch, `${g.name} · ${fmtN(g.count)}`);
+          abox.appendChild(l);
+        }
+        row(cg, lab('Beim Gruppen-Scan prüfen', 'groupScan'), 'Gruppen, in denen du Mitglied bist', abox);
+      }
+
+      // ---- Automatik ----
+      const cu = card(body, 'Automatik');
+      row(cu, lab('Besucherliste', 'auto.besucher'), '', sw(draft.auto.besucher, (v) => { draft.auto.besucher = v; touch(); }), 'beim Öffnen automatisch prüfen');
+      row(cu, lab('Mitgliedersuche (Seite)', 'auto.suche'), '', sw(draft.auto.suche, (v) => { draft.auto.suche = v; touch(); }), 'beim Öffnen automatisch prüfen');
+      row(cu, lab('Interaktionen (Seiten)', 'auto.interaktionen'), 'Likes, Sticker, Posteingang', sw(draft.auto.interaktionen, (v) => { draft.auto.interaktionen = v; touch(); }), 'beim Öffnen automatisch prüfen');
+      row(cu, lab('Automatisch anmelden', 'autoLogin'), 'nur mit vom Browser ausgefüllten Daten', sw(draft.autoLogin, (v) => { draft.autoLogin = v; touch(); }), 'Pause zwischen Versuchen', numIn(draft.autoLoginPauseMin, (x) => { draft.autoLoginPauseMin = x; touch(); }, 1, 1440), 'Min.');
+      row(cu, lab('Wartungsseite', 'maintenanceMin'), '', 'neuer Versuch nach', numIn(draft.maintenanceMin, (x) => { draft.maintenanceMin = x; touch(); }, 1, 1440), 'Min.');
+
+      // ---- Gruppenanfragen ----
+      const cq = card(body, 'Gruppenanfragen');
+      row(cq, lab('Gruppen', 'groupReq.match'), 'Name enthält (regulärer Ausdruck)', txtIn(draft.groupReq.match, (v) => { draft.groupReq.match = v; touch(); }));
+      const chips = (arr) => {
+        const box = document.createElement('div'); box.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+        const draw = () => {
+          box.innerHTML = '';
+          arr.forEach((t, i) => { const c = document.createElement('span'); c.className = 'vaf-chip'; c.innerHTML = `${esc(t)} <b>✕</b>`; c.querySelector('b').addEventListener('click', () => { arr.splice(i, 1); draw(); touch(); }); box.appendChild(c); });
+          const add = document.createElement('button'); add.type = 'button'; add.className = 'vaf-btn'; add.textContent = '+';
+          add.addEventListener('click', () => { const v = W.prompt('Typ (wie im Profil unter „Typ“):'); if (v && v.trim()) { arr.push(v.trim()); draw(); touch(); } });
+          box.appendChild(add);
+        };
+        draw(); return box;
+      };
+      row(cq, lab('Typ annehmen', 'groupReq.accept'), '', chips(draft.groupReq.accept));
+      row(cq, lab('Typ ablehnen', 'groupReq.reject'), '', chips(draft.groupReq.reject));
+      row(cq, lab('Fotos in der Prüfung', 'groupReq.photos'), '', numIn(draft.groupReq.photos, (x) => { draft.groupReq.photos = x; touch(); }, 0, 20));
+
+      // ---- Experten ----
+      const exp = document.createElement('div'); exp.className = 'vaf-exp'; exp.textContent = '▸ Experten-Einstellungen';
+      body.appendChild(exp);
+      const ce = document.createElement('div'); ce.className = 'vaf-card'; ce.style.display = 'none'; body.appendChild(ce);
+      exp.addEventListener('click', () => { const open = ce.style.display === 'none'; ce.style.display = open ? '' : 'none'; exp.textContent = (open ? '▾' : '▸') + ' Experten-Einstellungen'; });
+      const x = draft.expert;
+      row(ce, lab('Debug-Ausgaben', 'expert.debug'), 'zusätzliche Ausgaben in der Konsole (F12)', sw(x.debug, (v) => { x.debug = v; touch(); }));
+      row(ce, lab('Testlauf', 'expert.dryRun'), 'nichts wird verändert, nur protokolliert', sw(x.dryRun, (v) => { x.dryRun = v; touch(); }));
+      row(ce, lab('Obergrenze erster Scan', 'expert.firstScanMax'), 'Profilbesucher / Interaktionen', numIn(x.firstScanMax, (v) => { x.firstScanMax = v; touch(); }, 10, 1000000));
+      const lim = row(ce, lab('<span class="vaf-red">Limit:</span>', 'expert.limit'), '<span class="vaf-red">Höchstzahl der Einträge auf der Blockierliste</span>', numIn(x.limit, (v) => { x.limit = v; touch(); }, 1, 1e9));
+      lim.querySelector('.vaf-num').style.width = '120px';
+      const rank = document.createElement('div'); rank.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+      const drawRank = () => {
+        rank.innerHTML = '';
+        x.rank.forEach((k, i) => {
+          const c = document.createElement('span'); c.className = 'vaf-chip';
+          c.title = 'Bestimmt, welche Quelle in der Notiz steht und wer auf der Warteliste zuerst drankommt';
+          c.innerHTML = `${esc((SOURCES[k] || { label: 'Synchronisation' }).label)} <b data-u>▲</b><b data-d>▼</b>`;
+          c.querySelector('[data-u]').addEventListener('click', () => { if (i) { [x.rank[i - 1], x.rank[i]] = [x.rank[i], x.rank[i - 1]]; drawRank(); touch(); } });
+          c.querySelector('[data-d]').addEventListener('click', () => { if (i < x.rank.length - 1) { [x.rank[i + 1], x.rank[i]] = [x.rank[i], x.rank[i + 1]]; drawRank(); touch(); } });
+          rank.appendChild(c);
+        });
+      };
+      drawRank();
+      row(ce, lab('Rangfolge der Quellen', 'expert.rank'), '', rank);
+      row(ce, lab('Notiz schreiben', 'expert.writeNote'), '', sw(x.writeNote, (v) => { x.writeNote = v; touch(); }));
+      row(ce, lab('Notiztext', 'expert.noteText'), '{bezeichnung} {quelle} {datum} {uhrzeit}', txtIn(x.noteText, (v) => { x.noteText = v || DEFAULTS.expert.noteText; touch(); }));
+      row(ce, lab('Notiz Pflicht', 'expert.noteRequired'), 'nur blockieren, wenn die Notiz geschrieben werden konnte', sw(x.noteRequired, (v) => { x.noteRequired = v; touch(); }));
+      row(ce, lab('Maximal pro Etappe', 'expert.maxPerRun'), '', numIn(x.maxPerRun, (v) => { x.maxPerRun = v; touch(); }, 1, 10000));
+      row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
+      row(ce, lab('Etappen-Abstand', 'expert.etappeMin'), 'solange ein poppen-Tab offen und der Schalter an ist', numIn(x.etappeMin, (v) => { x.etappeMin = v; touch(); }, 1, 1440), 'Min.');
+      row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
+      row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
+      const recSt = document.createElement('span'); recSt.className = 'vaf-mini';
+      Recorder.stats().then((r) => { recSt.textContent = `${r.total} Schnittstellen erfasst, davon ${r.fresh} neu`; });
+      const recEx = document.createElement('button'); recEx.type = 'button'; recEx.className = 'vaf-btn'; recEx.textContent = 'Exportieren';
+      recEx.addEventListener('click', async () => download(`poppen-api-rekorder-${stamp()}.json`, JSON.stringify(await Recorder.export(), null, 2)));
+      const recCl = document.createElement('button'); recCl.type = 'button'; recCl.className = 'vaf-btn'; recCl.textContent = 'Leeren';
+      recCl.addEventListener('click', async () => { if (W.confirm('Rekorder leeren?')) { await Recorder.clear(); recSt.textContent = '0 Schnittstellen erfasst'; } });
+      row(ce, lab('API-Rekorder', 'expert.recorder'), 'schneidet Abfragen der Seite mit (Sensibles geschwärzt)', sw(x.recorder, (v) => { x.recorder = v; touch(); }), recSt, recEx, recCl);
+      // Daten
+      const btn = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
+      row(ce, 'Alle Daten', 'Einstellungen, Gedächtnis, Warteliste, Fickliste (verschlüsselt) …', btn('Alle Daten sichern', () => backupAll()), btn('Alle Daten wiederherstellen', () => restoreAll()));
+      row(ce, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder (z. B. für ein zweites Profil)', btn('Exportieren ohne Bilder', () => exportMemory(false)), btn('mit Bildern', () => exportMemory(true)), btn('Importieren (mischen)', () => importMemory()));
+      const n99 = document.createElement('span'); n99.className = 'vaf-mini';
+      KV.get('log99', {}).then((l) => { n99.textContent = `${Object.keys(l).length} erfasst`; });
+      row(ce, '99-Jährige', 'Profile mit Alter 99 (gelten als unklar)', btn('Exportieren (.txt)', export99), btn('Liste leeren', async () => { if (W.confirm('Liste der 99-Jährigen leeren?')) { await KV.set('log99', {}); n99.textContent = '0 erfasst'; } }), n99);
+      row(ce, 'Warteliste', '', btn('Anzeigen', showQueue), btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
+
+      // ---- Fuß ----
+      const foot = document.createElement('div'); foot.className = 'vaf-foot';
+      const save = btn('Speichern', () => saveFromPage()); save.classList.add('vaf-y');
+      const cancel = btn('Abbrechen', () => { draft = clone(S()); settingsDirty = false; rerender(); projectLater(); });
+      foot.append(save, cancel);
+      body.appendChild(foot);
+    }
+    build();
+    markDev();
+    updateCounts();
+    projectLater();
+    const iv = setInterval(() => { if (!el.isConnected) clearInterval(iv); else updateCounts(); }, 5000);
+  }
+  async function updateCounts() {
+    const e1 = document.getElementById('vaf-cur-n'), e3 = document.getElementById('vaf-q-n');
+    const b = G.get('blocked_count', null), lim = S().expert.limit;
+    if (e1) e1.textContent = `${b == null ? '?' : fmtN(b)} / ${fmtN(lim)}`;
+    if (e3) e3.textContent = fmtN(await Queue.count());
+  }
+  // „Nach Anwenden der neuen Einstellungen“: aus dem Gedächtnis aller bekannten Mitglieder
+  let projT = null;
+  function projectLater() { clearTimeout(projT); projT = setTimeout(async () => {
+    const e = document.getElementById('vaf-after-n');
+    if (!e || !draft) return;
+    e.textContent = 'rechne …';
+    const p = await projection(S(), draft);
+    const lim = draft.expert.limit;
+    const after = p.keep + p.add;
+    e.textContent = `${fmtN(after)} / ${fmtN(lim)}${p.unclear ? ' +' : ''}`;
+    e.style.color = after > lim ? '#ff7875' : lim - after < 50 ? '#ffa940' : '';
+    e.title = `bleiben ${fmtN(p.keep)}, fallen weg ${fmtN(p.drop)}, kommen dazu ${fmtN(p.add)}, unklar ${fmtN(p.unclear)}`;
+  }, 600); }
+
+  // Auswirkungen einer Regeländerung
+  const srcOfMember = (m) => {
+    const keys = Object.keys(m.seen || {});
+    const ranked = keys.map((k) => srcKeyOf(k)).filter((k) => SRC_KEYS.includes(k));
+    return ranked.sort((a, b) => S().expert.rank.indexOf(a) - S().expert.rank.indexOf(b))[0] || 'suche';
+  };
+  async function projection(oldS, newS) {
+    const res = { keep: 0, drop: 0, add: 0, notes: 0, unclear: 0, dropList: [], addList: [], noteList: [] };
+    await Members.each((m) => {
+      if (!m.ages || !m.ages.length) return;
+      const blocked = m.blk && m.blk.opa && !m.unblk;
+      const src = blocked && m.blk.src ? m.blk.src : srcOfMember(m);
+      const ages = m.birth && m.birth.length ? m.birth.map((b) => ageToday(b)) : m.ages;
+      const cn = classify({ ...m, ages }, src, newS);
+      if (cn.unclear) { res.unclear++; return; }
+      if (blocked) {
+        if (cn.ignore) { res.keep++; if (m.blk.note && noteWord(m, newS) !== noteWord(m, oldS)) { res.notes++; res.noteList.push(m); } }
+        else { res.drop++; res.dropList.push(m); }
+      } else if (cn.ignore && !(m.blk && !m.unblk)) { res.add++; res.addList.push({ ...m, ages, _src: src }); }
+    });
+    return res;
+  }
+  const RULE_PATHS = (s) => JSON.stringify([GROUP_KEYS.map((k) => { const g = s.groups[k]; return [g.ignore, g.types, g.src, g.srcW, g.srcM, g.separate, g.coupleMode, g.sugarDaddy, g.sugarMom, g.labels[4]]; }), s.whitelist, s.expert.limit]);
+
+  async function saveFromPage() {
+    const old = S();
+    if (RULE_PATHS(old) === RULE_PATHS(draft)) { saveSettings(draft); settingsDirty = false; toast('Gespeichert.'); return; }
+    const p = await projection(old, draft);
+    const html = `<div class="vaf-stats"><span>Derzeit blockiert (vom ${esc(word())}-Schutz)</span><b>${fmtN(p.keep + p.drop)}</b>` +
+      `<span>Nach Anwenden</span><b>${fmtN(p.keep + p.add)}</b><span>Fallen weg</span><b>${fmtN(p.drop)}</b><span>Kommen dazu</span><b>${fmtN(p.add)}</b>` +
+      `<span>Notizen weichen ab</span><b>${fmtN(p.notes)}</b><span>Unklar (Alter 99)</span><b>${fmtN(p.unclear)}</b></div>`;
+    const v = await ask('Regeln geändert', html, [
+      { label: 'Änderungen speichern und anwenden', value: 'all', primary: true },
+      ...(p.drop ? [{ label: '… und Mitglieder entsperren', value: 'drop' }] : []),
+      ...(p.add ? [{ label: '… und Mitglieder sperren', value: 'add' }] : []),
+      { label: 'Änderungen nur speichern', value: 'save' },
+      { label: 'Änderungen verwerfen', value: 'discard', focus: true, cancel: true },
+    ]);
+    if (!v || v === 'discard') { draft = clone(S()); settingsDirty = false; routeSettingsRerender(); return; }
+    saveSettings(draft); settingsDirty = false;
+    if (v === 'all' || v === 'add') { for (const m of p.addList) await Queue.add(m, m._src); }
+    if (v === 'all' || v === 'drop') applyDrops(p.dropList, v === 'all' ? p.noteList : []);
+    else if (v === 'all') applyDrops([], p.noteList);
+    toast(`Gespeichert.${p.add && (v === 'all' || v === 'add') ? ` ${fmtN(p.add)} auf die Warteliste.` : ''}`);
+    updateCounts(); projectLater();
+  }
+  function routeSettingsRerender() { hideOwn(); routeSettings(); }
+  async function applyDrops(drops, notes) {
+    let i = 0;
+    for (const m of drops) {
+      i++;
+      toast(`Entsperre ${i} / ${drops.length}: ${esc(m.nick)}`, 0);
+      await unblockOne(m);
+      await sleep(rand(S().expert.pauseMin * 1000, S().expert.pauseMax * 1000));
+    }
+    for (const m of notes) {
+      const t = makeNote(m, m.blk.src, new Date(m.blk.at || now()));
+      if (!dry()) { try { await BL.note(m.uid, t); await Members.update(m.uid, (x) => { x.blk.note = t; }); } catch {} }
+    }
+    if (drops.length || notes.length) toast(`Fertig: ${drops.length} entsperrt, ${notes.length} Notizen angepasst.`);
+  }
+
+  // ---------- Whitelist bearbeiten (mit Gruppen) ----------
+  function editWhitelist(done) {
+    const wl = draft.whitelist;
+    const m = modal({ title: 'Whitelist bearbeiten', wide: false });
+    const draw = () => {
+      const groups = [...wl.groups].sort((a, b) => a.localeCompare(b, 'de'));
+      const byG = (g) => wl.names.filter((x) => (x.g || '') === g).sort((a, b) => a.n.localeCompare(b.n, 'de'));
+      m.body.innerHTML = `<h3>Eigene Whitelist-Gruppen</h3><div class="vaf-list">${groups.map((g) => `<div>${esc(g)} <a href="#" data-ren="${esc(g)}">✎</a> <a href="#" data-delg="${esc(g)}">✕</a></div>`).join('') || '<div>keine</div>'}</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px"><input class="vaf-in" id="vaf-ng" placeholder="Neue Gruppe"><button type="button" class="vaf-big" style="width:auto" id="vaf-ngb">Speichern</button></div>
+        <h3>Präfixe</h3><input class="vaf-in" id="vaf-pre" value="${esc(wl.prefixes.join(', '))}" placeholder="z. B. Pop-MOD-">
+        ${['', ...groups].map((g) => `<h3>${g ? esc(g) : 'Ohne Gruppe'}</h3><div class="vaf-list">${byG(g).map((x) => `<div>${esc(x.n)} <a href="#" data-deln="${esc(x.n)}">✕</a></div>`).join('') || '<div>leer</div>'}</div>
+          <div style="display:flex;gap:8px;margin-bottom:6px"><input class="vaf-in" data-addin="${esc(g)}" placeholder="Name"><button type="button" class="vaf-big" style="width:auto" data-addbtn="${esc(g)}">Speichern</button></div>`).join('')}`;
+      m.body.querySelector('#vaf-ngb').addEventListener('click', () => { const v = m.body.querySelector('#vaf-ng').value.trim(); if (!v) return; if (wl.groups.includes(v)) { W.alert('Diese Gruppe gibt es schon.'); return; } wl.groups.push(v); draw(); });
+      m.body.querySelector('#vaf-pre').addEventListener('change', (e) => { wl.prefixes = e.target.value.split(',').map((x) => x.trim()).filter(Boolean); });
+      m.body.querySelectorAll('[data-ren]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); const o = a.dataset.ren; const n = (W.prompt('Neuer Name:', o) || '').trim(); if (!n || n === o) return; if (wl.groups.includes(n)) { W.alert('Diese Gruppe gibt es schon.'); return; } wl.groups = wl.groups.map((g) => (g === o ? n : g)); wl.names.forEach((x) => { if (x.g === o) x.g = n; }); draw(); }));
+      m.body.querySelectorAll('[data-delg]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); const o = a.dataset.delg; wl.groups = wl.groups.filter((g) => g !== o); wl.names.forEach((x) => { if (x.g === o) x.g = ''; }); draw(); }));
+      m.body.querySelectorAll('[data-deln]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); wl.names = wl.names.filter((x) => x.n !== a.dataset.deln); draw(); }));
+      m.body.querySelectorAll('[data-addbtn]').forEach((b) => b.addEventListener('click', () => {
+        const g = b.dataset.addbtn; const inp = m.body.querySelector(`[data-addin="${W.CSS.escape(g)}"]`); const v = inp.value.trim(); if (!v) return;
+        const ex = wl.names.find((x) => norm(x.n) === norm(v));
+        if (ex) { W.alert(`Steht schon in ${ex.g || '„Ohne Gruppe“'}.`); return; }
+        wl.names.push({ n: v, g }); draw();
+      }));
+    };
+    draw();
+    m.buttons([{ label: 'Fertig', primary: true, focus: true, fn: () => { m.close(); done(); } }]);
+  }
+  async function autoWhitelistCount() { let n = 0; await Members.each((m) => { if (autoWhite(m)) n++; }); return n; }
+  async function showAutoWhitelist() {
+    const rows = [];
+    await Members.each((m) => { const r = autoWhite(m); if (r) rows.push(`<div>${esc(m.nick || m.uid)} – ${esc(r)}</div>`); });
+    const m = modal({ title: 'Automatische Whitelist', sub: 'Wird automatisch gepflegt; Einträge lassen sich hier nicht entfernen.', html: `<div class="vaf-list">${rows.join('') || '<div>leer</div>'}</div>` });
+    m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
+  }
+  async function showQueue() {
+    const l = await Queue.list();
+    const m = modal({ title: 'Warteliste', sub: `${fmtN(l.length)} Mitglieder, in dieser Reihenfolge`, html: `<div class="vaf-list">${l.slice(0, 2000).map((q) => `<div>${esc(q.nick)} · ${(q.ages || []).join('/')} · ${esc(q.src)}</div>`).join('') || '<div>leer</div>'}${l.length > 2000 ? '<div>…</div>' : ''}</div>` });
+    m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
+  }
+
+  // Seite mit ungespeicherten Änderungen verlassen
+  function leaveGuard() {
+    W.addEventListener('beforeunload', (e) => { if (settingsDirty && ownView && ownView.kind === 'opa') { e.preventDefault(); e.returnValue = ''; } });
+    document.addEventListener('click', async (e) => {
+      if (!settingsDirty || !ownView || ownView.kind !== 'opa') return;
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a || a.closest('#vaf-set') || a.target === '_blank') return;
+      e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+      const v = await ask('Ungespeicherte Änderungen', '<p>Du hast Änderungen auf dieser Seite noch nicht gespeichert.</p>', [
+        { label: 'Speichern und verlassen', value: 'save', primary: true }, { label: 'Verwerfen und verlassen', value: 'drop' }, { label: 'Abbrechen', value: null, focus: true, cancel: true }]);
+      if (!v) return;
+      if (v === 'save') await saveFromPage();
+      settingsDirty = false;
+      a.click();
+    }, true);
+  }
+
+  // =====================================================================================
+  // Profil-Menü (Klick auf das eigene Profilbild): „Opa-Scan“, „Opa-Schutz konfigurieren“, Schalter
+  // =====================================================================================
+  function leafWithText(root, text) {
+    const t = norm(text);
+    return [...root.querySelectorAll('*')].find((e) => e.children.length === 0 && norm(e.textContent) === t) || null;
+  }
+  function rowOf(leaf, root) {
+    let item = leaf;
+    while (item.parentElement && item.parentElement !== root && item.parentElement.children.length < 3) item = item.parentElement;
+    return item;
+  }
+  function profileMenu() {
+    for (const pop of document.querySelectorAll('.ant-popover:not(.ant-popover-hidden) .ant-popover-content, .ant-dropdown:not(.ant-dropdown-hidden)')) {
+      const edit = leafWithText(pop, 'Profil bearbeiten');
+      if (!edit || pop.querySelector('#vaf-pm-scan')) continue;
+      const W1 = word();
+      const item = rowOf(edit, pop);
+      const mk = (id, label, fn, icon) => {
+        const c = item.cloneNode(true);
+        c.id = id;
+        c.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
+        const lf = leafWithText(c, 'Profil bearbeiten');
+        if (lf) lf.textContent = label;
+        const svg = c.querySelector('svg');
+        if (svg && icon) { const s = document.createElement('span'); s.innerHTML = icon; s.style.cssText = 'display:inline-flex;font-size:1em'; svg.replaceWith(s); }
+        for (const a of [c, ...c.querySelectorAll('a')]) if (a.tagName === 'A') a.setAttribute('href', '#');
+        c.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); document.body.click(); fn(); }, true);
+        return c;
+      };
+      item.before(mk('vaf-pm-scan', `${W1}-Scan`, () => openScanPopup(), oldManSvg(1)));
+      item.after(mk('vaf-pm-conf', `${W1}-Schutz konfigurieren`, () => goHash('opa-schutz'), oldManSvg(1)));
+      // Schalter vor „Unsichtbar“
+      const inv = leafWithText(pop, 'Unsichtbar');
+      if (inv) {
+        const r = rowOf(inv, pop);
+        const c = r.cloneNode(true);
+        c.id = 'vaf-pm-toggle';
+        const lf = leafWithText(c, 'Unsichtbar'); if (lf) lf.textContent = `${W1}-Schutz`;
+        const swb = c.querySelector('button[role=switch]') || c.querySelector('.ant-switch');
+        const paint = () => {
+          const on = isOn();
+          if (swb) { swb.classList.toggle('ant-switch-checked', on); swb.setAttribute('aria-checked', on ? 'true' : 'false'); }
+          c.title = on ? 'Automatik an: Seiten prüfen, Etappen blockieren' : 'Automatik aus';
+        };
+        paint();
+        c.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); setOn(!isOn()); paint(); }, true);
+        r.before(c);
+      }
+    }
+  }
+
+  // =====================================================================================
+  // Opa-Symbol in der Kopfleiste (→ Einstellungen) mit Zähler und gelbem Punkt für Gruppenanfragen
+  // =====================================================================================
+  function headerButton() {
+    try {
+      const inbox = document.querySelector('header a[href="/inbox"]');
+      if (!inbox) return;
+      const anchor = inbox.closest('.ant-badge') || inbox;
+      let wrap = document.getElementById('vaf-header-btn');
+      if (!wrap || !wrap.isConnected || wrap.nextElementSibling !== anchor || !wrap.querySelector('.vaf-hdr-dot')) {
+        if (wrap) wrap.remove();
+        wrap = document.createElement('span');
+        wrap.id = 'vaf-header-btn';
+        wrap.className = 'ant-badge ant-theme';
+        wrap.style.position = 'relative';
+        wrap.innerHTML = `<a href="/setting/profile#opa-schutz" class="ant-btn ant-theme ant-btn-circle ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-icon-only" tabindex="0"><span class="ant-btn-icon">${oldManSvg()}</span></a>` +
+          '<sup data-show="true" class="ant-scroll-number ant-badge-count"><bdi></bdi></sup><span class="vaf-hdr-dot" style="display:none"></span>';
+        anchor.parentElement.insertBefore(wrap, anchor);
+        wrap.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); goHash('opa-schutz'); });
+        wrap.querySelector('.vaf-hdr-dot').addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const p = G.get('pending', null);
+          const g = p && p.groups && [...p.groups].sort((a, b) => b.n - a.n)[0];
+          if (g) location.href = `/groups/${g.cms}/requests`;
+        });
+      }
+      const n = G.get('blocked_count', null);
+      const q = G.get('qcount', 0) || 0;
+      const txt = n == null ? '' : n >= 100000 ? Math.round(n / 1000) + 'k' : n >= 10000 ? (n / 1000).toFixed(1).replace('.', ',') + 'k' : String(n);
+      const sup = wrap.querySelector('sup');
+      sup.style.display = txt ? '' : 'none';
+      if (sup.querySelector('bdi').textContent !== txt) { sup.querySelector('bdi').textContent = txt; sup.classList.toggle('ant-badge-multiple-words', txt.length > 1); }
+      const et = Etappe.running ? ' · Etappe läuft' : '';
+      const tip = `${word()}-Schutz${isOn() ? '' : ' (Automatik aus)'}${dry() ? ' – Testlauf' : ''}: ${n == null ? '?' : fmtN(n)} geblockt, ${fmtN(q)} in der Warteschlange${et} – Einstellungen öffnen`;
+      const a = wrap.querySelector('a');
+      if (a.title !== tip) { a.title = tip; a.setAttribute('aria-label', tip); }
+      a.style.opacity = isOn() ? '' : '.5';
+      const p = G.get('pending', null);
+      const dot = wrap.querySelector('.vaf-hdr-dot');
+      if (p && p.n > 0) {
+        dot.style.display = '';
+        dot.textContent = String(p.n);
+        dot.title = p.groups.map((g) => `${g.name}: ${g.n} offene Anfrage${g.n === 1 ? '' : 'n'}`).join('\n');
+      } else dot.style.display = 'none';
+    } catch (e) { warn('Kopfleiste', e); }
+  }
+  // Offene Gruppenanfragen: höchstens alle 5 Minuten abfragen
+  async function refreshPending(force = false) {
+    const p = G.get('pending', null);
+    if (!force && p && now() - p.at < 5 * 60000) return;
+    if (!(await Lock.take('pending'))) return;
+    try {
+      const managed = await myGroups('managed');
+      G.set('pending', { n: managed.reduce((s, g) => s + g.pending, 0), groups: managed.filter((g) => g.pending).map((g) => ({ cms: g.cms, name: g.name, n: g.pending })), at: now() });
+      const names = { ...G.get('groupnames', {}) }; managed.forEach((g) => { names[g.cms] = g.name; }); G.set('groupnames', names);
+    } catch (e) { warn('Gruppenanfragen', e); }
+    finally { Lock.release('pending'); }
+  }
+
+  // =====================================================================================
+  // Gruppen-Beitrittsanfragen (/groups/<Nummer>/requests): prüfen, annehmen/ablehnen,
+  // Aufgenommene sofort auf die Gruppen-Whitelist
+  // =====================================================================================
+  const groupMatch = () => { try { return new RegExp(S().groupReq.match || '.', 'i').test(groupName()); } catch { return false; } };
+  const reqCms = () => (/^\/groups\/(\d+)\/requests/.exec(location.pathname) || [])[1] || '';
+  async function show(target, label, action = (x) => x.click()) {
+    const el = typeof target === 'function' ? target() : target;
+    if (!el) throw new Error(`„${label}“ nicht mehr auf der Seite`);
+    action(el);
+  }
+  async function writeNote(item, text, overwrite = false) {
+    const inp = item.querySelector('input.ant-input') || item.querySelector('input');
+    if (!inp || (inp.value.trim() && !overwrite)) return false;
+    inp.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(inp, text);
+    inp.dispatchEvent(new Event('input', { bubbles: true }));
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(200);
+    for (const type of ['keydown', 'keypress', 'keyup']) inp.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    await sleep(200);
+    inp.blur();
+    await sleep(500);
+    return true;
+  }
+  // Popup im alten Stil (Inhalte setzen md.innerHTML direkt)
+  function openModal({ closable = true } = {}) {
+    ensureStyle(); ensureGrpStyle();
+    const ov = document.createElement('div');
+    ov.className = 'vaf-ov';
+    const md = document.createElement('div');
+    md.className = 'vaf-md';
+    ov.appendChild(md);
+    document.body.appendChild(ov);
+    const m = {
+      ov, md, closable,
+      close() { ov.remove(); document.removeEventListener('keydown', onKey, true); },
+      buttons(list) {
+        let box = md.querySelector('.vaf-btns');
+        if (!box) { box = document.createElement('div'); box.className = 'vaf-btns'; md.appendChild(box); }
+        box.innerHTML = '';
+        for (const b of list) {
+          const el = document.createElement('button');
+          el.type = 'button';
+          el.className = 'vaf-big' + (b.primary ? ' vaf-pri' : '') + (b.focus ? ' vaf-focus' : '');
+          el.textContent = b.label;
+          el.disabled = !!b.disabled;
+          el.addEventListener('click', b.fn);
+          if (b.focus) m.focusBtn = el;
+          box.appendChild(el);
+        }
+      },
+    };
+    const onKey = (e) => {
+      if (!ov.isConnected) return;
+      if (e.key === 'Escape' && m.closable) { e.preventDefault(); m.close(); }
+      if (e.key === 'Enter' && m.focusBtn && !m.focusBtn.disabled && document.activeElement && !/input|textarea/i.test(document.activeElement.tagName)) { e.preventDefault(); m.focusBtn.click(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov && m.closable) m.close(); });
+    return m;
+  }
+  function ensureGrpStyle() {
+    if (document.getElementById('vaf-grp-style')) return;
+    const st = document.createElement('style');
+    st.id = 'vaf-grp-style';
+    st.textContent = `
+      .vaf-item{background:#2a2a2a;border-radius:14px;padding:14px;margin-bottom:12px}
+      .vaf-top{display:flex;align-items:center;gap:12px}
+      .vaf-av{width:52px;height:52px;border-radius:50%;object-fit:cover;flex:none;background:#3a3a3a}
+      .vaf-who{flex:1;min-width:0}
+      .vaf-who a{font-weight:600;color:#fff;text-decoration:none}
+      .vaf-who a:hover{text-decoration:underline}
+      .vaf-meta{color:#a6a6a6;font-size:13px}
+      .vaf-sb{border:0;border-radius:8px;font-weight:600;font-size:13px;padding:5px 12px;cursor:pointer}
+      .vaf-acc{background:#ffc21a;color:#141414}
+      .vaf-rej{background:transparent;color:#e8e8e8;border:1px solid #4a4a4a;margin-left:6px}
+      .vaf-reason{margin:10px 0 8px;padding:6px 10px;border-radius:8px;background:rgba(255,194,26,.12);color:#ffd35c;font-size:13px}
+      .vaf-reason.vaf-fail{background:rgba(229,57,53,.15);color:#ff8a80}
+      .vaf-det{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+      .vaf-ov .vaf-chip{background:#1f1f1f;border:1px solid #3a3a3a;border-radius:6px;padding:2px 8px;font-size:12.5px}
+      .vaf-chip i{color:#a6a6a6;font-style:normal}
+      .vaf-chip .vaf-na{color:#666}
+      .vaf-th{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+      .vaf-th img{width:64px;height:64px;border-radius:8px;object-fit:cover;cursor:zoom-in;background:#3a3a3a}
+      .vaf-th img:hover{outline:2px solid #ffc21a}
+      .vaf-note{width:100%;background:#141414;border:1px solid #3a3a3a;border-radius:10px;padding:9px 12px;color:#e8e8e8;font-size:14px;box-sizing:border-box}`;
+    document.head.appendChild(st);
+  }
+  const GROUP_REQ_RE = /^\/groups\/\d+\/requests\/?$/;
+  const isGroupRequestsPage = () => GROUP_REQ_RE.test(location.pathname);
+    const groupName = () => { const h = document.querySelector('main h1') || document.querySelector('h1'); return h ? h.textContent.trim() : ''; };
+
+  // Einträge der Anfragenliste: jeder hat die Knöpfe "Akzeptieren" und "Ablehnen"
+  function findRequestItems() {
+    const out = [];
+    for (const b of document.querySelectorAll('main button')) {
+      if (norm(b.textContent) !== 'akzeptieren') continue;
+      let root = b;
+      for (let i = 0; i < 8 && root && root.tagName !== 'MAIN'; i++, root = root.parentElement) {
+        if (root.querySelector('span.df-text-weight-semi-bold') && root.querySelector('input')) break;
+      }
+      if (!root || root.tagName === 'MAIN') continue;
+      const nameEl = root.querySelector('span.df-text-weight-semi-bold');
+      if (!nameEl) continue;
+      const name = nameEl.textContent.trim();
+      const descEl = root.querySelector('.ant-typography-secondary');
+      const img = root.querySelector('img');
+      const btns = [...root.querySelectorAll('button')];
+      out.push({
+        root, name, nameEl,
+        desc: descEl ? descEl.textContent.trim() : '',
+        avatar: img ? img.getAttribute('src') : '',
+        online: (root.querySelector('.ant-badge-status-dot') || {}).className || '',
+        accept: btns.find((x) => norm(x.textContent) === 'akzeptieren'),
+        reject: btns.find((x) => norm(x.textContent) === 'ablehnen'),
+        note: root.querySelector('input'),
+      });
+    }
+    return out;
+  }
+
+  // Namen in der Anfragenliste zu Links machen (neuer Tab). Der ursprüngliche Text bleibt unangetastet
+  // (React verwaltet ihn) und wird nur ausgeblendet; der Link daneben folgt ihm, wenn die Liste Einträge neu belegt.
+  function linkifyRequestNames() {
+    for (const it of findRequestItems()) {
+      const span = it.nameEl;
+      let a = span.nextElementSibling && span.nextElementSibling.classList.contains('vaf-name-link') ? span.nextElementSibling : null;
+      if (!a) {
+        a = document.createElement('a');
+        a.className = span.className + ' vaf-name-link';
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.style.cssText = 'color:inherit;cursor:pointer';
+        a.addEventListener('mouseenter', () => { a.style.textDecoration = 'underline'; });
+        a.addEventListener('mouseleave', () => { a.style.textDecoration = 'none'; });
+        span.after(a);
+        span.style.display = 'none';
+      }
+      if (a.textContent !== it.name) { a.textContent = it.name; a.href = profileUrl(it.name); a.title = `Profil von ${it.name} in neuem Tab öffnen`; }
+    }
+  }
+
+  // Alle Anfragen einsammeln (die Liste lädt beim Scrollen nach)
+  async function collectRequests() {
+    const all = new Map();
+    const first = findRequestItems()[0];
+    if (!first) return all;
+    const sc = scroller(first.root);
+    const startTop = sc.scrollTop;
+    sc.scrollTop = 0;
+    await sleep(400);
+    let idle = 0;
+    for (let i = 0; i < 500 && idle < 3; i++) {
+      const before = all.size;
+      for (const it of findRequestItems()) if (!all.has(it.name)) all.set(it.name, { name: it.name, desc: it.desc, avatar: it.avatar, online: it.online });
+      const atBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 5;
+      idle = (all.size === before && atBottom) ? idle + 1 : 0;
+      sc.scrollTop += Math.max(300, sc.clientHeight * 0.8);
+      await sleep(atBottom ? 700 : 300);
+    }
+    sc.scrollTop = startTop;
+    return all;
+  }
+
+  // Eintrag eines Namens finden – notfalls durch die Liste scrollen
+  async function findRequestByName(name) {
+    const hit = () => findRequestItems().find((x) => x.name === name);
+    if (hit()) return hit();
+    const first = findRequestItems()[0];
+    if (!first) return null;
+    const sc = scroller(first.root);
+    sc.scrollTop = 0;
+    await sleep(300);
+    for (let i = 0; i < 200; i++) {
+      if (hit()) return hit();
+      const atBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 5;
+      if (atBottom) break;
+      sc.scrollTop += Math.max(300, sc.clientHeight * 0.8);
+      await sleep(250);
+    }
+    return hit() || null;
+  }
+
+  // Annehmen / Ablehnen auf der Originalseite; Erfolg = der Eintrag verschwindet
+  async function decideRequest(name, accept) {
+    const it = await findRequestByName(name);
+    if (!it) return 'Fehlschlag: Anfrage nicht mehr in der Liste';
+    if (dry()) return 'Test';
+    await show(() => { const x = findRequestItems().find((y) => y.name === name); return x && (accept ? x.accept : x.reject); },
+      `${accept ? 'Akzeptieren' : 'Ablehnen'} (${name})`);
+    // ggf. Rückfrage "Bist du sicher?" bestätigen
+    await sleep(700);
+    const ok = [...document.querySelectorAll('button')].find((b) => isVisible(b) && norm(b.textContent) === 'ok' && b.closest('.ant-modal, [role=dialog]'));
+    if (ok) { ok.click(); await sleep(500); }
+    const gone = await waitFor(() => !findRequestItems().some((x) => x.name === name), 6000);
+    if (gone && accept) await whitelistAccepted(name, it.avatar, it.desc);
+    return gone ? 'ok' : 'Fehlschlag: Eintrag blieb nach dem Klick in der Liste';
+  }
+  // Aufgenommene sofort auf die Gruppen-Whitelist (auch unsichtbare Mitglieder)
+  async function whitelistAccepted(name, avatar, desc) {
+    const cms = reqCms();
+    if (!cms || S().managedWhitelist[cms] === false) return;
+    let uid = uidFromAvatar(avatar);
+    if (!uid) { const m = await Members.byNick(name); uid = m && m.uid; }
+    if (!uid) return;
+    await seen({ uid, nick: name, g: genderFromText(desc), ages: agesFromText(desc), avatar }, 'Gruppenanfrage');
+    await Members.update(uid, (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[cms] = now(); });
+  }
+
+  // ---------- Profil unsichtbar prüfen ----------
+  // Lädt das Profil in einem unsichtbaren Fenster (gleiche Seite, daher lesbar), klickt in
+  // "Persönliche Details" auf "Mehr anzeigen" und liest Felder und Fotos.
+  let probeFrame = null;
+  function frame() {
+    if (probeFrame && probeFrame.isConnected) return probeFrame;
+    probeFrame = document.createElement('iframe');
+    probeFrame.setAttribute('aria-hidden', 'true');
+    probeFrame.style.cssText = 'position:fixed;left:-20000px;top:0;width:1280px;height:1000px;border:0;visibility:hidden;pointer-events:none';
+    document.body.appendChild(probeFrame);
+    return probeFrame;
+  }
+  function frameLoad(url) {
+    return new Promise((resolve) => {
+      const f = frame();
+      const done = () => { f.removeEventListener('load', done); resolve(); };
+      f.addEventListener('load', done);
+      f.src = url;
+      setTimeout(done, 30000);
+    });
+  }
+  const bigPhotoUrl = (src) => String(src).replace(/_\d+(?:_sq)?(?=\.jpe?g(?:$|\?))/i, '');
+  const thumbUrl = (src) => bigPhotoUrl(src).replace(/(\.jpe?g)(?=$|\?)/i, '_350_sq$1');
+  const realPhoto = (src) => !!src && /img-[a-z]\.poppen\.de\//i.test(src) && !/plcblur/i.test(src);
+
+  async function probeProfile(name) {
+    const res = { name, fields: {}, photos: [], error: '' };
+    const wait = async (fn, ms) => { const t = Date.now(); while (Date.now() - t < ms) { const r = fn(); if (r) return r; await sleep(250); } return null; };
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await frameLoad(profileUrl(name));
+      const doc = () => { try { return frame().contentDocument; } catch { return null; } };
+      const kind = await wait(() => { const d = doc(); if (!d) return null; const k = pageKind(d); return k === 'loading' ? null : k; }, 20000);
+      if (kind === 'werbung' && attempt === 1) continue;      // Werbe-Zwischenseite: Profil noch einmal laden
+      if (kind === 'notfound') { res.error = 'Profil nicht gefunden („Diese Seite ist spurlos verschwunden“)'; return res; }
+      if (kind === 'login' || kind === 'abgemeldet') { res.error = 'nicht eingeloggt'; res.loggedOut = true; return res; }
+      if (kind === 'wartung') { res.error = 'poppen.de wird gewartet'; res.loggedOut = true; return res; }
+      const d = doc();
+      const sectionOf = (title) => {
+        const h = [...d.querySelectorAll('main h2, aside h2, h2')].find((x) => x.textContent.trim().startsWith(title));
+        if (!h) return null;
+        let s = h;
+        for (let i = 0; i < 6 && s; i++, s = s.parentElement) if (s.querySelector('label') || s.querySelector('img')) return s;
+        return h.parentElement;
+      };
+      const details = await wait(() => sectionOf('Persönliche Details'), 15000);
+      if (details) {
+        const more = [...details.querySelectorAll('button')].find((b) => norm(b.textContent) === 'mehr anzeigen');
+        if (more) {
+          more.click();
+          await wait(() => [...sectionOf('Persönliche Details').querySelectorAll('button')].some((b) => norm(b.textContent) === 'weniger anzeigen'), 8000);
+          await sleep(600);
+        }
+        for (const lab of sectionOf('Persönliche Details').querySelectorAll('label')) {
+          const v = lab.nextElementSibling;
+          const key = lab.textContent.trim();
+          if (!key || !v) continue;
+          const vals = [...v.children].map((c) => c.textContent.trim()).filter(Boolean);
+          res.fields[key] = (vals.length ? vals : [v.textContent.trim()]).join(', ');
+        }
+      }
+      // Fotos: die Vorschauen im Abschnitt "Fotos (N)", verschwommene Platzhalter auslassen
+      const photos = [];
+      const fotoSec = sectionOf('Fotos');
+      if (fotoSec) for (const im of fotoSec.querySelectorAll('img')) {
+        const src = im.getAttribute('src');
+        if (realPhoto(src) && !photos.includes(bigPhotoUrl(src))) photos.push(bigPhotoUrl(src));
+      }
+      // Zu wenige? Dann die Galerie öffnen ("Alle anzeigen") und durchblättern
+      if (photos.length < S().groupReq.photos && fotoSec) {
+        const all = [...fotoSec.querySelectorAll('a, button')].find((x) => norm(x.textContent) === 'alle anzeigen');
+        if (all) {
+          all.click();
+          await sleep(1500);
+          for (let i = 0; i < 20 && photos.length < S().groupReq.photos; i++) {
+            for (const im of d.querySelectorAll('.swiper img, .swiper-slide img')) {
+              const src = im.getAttribute('src');
+              if (realPhoto(src) && !photos.includes(bigPhotoUrl(src))) photos.push(bigPhotoUrl(src));
+            }
+            const next = d.querySelector('.swiper-button-next:not(.swiper-button-disabled)');
+            if (!next) break;
+            next.click();
+            await sleep(600);
+          }
+        }
+      }
+      res.photos = photos.slice(0, S().groupReq.photos);
+      if (!details) res.error = 'Profilangaben nicht gefunden';
+      return res;
+    }
+    res.error = 'Werbe-Zwischenseite ließ sich nicht überspringen';
+    return res;
+  }
+
+  // Entscheidung nach den Regeln
+  function decide(fields) {
+    const typ = (fields['Typ'] || '').trim();
+    const is = (list) => list.some((x) => norm(x) === norm(typ));
+    if (typ && is(S().groupReq.accept)) return { verdict: 'accept', reason: `Typ: ${typ}` };
+    if (typ && is(S().groupReq.reject)) return { verdict: 'reject', reason: `Typ: ${typ}` };
+    return { verdict: 'manual', reason: typ ? `Typ: ${typ} – keine Regel` : 'Typ fehlt im Profil' };
+  }
+
+  // ---------- Popup "Beitrittsanfragen prüfen" ----------
+  let groupRun = null;
+  async function openGroupCheck() {
+    if (groupRun) { if (groupRun.modal && !groupRun.modal.ov.isConnected) document.body.appendChild(groupRun.modal.ov); return; }
+    const m = openModal();
+    m.md.innerHTML = `<h2>Beitrittsanfragen prüfen</h2><div class="vaf-sub">Lese die offenen Anfragen …</div>`;
+    m.buttons([{ label: 'Jetzt prüfen …', primary: true, focus: true, disabled: true, fn: () => {} }, { label: 'Schließen', fn: () => m.close() }]);
+    const reqs = [...(await collectRequests()).values()];
+    if (!m.ov.isConnected) return;
+    m.md.querySelector('.vaf-sub').innerHTML =
+      `<b style="color:#fff">${reqs.length}</b> offene Anfrage${reqs.length === 1 ? '' : 'n'} in „${esc(groupName())}“.<br>` +
+      `Jedes Profil wird unsichtbar geöffnet. Typ ${S().groupReq.accept.join(' / ')} → annehmen, ` +
+      `Typ ${S().groupReq.reject.join(' / ')} → ablehnen, alles andere → manuell prüfen.` +
+      (dry() ? '<br><span style="color:#ffb300">Testmodus: Es wird nichts angeklickt.</span>' : '');
+    m.buttons([
+      { label: 'Jetzt prüfen …', primary: true, focus: true, disabled: !reqs.length, fn: async () => { const vis = await Vis.guard('Die Prüfung der Beitrittsanfragen'); if (vis) runGroupCheck(m, reqs, vis); } },
+      { label: 'Schließen', fn: () => m.close() },
+    ]);
+  }
+
+  async function runGroupCheck(m, reqs, vis) {
+    const run = groupRun = { modal: m, stop: false, results: [] };
+    m.closable = false;
+    const guard = (e) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard);
+    const cnt = { accept: 0, reject: 0, manual: 0, fail: 0 };
+    m.md.innerHTML = `<h2>Beitrittsanfragen prüfen</h2>
+      <div class="vaf-warn">Bitte diese Seite nicht verlassen, solange die Prüfung läuft.</div>
+      <div class="vaf-bar"><div></div></div><div class="vaf-cur"></div>
+      <div class="vaf-stats"></div>`;
+    const bar = m.md.querySelector('.vaf-bar>div'), cur = m.md.querySelector('.vaf-cur'), stats = m.md.querySelector('.vaf-stats');
+    const showStats = () => {
+      stats.innerHTML = `<span>Automatisch angenommen</span><b>${cnt.accept}</b><span>Automatisch abgelehnt</span><b>${cnt.reject}</b>` +
+        `<span>Manuelle Prüfung nötig</span><b>${cnt.manual}</b><span>Fehlschlag</span><b>${cnt.fail}</b>`;
+    };
+    showStats();
+    m.buttons([{ label: 'Abbrechen', focus: true, fn: () => { run.stop = true; cur.textContent = 'Breche nach dieser Anfrage ab …'; } }]);
+
+    let i = 0;
+    for (const r of reqs) {
+      if (run.stop) break;
+      i++;
+      bar.style.width = `${Math.round((i - 1) / reqs.length * 100)}%`;
+      cur.textContent = `${i}/${reqs.length}: ${r.name} – Profil wird geprüft …`;
+      const res = { ...r, fields: {}, photos: [], verdict: 'fail', reason: '' };
+      try {
+        const pr = await probeProfile(r.name);
+        res.fields = pr.fields; res.photos = pr.photos;
+        applyFacts({ nick: r.name, avatar: r.avatar }, pr.fields).catch(() => {});
+        if (pr.loggedOut) { res.reason = pr.error; run.results.push(res); cnt.fail++; showStats(); run.stop = true; cur.textContent = `Abgebrochen: ${pr.error}`; break; }
+        if (pr.error && !Object.keys(pr.fields).length) { res.reason = pr.error; }
+        else {
+          const d = decide(pr.fields);
+          res.verdict = d.verdict; res.reason = d.reason;
+          if (d.verdict === 'accept' || d.verdict === 'reject') {
+            cur.textContent = `${i}/${reqs.length}: ${r.name} – ${d.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`;
+            const out = await decideRequest(r.name, d.verdict === 'accept');
+            if (out !== 'ok' && out !== 'Test') { res.verdict = 'fail'; res.reason = out.replace(/^Fehlschlag: /, ''); }
+          }
+        }
+      } catch (e) { res.verdict = 'fail'; res.reason = e.message || String(e); }
+      cnt[res.verdict]++;
+      run.results.push(res);
+      showStats();
+      console.log('[Beitrittsanfragen]', res.name, res.verdict, res.reason, res.fields);
+      if (i < reqs.length && !run.stop) await sleep(rand(1500, 3000));
+    }
+    bar.style.width = '100%';
+    if (probeFrame) { probeFrame.remove(); probeFrame = null; }
+    window.removeEventListener('beforeunload', guard);
+    Vis.restore(vis);
+    groupRun = null;
+    m.closable = true;
+    m.md.querySelector('.vaf-warn').remove();
+    cur.textContent = run.stop ? 'Abgebrochen.' : (dry() ? 'Fertig (Testmodus – nichts angeklickt).' : 'Fertig.');
+    const open = run.results.filter((x) => x.verdict === 'manual' || x.verdict === 'fail');
+    m.buttons([
+      ...(open.length ? [{ label: 'Manuell prüfen', primary: true, focus: true, fn: () => { m.close(); openManualReview(open); } }] : []),
+      { label: 'Schließen', focus: !open.length, fn: () => m.close() },
+    ]);
+  }
+
+
+  // ---------- Popup "Manuell prüfen" ----------
+  function openManualReview(list) {
+    const m = openModal();
+    const prev = document.createElement('img');
+    prev.className = 'vaf-prev';
+    m.ov.appendChild(prev);
+    m.md.innerHTML = `<h2>Beitrittsanfragen prüfen – manuell</h2><div class="vaf-sub"></div><div class="vaf-list"></div>`;
+    const sub = m.md.querySelector('.vaf-sub'), box = m.md.querySelector('.vaf-list');
+    const refresh = () => {
+      const n = box.children.length;
+      sub.textContent = n ? `${n} Anfrage${n === 1 ? '' : 'n'} konnte${n === 1 ? '' : 'n'} nicht automatisch entschieden werden.` : 'Alles erledigt.';
+      if (!n) setTimeout(() => m.close(), 800);
+    };
+    for (const r of list) {
+      const el = document.createElement('div');
+      el.className = 'vaf-item';
+      const dot = /success/.test(r.online) ? '#52c41a' : /error/.test(r.online) ? '#e53935' : '';
+      const chips = S().groupReq.fields.map((f) => {
+        const v = r.fields[f];
+        return `<span class="vaf-chip"><i>${esc(f)}:</i> ${v ? esc(v) : '<span class="vaf-na">–</span>'}</span>`;
+      }).join('');
+      el.innerHTML = `
+        <div class="vaf-top">
+          <img class="vaf-av" alt="" src="${esc(r.avatar || '')}">
+          <div class="vaf-who"><a href="${esc(profileUrl(r.name))}" target="_blank" rel="noopener">${esc(r.name)}</a>${dot ? `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dot};margin-left:4px;vertical-align:middle"></span>` : ''}
+            <div class="vaf-meta">${esc(r.desc)}</div></div>
+          <div><button type="button" class="vaf-sb vaf-acc">Akzeptieren</button><button type="button" class="vaf-sb vaf-rej">Ablehnen</button></div>
+        </div>
+        <div class="vaf-reason${r.verdict === 'fail' ? ' vaf-fail' : ''}">${r.verdict === 'fail' ? 'Fehlschlag' : 'Manuelle Prüfung'}: ${esc(r.reason || '')}</div>
+        ${Object.keys(r.fields).length ? `<div class="vaf-det">${chips}</div>` : ''}
+        ${r.photos.length ? `<div class="vaf-th">${r.photos.map((p) => `<img alt="" src="${esc(thumbUrl(p))}" data-big="${esc(p)}">`).join('')}</div>` : ''}
+        <input class="vaf-note" type="text" placeholder="Notiz für dich hinzufügen (optional)">`;
+      // Profilbild-Klick öffnet ebenfalls das Profil
+      el.querySelector('.vaf-av').addEventListener('click', () => window.open(profileUrl(r.name), '_blank', 'noopener'));
+      el.querySelector('.vaf-av').style.cursor = 'pointer';
+      // Großansicht beim Darüberfahren
+      for (const im of el.querySelectorAll('.vaf-th img')) {
+        im.addEventListener('mouseenter', () => { prev.src = im.dataset.big; prev.style.display = 'block'; });
+        im.addEventListener('mouseleave', () => { prev.style.display = 'none'; });
+        im.addEventListener('error', () => { im.src = im.dataset.big; });
+      }
+      // Notiz in das Notizfeld der Originalseite übernehmen
+      const note = el.querySelector('.vaf-note');
+      note.addEventListener('change', async () => {
+        const it = await findRequestByName(r.name);
+        if (it && it.note) await writeNote(it.root, note.value, true);
+      });
+      const act = async (accept) => {
+        for (const b of el.querySelectorAll('button')) b.disabled = true;
+        const out = await decideRequest(r.name, accept);
+        if (out === 'ok' || out === 'Test') { el.remove(); refresh(); }
+        else {
+          el.querySelector('.vaf-reason').className = 'vaf-reason vaf-fail';
+          el.querySelector('.vaf-reason').textContent = out;
+          for (const b of el.querySelectorAll('button')) b.disabled = false;
+        }
+      };
+      el.querySelector('.vaf-acc').addEventListener('click', () => act(true));
+      el.querySelector('.vaf-rej').addEventListener('click', () => act(false));
+      box.appendChild(el);
+    }
+    refresh();
+    m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
+  }
+
+  // ---------- Knopf im Kasten "Mehrere Anfragen verwalten" ----------
+  function ensureGroupButton() {
+    if (!isGroupRequestsPage() || !groupMatch()) return;
+    if (document.getElementById('vaf-group-btn')) return;
+    const h = [...document.querySelectorAll('main h3, main h2')].find((x) => /Mehrere Anfragen verwalten/i.test(x.textContent));
+    if (!h) return;
+    // Kasten = nächster Vorfahr, der auch das Formular enthält
+    let boxEl = h.parentElement;
+    for (let i = 0; i < 5 && boxEl && !boxEl.querySelector('form'); i++) boxEl = boxEl.parentElement;
+    if (!boxEl) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'vaf-group-btn';
+    wrap.className = 'ant-form-item-control-input';
+    wrap.style.marginBottom = '12px';
+    wrap.innerHTML = '<div class="ant-form-item-control-input-content"><button type="button" class="ant-btn ant-theme ant-btn-primary ant-btn-color-primary ant-btn-variant-solid" style="width:100%"><span>Automatische Annahme/Ablehnung</span></button></div>';
+    wrap.querySelector('button').addEventListener('click', () => openGroupCheck().catch((e) => console.error('[Beitrittsanfragen]', e)));
+    boxEl.insertBefore(wrap, boxEl.firstChild);
+  }
+
+  function initGroupRequests() {
+    const tick = () => { if (isGroupRequestsPage()) { try { linkifyRequestNames(); ensureGroupButton(); } catch (e) { console.log('[Beitrittsanfragen]', e); } } };
+    tick();
+    if (!window.__vafGroupTimer) window.__vafGroupTimer = setInterval(tick, 1000);
+  }
+
+  // =====================================================================================
+  // Fickliste
+  // =====================================================================================
+  const FSTATES = {
+    want: { label: 'Will ich', i: 1 },
+    done: { label: 'Gefickt', i: 2 },
+    no: { label: 'Nein, danke!', i: 3 },
+    never: { label: 'Nie wieder!', i: 4 },
+  };
+  const HEART = 'M12 20.6s-7.2-4.4-9.3-8.9C1.2 8.3 3.3 4.7 6.8 4.7c2 0 3.5 1.1 4.3 2.5h1.8c.8-1.4 2.3-2.5 4.3-2.5 3.5 0 5.6 3.6 4.1 7C19.2 16.2 12 20.6 12 20.6z';
+  // 0 inaktiv (dünner Umriss) · 1 will ich (gefüllt) · 2 gefickt (gefüllt, roter Kreis) · 3 nein danke (Umriss + Verbotsring) · 4 nie wieder (gefüllt + Ring)
+  function fickIcon(i, size = 18, circle = false) {
+    const fill = i === 1 || i === 2 || i === 4;
+    const shape = `<path d="${HEART}" fill="${fill ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="${i === 0 ? 1.2 : 1.8}" stroke-linejoin="round"/>`;
+    const ring = i === 3 || i === 4 ? '<circle cx="12" cy="12.4" r="10.4" fill="none" stroke="#e53935" stroke-width="2"/><line x1="4.8" y1="19.6" x2="19.2" y2="5.2" stroke="#e53935" stroke-width="2"/>' : '';
+    const bg = circle && i === 2 ? '<circle cx="12" cy="12" r="12" fill="#e53935"/>' : '';
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" style="vertical-align:middle;color:${circle && i === 2 ? '#fff' : 'currentColor'}">${bg}<g transform="${bg ? 'translate(2.4 2.4) scale(.8)' : ''}">${shape}</g>${ring}</svg>`;
+  }
+  const TRASH = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="vertical-align:middle"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>';
+
+  // ---------- Plattformen und Links ----------
+  const PLATFORMS = {
+    poppen: { name: 'poppen.de', icon: 'P', color: '#ffc21a' },
+    joyclub: { name: 'JOYclub', icon: 'J', color: '#c2185b' },
+    xhamster: { name: 'xHamster', icon: 'x', color: '#f2721e' },
+    eronity: { name: 'Eronity', icon: 'E', color: '#8e24aa' },
+    spicymatch: { name: 'SpicyMatch', icon: 'S', color: '#e53935' },
+    kaufmich: { name: 'Kaufmich', icon: 'K', color: '#6d4c41' },
+    fetish: { name: 'Fetish.com', icon: 'F', color: '#212121' },
+    gays: { name: 'Gays.com', icon: 'G', color: '#1e88e5' },
+    telegram: { name: 'Telegram', icon: 'T', color: '#229ed9' },
+    whatsapp: { name: 'WhatsApp', icon: 'W', color: '#25d366' },
+    threema: { name: 'Threema', icon: 'Th', color: '#05a63f' },
+    signal: { name: 'Signal', icon: 'Si', color: '#3a76f0' },
+    other: { name: 'Andere', icon: '?', color: '#616161' },
+  };
+  const pfBadge = (pf, title = '') => { const p = PLATFORMS[pf] || PLATFORMS.other; return `<span title="${esc(title || p.name)}" style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 3px;border-radius:4px;background:${p.color};color:#fff;font:700 10px/1 system-ui;margin-right:4px">${esc(p.icon)}</span>`; };
+  const digits = (s) => String(s || '').replace(/\D/g, '');
+  function phoneIntl(s) {
+    let d = String(s || '').trim();
+    if (/^\+/.test(d)) return digits(d);
+    d = digits(d);
+    if (d.startsWith('00')) return d.slice(2);
+    if (d.startsWith('0')) return '49' + d.slice(1);
+    return d.length >= 10 && !d.startsWith('49') && d.length <= 11 ? '49' + d : d;
+  }
+  const phonePretty = (intl) => { const d = digits(intl); return d.startsWith('49') ? `+49 ${d.slice(2, 5)} ${d.slice(5)}` : '+' + d; };
+  // Eingabe → { pf, url, name, text }  (url = gespeicherte Schreibweise)
+  function normalizeProfile(pf, input) {
+    const v = String(input || '').trim();
+    if (!v) return null;
+    if (pf === 'telegram') {
+      const m = /^(?:@|(?:https?:\/\/)?(?:www\.)?(?:t|telegram)\.me\/)([A-Za-z0-9_]{3,})/i.exec(v) || /^([A-Za-z0-9_]{3,})$/.exec(v);
+      return m ? { pf, url: 'https://t.me/' + m[1], name: '@' + m[1] } : null;
+    }
+    if (pf === 'whatsapp') {
+      const m = /wa\.me\/(\d+)/i.exec(v);
+      const intl = m ? m[1] : phoneIntl(v);
+      return intl.length >= 8 ? { pf, url: 'https://wa.me/' + intl, name: phonePretty(intl) } : null;
+    }
+    if (pf === 'threema') {
+      const m = /threema\.id\/([A-Za-z0-9*]{8})/i.exec(v) || /^([A-Za-z0-9*]{8})$/.exec(v);
+      return m ? { pf, url: 'https://threema.id/' + m[1].toUpperCase(), name: m[1].toUpperCase() } : null;
+    }
+    if (pf === 'signal') {
+      if (/signal\.me\//i.test(v)) return { pf, url: v.replace(/^http:/i, 'https:'), name: 'Signal-Link' };
+      if (/^\+?[\d\s/()-]{8,}$/.test(v)) { const intl = phoneIntl(v); return { pf, url: 'https://signal.me/#p/+' + intl, name: phonePretty(intl) }; }
+      return { pf, url: '', name: v, text: v };                     // Benutzername: kein Link möglich
+    }
+    if (/^https?:\/\//i.test(v) || /^[\w.-]+\.[a-z]{2,}\//i.test(v)) {
+      const url = /^https?:/i.test(v) ? v : 'https://' + v;
+      return { pf, url, name: decodeURIComponent((url.split('/').filter(Boolean).pop() || url)) };
+    }
+    if (pf === 'poppen') return { pf, url: 'https://www.poppen.de' + pathOfName(v), name: v };
+    return { pf, url: '', name: v, text: v };
+  }
+  // Vereinheitlichter Link zum Vergleichen
+  function linkKey(p) {
+    if (!p) return '';
+    if (!p.url) return p.text ? `${p.pf}:${norm(p.text)}` : '';
+    let u = String(p.url).trim();
+    try { u = decodeURIComponent(u); } catch {}
+    u = u.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, (x) => (/signal\.me/.test(u) ? x : '')).replace(/\/+$/, '');
+    u = u.replace(/^telegram\.me\//, 't.me/');
+    return u;
+  }
+  function platformOfUrl(url) {
+    const u = String(url || '').toLowerCase();
+    if (/poppen\.de/.test(u)) return 'poppen';
+    if (/joyclub\.(de|com)/.test(u)) return 'joyclub';
+    if (/xhamster/.test(u)) return 'xhamster';
+    if (/eronity/.test(u)) return 'eronity';
+    if (/spicymatch/.test(u)) return 'spicymatch';
+    if (/kaufmich/.test(u)) return 'kaufmich';
+    if (/fetish\.com/.test(u)) return 'fetish';
+    if (/gays\.com/.test(u)) return 'gays';
+    if (/t\.me|telegram\.me/.test(u)) return 'telegram';
+    if (/wa\.me|whatsapp/.test(u)) return 'whatsapp';
+    if (/threema\.id/.test(u)) return 'threema';
+    if (/signal\.me/.test(u)) return 'signal';
+    return 'other';
+  }
+
+  // ---------- Datenhaltung ----------
+  const Fick = {
+    async get(id) { return DB.get('fick', id); },
+    async all() { return DB.all('fick'); },
+    async put(p) { p.updated = now(); await DB.put('fick', p); chan.post({ t: 'fick' }); Bus.emit('fick'); return p; },
+    async del(id) { await DB.del('fick', id); Bus.emit('fick'); },
+    idOf: (uid) => 'p:' + uid,
+    async forMember(uid, nick) {
+      let p = await Fick.get(Fick.idOf(uid));
+      if (!p) p = { id: Fick.idOf(uid), status: null, statusAt: 0, profiles: [], meets: [], history: [], created: now(), main: { pf: 'poppen', uid: String(uid), nick } };
+      if (nick && p.main) p.main.nick = nick;
+      const url = 'https://www.poppen.de' + pathOfName(p.main.nick || nick || '');
+      if (nick && !p.profiles.some((x) => x.pf === 'poppen' && x.uid === String(uid))) p.profiles.unshift({ pf: 'poppen', url, name: nick, uid: String(uid) });
+      else for (const x of p.profiles) if (x.pf === 'poppen' && x.uid === String(uid) && nick) { x.url = url; x.name = nick; }
+      return p;
+    },
+    async setStatus(p, st) {
+      const old = p.status;
+      p.status = st || null; p.statusAt = now();
+      for (const x of p.profiles || []) if (x.sync === true) { x.status = p.status; x.statusAt = p.statusAt; }
+      p.history = [...(p.history || []), { at: now(), what: `Fickstatus: ${old ? FSTATES[old].label : 'Ficken?'} → ${st ? FSTATES[st].label : 'zurückgesetzt'}` }];
+      if (!p.status && !(p.meets || []).length && !p.ext) { await Fick.del(p.id); return null; }
+      return Fick.put(p);
+    },
+  };
+  const isFickDone = (p) => p.status === 'done' || p.status === 'never';
+  // Hauptprofil auf poppen.de? (Personen aus dem JOYclub-Import behalten ihr fremdes Hauptprofil)
+  const pm = (p) => (p && p.main && (!p.main.pf || p.main.pf === 'poppen') && p.main.uid ? p.main : null);
+  const foreignUrl = (p) => (p && p.main && !pm(p) && p.main.url) || '';
+
+  // ---------- Profil-Fakten (Persönliche Details) ----------
+  function detailsFrom(doc = document) {
+    const h = [...doc.querySelectorAll('main h2, h2')].find((x) => x.textContent.trim().startsWith('Persönliche Details'));
+    if (!h) return {};
+    let sec = h; for (let i = 0; i < 6 && sec; i++, sec = sec.parentElement) if (sec.querySelector('label')) break;
+    const out = {};
+    for (const lab of (sec || h.parentElement).querySelectorAll('label')) {
+      const v = lab.nextElementSibling; const k = lab.textContent.trim();
+      if (!k || !v) continue;
+      const vals = [...v.children].map((c) => c.textContent.trim()).filter(Boolean);
+      out[k] = (vals.length ? vals : [v.textContent.trim()]).join(', ');
+    }
+    return out;
+  }
+  async function applyFacts(x, fields) {
+    let uid = x.uid || uidFromAvatar(x.avatar);
+    if (!uid && x.nick) { const m = await Members.byNick(x.nick); uid = m && m.uid; }
+    if (!uid) return;
+    const num = (s) => { const m = /(\d{2,3})/.exec(String(s || '')); return m ? +m[1] : 0; };
+    await Members.update(uid, (m) => {
+      if (x.nick) m.nick = m.nick || x.nick;
+      const z = fields['Sternzeichen'];
+      if (z) { m.zod = z.split(',').map((t) => t.trim()); if (m.birth) m.birth = m.birth.map((b, i) => (m.zod[i] ? applyZodiac(b, m.zod[i]) : b)); }
+      const h = num(fields['Größe']), w = num(fields['Gewicht']);
+      if (h && w) m.body = [{ h, wlo: w, whi: w, at: now(), src: 'Profil' }];
+      if (fields['Figur']) m.fig = fields['Figur'];
+    });
+  }
+
+  // ---------- Profilseite: Button, Abschnitt, Archiv, eigenes Profil ----------
+  const profileNick = () => (/^\/p\/([^/]+)\/?$/.exec(location.pathname) || [])[1];
+  function profileHeaderInfo() {
+    const send = [...document.querySelectorAll('main button')].find((b) => norm(b.textContent) === 'nachricht senden');
+    const box = send && send.closest('main > *, main');
+    const nameEl = box && box.querySelector('[class*="ellipsis"]');
+    const desc = box && [...box.querySelectorAll('div,span')].find((e) => e.children.length === 0 && /\d+\s*Jahre/.test(e.textContent));
+    const img = document.querySelector('main img[alt]');
+    return { send, nick: nameEl ? nameEl.textContent.trim() : slugOf(location.pathname), desc: desc ? desc.textContent : '', avatar: img ? img.getAttribute('src') : '' };
+  }
+  let profBusy = false;
+  async function profilePage() {
+    const slug = profileNick();
+    if (!slug || isBlockedProfilePage() || profBusy) return;
+    const pi = profileHeaderInfo();
+    const me = Me.get();
+    const own = me && norm(me.nick) === norm(slugOf(location.pathname));
+    if (own) { ownProfileBox(); return; }
+    if (!pi.send) return;
+    profBusy = true;
+    try {
+      let uid = uidFromAvatar(pi.avatar);
+      let m = uid ? await Members.get(uid) : await Members.byNick(pi.nick);
+      if (m && !uid) uid = m.uid;
+      if (!uid) return;
+      if (!document.body.dataset.vafProfileSeen || document.body.dataset.vafProfileSeen !== uid) {
+        document.body.dataset.vafProfileSeen = uid;
+        m = await seen({ uid, nick: pi.nick, ages: agesFromText(pi.desc), g: genderFromText(pi.desc), avatar: pi.avatar }, 'Profil');
+        setTimeout(async () => { await applyFacts({ uid, nick: pi.nick }, detailsFrom()); await snapshot(uid, pi.nick, 'Profilaufruf'); }, 2500);
+      }
+      await fickButton(uid, pi);
+      await fickSection(uid, pi.nick);
+    } finally { profBusy = false; }
+  }
+
+  // Button nach „Nachricht senden“
+  async function fickButton(uid, pi) {
+    const bar = pi.send.parentElement;
+    let b = bar.querySelector('#vaf-fick-btn');
+    const p = await Fick.get(Fick.idOf(uid));
+    const st = p && p.status;
+    const i = st ? FSTATES[st].i : 0;
+    const label = st ? FSTATES[st].label : 'Ficken?';
+    if (b && b.dataset.st === (st || '') ) return;
+    if (!b) {
+      const tpl = [...bar.querySelectorAll('button')].find((x) => norm(x.textContent) === 'sticker') || pi.send;
+      b = tpl.cloneNode(false);
+      b.id = 'vaf-fick-btn';
+      b.className = tpl.className.replace(/ant-btn-primary|ant-btn-color-primary|ant-btn-variant-solid/g, '') + ' ant-btn-default ant-btn-variant-outlined';
+      b.type = 'button';
+      b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fickMenu(b, uid, pi.nick); });
+      pi.send.after(b);
+    }
+    b.dataset.st = st || '';
+    b.innerHTML = `<span class="ant-btn-icon">${fickIcon(i, 16, true)}</span><span>${esc(label)}</span>`;
+    b.title = 'Fickliste – nur für dich sichtbar';
+  }
+  // Menü wie „Speichern“: alle anderen Zustände + zurücksetzen
+  async function fickMenu(anchor, uid, nick) {
+    const old = document.getElementById('vaf-fick-menu'); if (old) { old.remove(); return; }
+    const p = await Fick.forMember(uid, nick);
+    const r = anchor.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = 'vaf-fick-menu';
+    menu.className = 'ant-dropdown ant-theme';
+    menu.style.cssText = `position:fixed;left:${r.left}px;top:${r.bottom + 6}px;z-index:2147483600`;
+    const items = Object.entries(FSTATES).filter(([k]) => k !== p.status).map(([k, v]) => `<li class="ant-dropdown-menu-item" role="menuitem" data-k="${k}" style="display:flex;gap:8px;align-items:center">${fickIcon(v.i, 16)}<span>${esc(v.label)}</span></li>`);
+    if (p.status) items.push(`<li class="ant-dropdown-menu-item" role="menuitem" data-k="reset" style="display:flex;gap:8px;align-items:center">${TRASH}<span>Fickstatus zurücksetzen</span></li>`);
+    items.push(`<li class="ant-dropdown-menu-item" role="menuitem" data-k="meet" style="display:flex;gap:8px;align-items:center">＋<span>Treffen eintragen …</span></li>`);
+    menu.innerHTML = `<ul class="ant-dropdown-menu ant-dropdown-menu-root ant-dropdown-menu-vertical ant-dropdown-menu-light" role="menu">${items.join('')}</ul>`;
+    document.body.appendChild(menu);
+    const close = (e) => { if (!menu.contains(e.target) && e.target !== anchor) { menu.remove(); document.removeEventListener('mousedown', close, true); } };
+    document.addEventListener('mousedown', close, true);
+    menu.querySelectorAll('[data-k]').forEach((li) => li.addEventListener('click', async () => {
+      menu.remove(); document.removeEventListener('mousedown', close, true);
+      const k = li.dataset.k;
+      if (k === 'meet') { editMeet(p, null); return; }
+      await Fick.setStatus(p, k === 'reset' ? null : k);
+      await snapshot(uid, nick, 'Fickstatus geändert', true);
+      refreshProfileFick();
+    }));
+  }
+  function refreshProfileFick() {
+    const b = document.getElementById('vaf-fick-btn'); if (b) b.dataset.st = '#';
+    const s = document.getElementById('vaf-fick-sec'); if (s) s.remove();
+    profilePage();
+  }
+
+  // Abschnitt „Fickliste“ unter „Fotos“ und „Videos“
+  async function fickSection(uid, nick) {
+    const p = await Fick.get(Fick.idOf(uid));
+    let sec = document.getElementById('vaf-fick-sec');
+    if (!p) { if (sec) sec.remove(); return; }
+    if (sec && sec.dataset.u === String(p.updated)) return;
+    const h2s = [...document.querySelectorAll('main h2')];
+    const blockOf = (h) => { let b = h; while (b.parentElement && b.parentElement.tagName !== 'MAIN' && b.parentElement.children.length < 3) b = b.parentElement; return b; };
+    const vid = h2s.find((h) => /^Videos/.test(h.textContent.trim()));
+    const fot = h2s.find((h) => /^Fotos/.test(h.textContent.trim()));
+    const stat = h2s.find((h) => /^Statistiken/.test(h.textContent.trim()));
+    const ref = vid || fot;
+    const host = ref ? blockOf(ref) : stat ? blockOf(stat) : null;
+    if (!host) return;
+    if (!sec) { sec = document.createElement('div'); sec.id = 'vaf-fick-sec'; sec.dataset.vafSkip = '1'; }
+    sec.className = host.className;
+    sec.dataset.u = String(p.updated);
+    const st = p.status ? FSTATES[p.status] : null;
+    const meets = [...(p.meets || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    sec.innerHTML = `<div class="${(host.firstElementChild && host.firstElementChild.className) || ''}"><h2>Fickliste <span style="font-size:12px;font-weight:400;color:#8c8c8c">· Nur für dich sichtbar</span></h2></div>
+      <div style="padding:4px 0 12px;font-size:14px;color:#e8e8e8">
+        <div style="margin-bottom:8px">${fickIcon(st ? st.i : 0, 18, true)} <b>${esc(st ? st.label : 'kein Fickstatus')}</b></div>
+        ${meets.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">${meets.map((t) => meetLine(t)).join('')}</div>` : '<div style="color:#8c8c8c;margin-bottom:8px">Noch keine Treffen eingetragen.</div>'}
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px"><a href="#" data-a="add">+ Treffen eintragen</a></div>
+        <div style="margin-bottom:6px"><span style="color:#8c8c8c">Auch auf:</span> ${(p.profiles || []).filter((x) => !(x.pf === 'poppen' && x.uid === String(uid))).map(profLink).join(' ') || '<span style="color:#8c8c8c">–</span>'} <a href="#" data-a="prof">+ Profil zufügen</a></div>
+        <div style="display:flex;gap:16px"><a href="/setting/profile#archiv=${encodeURIComponent(uid)}" target="_blank">Profil-Archiv</a><a href="/setting/profile#fickliste" target="_blank">Zu meiner Fickliste</a></div>
+      </div>`;
+    if (!sec.isConnected || sec.previousElementSibling !== (ref ? host : null)) { if (ref) host.after(sec); else host.before(sec); }
+    sec.querySelector('[data-a=add]').addEventListener('click', (e) => { e.preventDefault(); editMeet(p, null); });
+    sec.querySelector('[data-a=prof]').addEventListener('click', (e) => { e.preventDefault(); addProfileDialog(p); });
+    sec.querySelectorAll('[data-meet]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); editMeet(p, p.meets.find((t) => t.id === a.dataset.meet)); }));
+  }
+  function meetLine(t) {
+    const d = t.date ? deDate(new Date(t.date + 'T12:00')) : 'ohne Datum';
+    const where = [t.where, t.club].filter(Boolean).map(esc).join(' · ');
+    const link = t.link ? ` <a href="${esc(t.link)}" target="_blank" rel="noopener">${pfBadge(t.pf || platformOfUrl(t.link))}Link</a>` : '';
+    return `<div><a href="#" data-meet="${esc(t.id)}" title="Treffen bearbeiten">${esc(d)}${t.time ? ' ' + esc(t.time) : ''}</a>${where ? ' · ' + where : ''}${link}${t.note ? ` <span style="color:#a6a6a6">– ${esc(t.note)}</span>` : ''}</div>`;
+  }
+  function profLink(x) {
+    if (!x.url) return `<span>${pfBadge(x.pf)}${esc(x.name || x.text)} <a href="#" onclick="navigator.clipboard.writeText(${esc(JSON.stringify(x.text || x.name))});return false" title="kopieren">⧉</a></span>`;
+    const own = 'status' in x && x.sync !== true ? ` <span title="eigener Status dieses Profils: ${esc(x.status ? FSTATES[x.status].label : 'kein')}">${fickIcon(x.status ? FSTATES[x.status].i : 0, 14, true)}</span>` : '';
+    return `<a href="${esc(x.url)}" target="_blank" rel="noopener" class="${x.deleted ? 'vaf-strike' : ''}">${pfBadge(x.pf)}${esc(x.name || x.url)}</a>${own}`;
+  }
+  // Treffen eintragen / bearbeiten
+  function editMeet(p, t) {
+    const isNew = !t;
+    t = t ? { ...t } : { id: 'm' + now().toString(36), date: isoDay(new Date()), time: '', where: '', club: '', link: '', note: '', pf: 'poppen' };
+    const m = modal({ title: isNew ? 'Treffen eintragen' : 'Treffen bearbeiten', sub: esc((p.main && p.main.nick) || (p.ext && p.ext.name) || ''),
+      html: `<div class="vaf-grid"><label>Datum<input class="vaf-in" type="date" data-f="date" value="${esc(t.date)}"></label><label>Uhrzeit<input class="vaf-in" type="time" data-f="time" value="${esc(t.time)}"></label>
+        <label>Was (Party, Anlass)<input class="vaf-in" data-f="where" value="${esc(t.where)}"></label><label>Wo (Club, Ort)<input class="vaf-in" data-f="club" value="${esc(t.club)}"></label></div>
+        <label>Link (Party, Club, poppen-Ort …)<input class="vaf-in" data-f="link" value="${esc(t.link)}" placeholder="https://…"></label>
+        <label style="display:block;margin-top:10px">Notiz<textarea class="vaf-in" data-f="note" rows="3">${esc(t.note)}</textarea></label>` });
+    const read = () => { m.body.querySelectorAll('[data-f]').forEach((i) => { t[i.dataset.f] = i.value.trim(); }); if (t.link && !/^https?:/i.test(t.link)) t.link = 'https://' + t.link; t.pf = t.link ? platformOfUrl(t.link) : 'poppen'; };
+    m.buttons([
+      { label: 'Speichern', primary: true, focus: true, fn: async () => {
+        read();
+        p.meets = (p.meets || []).filter((x) => x.id !== t.id).concat([{ ...t, at: now() }]);
+        p.history = [...(p.history || []), { at: now(), what: `${isNew ? 'Treffen eingetragen' : 'Treffen geändert'}: ${t.date}` }];
+        if (!p.status) { p.status = 'done'; p.statusAt = now(); }
+        await Fick.put(p); m.close(); refreshProfileFick(); Bus.emit('fick');
+      } },
+      ...(isNew ? [] : [{ label: 'Treffen löschen', fn: async () => { if (!W.confirm('Treffen löschen?')) return; p.meets = p.meets.filter((x) => x.id !== t.id); await Fick.put(p); m.close(); refreshProfileFick(); } }]),
+      { label: 'Abbrechen', fn: () => m.close() },
+    ]);
+  }
+  function addProfileDialog(p, done) {
+    const opts = Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}">${esc(v.name)}</option>`).join('');
+    const m = modal({ title: 'Profil zufügen', html: `<label>Plattform<select class="vaf-in" data-f="pf">${opts}</select></label>
+      <label style="display:block;margin-top:10px">Name, Nummer oder Link<input class="vaf-in" data-f="v" placeholder="@Name, +49 177 …, https://…"></label><div class="vaf-cur" data-f="hint"></div>` });
+    const pfSel = m.body.querySelector('[data-f=pf]'), inp = m.body.querySelector('[data-f=v]'), hint = m.body.querySelector('[data-f=hint]');
+    pfSel.value = 'joyclub';
+    const upd = () => { const r = normalizeProfile(pfSel.value, inp.value); hint.textContent = r ? (r.url ? 'Gespeichert als: ' + r.url : 'Ohne Link (nur Text): ' + r.name) : ''; };
+    pfSel.addEventListener('change', upd); inp.addEventListener('input', upd);
+    m.buttons([
+      { label: 'Zufügen', primary: true, focus: true, fn: async () => {
+        const r = normalizeProfile(pfSel.value, inp.value);
+        if (!r) { hint.textContent = 'Das sieht nicht nach einer gültigen Angabe aus.'; return; }
+        if ((p.profiles || []).some((x) => linkKey(x) === linkKey(r))) { hint.textContent = 'Dieses Profil ist schon eingetragen.'; return; }
+        p.profiles = [...(p.profiles || []), r];
+        p.history = [...(p.history || []), { at: now(), what: `Profil zugefügt: ${PLATFORMS[r.pf].name} ${r.name}` }];
+        await Fick.put(p); m.close(); if (done) done(); else refreshProfileFick();
+      } },
+      { label: 'Abbrechen', fn: () => m.close() },
+    ]);
+  }
+
+  // ---------- Profil-Archiv ----------
+  async function hashText(s) { const b = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
+  async function snapshot(uid, nick, reason, force = false) {
+    const main = document.querySelector('main');
+    if (!main || !uid) return;
+    const c = main.cloneNode(true);
+    c.querySelectorAll('script, style, iframe, #vaf-fick-sec, #vaf-fick-btn, .vaf-mark, [data-vaf-own]').forEach((e) => e.remove());
+    c.querySelectorAll('input, textarea').forEach((e) => e.setAttribute('disabled', ''));
+    const html = c.innerHTML;
+    if (html.length < 500) return;
+    const h = await hashText(html.replace(/==,\d+\//g, '/'));
+    const prev = await DB.byIndex('archive', 'uid', String(uid));
+    prev.sort((a, b) => a.at - b.at);
+    const last = prev[prev.length - 1];
+    if (last && last.hash === h && !force) return;
+    const p = await Fick.get(Fick.idOf(uid));
+    const img = await Images.get(uid);
+    await DB.put('archive', { uid: String(uid), nick, at: now(), reason: last && last.nick !== nick ? `Nick geändert (${last.nick} → ${nick})` : reason, html, hash: h, img });
+    // ohne Fickliste-Eintrag nur den letzten Stand behalten
+    if (!p) for (const old of prev) await DB.del('archive', old.id);
+    else if (prev.length > 60) for (const old of prev.slice(0, prev.length - 60)) await DB.del('archive', old.id);
+  }
+  async function renderArchive(el, uid) {
+    ensureStyle();
+    const list = (await DB.byIndex('archive', 'uid', String(uid))).sort((a, b) => a.at - b.at);
+    const m = await Members.get(uid);
+    const p = await Fick.get(Fick.idOf(uid));
+    if (!list.length) { el.innerHTML = `<div style="padding:24px;color:#e8e8e8"><h2>Profil-Archiv</h2><p>Für ${esc((m && m.nick) || (p && p.main && p.main.nick) || (p && p.ext && p.ext.name) || uid)} gibt es noch keinen gespeicherten Stand. Er entsteht, sobald du das Profil öffnest.</p></div>`; return; }
+    let idx = list.length - 1;
+    try { const k = sessionStorage.getItem('vaf_arch_' + uid); if (k != null && list[+k]) idx = +k; } catch {}
+    const meetDates = ((p && p.meets) || []).map((t) => t.date).filter(Boolean).sort();
+    const draw = () => {
+      const a = list[idx];
+      try { sessionStorage.setItem('vaf_arch_' + uid, String(idx)); } catch {}
+      const opts = list.map((x, i) => `<option value="${i}" ${i === idx ? 'selected' : ''}>${deDateTime(x.at)} – ${esc(x.reason || '')}</option>`).join('') + '<option value="live">aktuell (echtes Profil)</option>';
+      el.innerHTML = `<div style="position:sticky;top:0;z-index:5;background:#141414;padding:10px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#e8e8e8">
+          <b>Profil-Archiv: ${esc(a.nick || '')}</b>
+          <button type="button" class="vaf-big" style="width:auto;padding:4px 10px" data-n="ff" title="Stand direkt vor dem vorigen Treffen">«</button>
+          <button type="button" class="vaf-big" style="width:auto;padding:4px 10px" data-n="p">‹</button>
+          <select class="vaf-in" style="width:auto" data-n="sel">${opts}</select>
+          <button type="button" class="vaf-big" style="width:auto;padding:4px 10px" data-n="n">›</button>
+          <button type="button" class="vaf-big" style="width:auto;padding:4px 10px" data-n="fn" title="Stand direkt nach dem nächsten Treffen">»</button></div>
+        <div data-n="body" style="pointer-events:auto"></div>`;
+      el.querySelector('[data-n=body]').innerHTML = a.html;
+      el.querySelectorAll('[data-n=body] a[href^="/"]').forEach((x) => { x.target = '_blank'; });
+      const at = (i) => { if (i >= 0 && i < list.length) { idx = i; draw(); } };
+      el.querySelector('[data-n=p]').onclick = () => at(idx - 1);
+      el.querySelector('[data-n=n]').onclick = () => at(idx + 1);
+      el.querySelector('[data-n=sel]').onchange = (e) => { if (e.target.value === 'live') W.open(profileUrl(a.nick), '_blank'); else at(+e.target.value); };
+      const day = (x) => isoDay(new Date(x.at));
+      el.querySelector('[data-n=ff]').onclick = () => { const cur = day(list[idx]); const md = [...meetDates].reverse().find((d) => d < cur); if (!md) return; let j = -1; list.forEach((x, i) => { if (day(x) <= md) j = i; }); at(Math.max(0, j)); };
+      el.querySelector('[data-n=fn]').onclick = () => { const cur = day(list[idx]); const md = meetDates.find((d) => d > cur); if (!md) return; const j = list.findIndex((x) => day(x) >= md); at(j < 0 ? list.length - 1 : j); };
+    };
+    draw();
+    if (m && m.del) toast(`<b>Dieser Benutzer ist nicht mehr auf poppen.de</b><br>Du betrachtest eine statische Kopie seines alten Profils.`, 10000);
+  }
+
+  // ---------- Externe Ficks ----------
+  async function renderExternal(el, id) {
+    ensureStyle();
+    let p = id ? await Fick.get(id) : null;
+    if (!p) { el.innerHTML = '<div style="padding:24px;color:#e8e8e8">Eintrag nicht gefunden.</div>'; return; }
+    const x = p.ext || (p.ext = {});
+    const draw = () => {
+      el.innerHTML = `<div style="padding:16px 0;color:#e8e8e8;max-width:760px">
+        <div style="display:flex;gap:16px;align-items:center">
+          <label style="cursor:pointer" title="Bild ändern"><img src="${esc(x.img || '')}" style="width:96px;height:96px;border-radius:50%;object-fit:cover;background:#2a2a2a"><input type="file" accept="image/*" data-f="img" style="display:none"></label>
+          <div style="flex:1"><input class="vaf-in" data-f="name" value="${esc(x.name || '')}" placeholder="Name" style="font-size:20px;font-weight:700">
+          <div class="vaf-grid" style="margin-top:6px"><input class="vaf-in" data-f="typ" value="${esc(x.typ || '')}" placeholder="Typ (Mann, Frau, Paar …)"><input class="vaf-in" data-f="city" value="${esc(x.city || '')}" placeholder="Ort"></div></div></div>
+        <textarea class="vaf-in" data-f="short" rows="2" placeholder="Kurztext" style="margin-top:10px">${esc(x.short || '')}</textarea>
+        <textarea class="vaf-in" data-f="texts" rows="6" placeholder="Steckbrief, Beschreibung, Notizen …" style="margin-top:10px">${esc(x.texts || '')}</textarea>
+        <label class="vaf-chk"><input type="checkbox" data-f="gone" ${x.gone ? 'checked' : ''}> Profil gelöscht (war auf einer Plattform)</label>
+        <div style="margin:10px 0">${fickIcon(p.status ? FSTATES[p.status].i : 0, 18, true)} <select class="vaf-in" data-f="status" style="width:auto">${['', ...Object.keys(FSTATES)].map((k) => `<option value="${k}" ${k === (p.status || '') ? 'selected' : ''}>${k ? FSTATES[k].label : 'Ficken?'}</option>`).join('')}</select></div>
+        <div><b>Auch auf:</b> ${[...(foreignUrl(p) ? [{ pf: p.main.pf, url: p.main.url, name: p.main.nick }] : []), ...(p.profiles || [])].map(profLink).join(' ') || '–'} <a href="#" data-a="prof">+ Profil zufügen</a></div>
+        <h3>Treffen</h3><div>${[...(p.meets || [])].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(meetLine).join('') || '–'}</div>
+        <div style="margin-top:8px"><a href="#" data-a="add">+ Treffen eintragen</a> · <a href="/setting/profile#archiv=${encodeURIComponent(p.id)}">Profil-Archiv</a> · <a href="#" data-a="del">Eintrag löschen</a></div></div>`;
+      const save = async (what) => { await Fick.put(p); await DB.put('archive', { uid: p.id, nick: x.name, at: now(), reason: what, html: el.innerHTML, hash: '' }); };
+      el.querySelectorAll('input[data-f]:not([type=file]):not([type=checkbox]), textarea[data-f]').forEach((i) => i.addEventListener('change', () => { x[i.dataset.f] = i.value.trim(); save(`${i.dataset.f} geändert`); }));
+      el.querySelector('[data-f=gone]').addEventListener('change', (e) => { x.gone = e.target.checked ? now() : 0; save('Profil gelöscht'); });
+      el.querySelector('[data-f=status]').addEventListener('change', async (e) => { p = await Fick.setStatus(p, e.target.value || null) || p; draw(); });
+      el.querySelector('[data-f=img]').addEventListener('change', async (e) => {
+        const f = e.target.files[0]; if (!f) return;
+        const bmp = await createImageBitmap(f); const c = document.createElement('canvas'); const s = 200 / Math.max(bmp.width, bmp.height);
+        c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s); c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+        x.img = c.toDataURL('image/jpeg', 0.8); await save('Profilbild geändert'); draw();
+      });
+      el.querySelector('[data-a=prof]').onclick = (e) => { e.preventDefault(); addProfileDialog(p, draw); };
+      el.querySelector('[data-a=add]').onclick = (e) => { e.preventDefault(); editMeet(p, null); };
+      el.querySelectorAll('[data-meet]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); editMeet(p, p.meets.find((t) => t.id === a.dataset.meet)); }; });
+      el.querySelector('[data-a=del]').onclick = async (e) => { e.preventDefault(); if (W.confirm('Diesen externen Eintrag löschen?')) { await Fick.del(p.id); goHash('fickliste'); } };
+    };
+    draw();
+    Bus.on('fick', async () => { const n = await Fick.get(p.id); if (n && ownView && ownView.kind === 'extern:' + id) { p = n; draw(); } });
+  }
+  async function newExternal() {
+    const p = { id: 'x:' + now().toString(36) + Math.random().toString(36).slice(2, 6), status: null, statusAt: 0, profiles: [], meets: [], history: [{ at: now(), what: 'angelegt' }], created: now(), ext: { name: 'Neuer Eintrag' } };
+    await Fick.put(p);
+    goHash('extern=' + encodeURIComponent(p.id));
+  }
+
+  // ---------- Meine Fickliste ----------
+  async function renderFickList(el) {
+    ensureStyle();
+    const persons = await Fick.all();
+    const st = { sort: 'date', dir: -1, member: '', where: '', club: '', from: '', to: '', pf: '', status: '' };
+    try { Object.assign(st, JSON.parse(sessionStorage.getItem('vaf_fl') || '{}')); } catch {}
+    const memberOf = async (p) => (pm(p) ? await Members.get(pm(p).uid) : null);
+    const rows = [];
+    for (const p of persons) {
+      const m = await memberOf(p);
+      const name = (p.main && (m && m.nick || p.main.nick)) || (p.ext && p.ext.name) || '?';
+      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq((p.profiles || []).map((x) => x.pf)) };
+      if (!(p.meets || []).length) rows.push({ ...base, t: null });
+      for (const t of p.meets || []) rows.push({ ...base, t });
+    }
+    const clubs = uniq(rows.map((r) => (r.t && r.t.club) || '')).sort();
+    const counts = Object.fromEntries(Object.keys(FSTATES).map((k) => [k, persons.filter((p) => p.status === k).length]));
+    const draw = () => {
+      try { sessionStorage.setItem('vaf_fl', JSON.stringify(st)); } catch {}
+      let list = rows.filter((r) => {
+        if (st.status && r.p.status !== st.status) return false;
+        if (st.member && !norm(r.name).includes(norm(st.member))) return false;
+        if (st.where && !norm(r.t && r.t.where).includes(norm(st.where))) return false;
+        if (st.club) { const c = (r.t && r.t.club) || ''; if (st.club === '(unbekannt)' ? c : c !== st.club) return false; }
+        if (st.from && (!r.t || (r.t.date || '') < st.from)) return false;
+        if (st.to && (!r.t || (r.t.date || '') > st.to)) return false;
+        if (st.pf && !r.pfs.includes(st.pf) && !(r.t && r.t.pf === st.pf)) return false;
+        return true;
+      });
+      list.sort((a, b) => st.sort === 'name' ? st.dir * a.name.localeCompare(b.name, 'de') : st.dir * (((a.t && a.t.date) || '').localeCompare((b.t && b.t.date) || '') || a.name.localeCompare(b.name, 'de')));
+      el.innerHTML = `<div style="padding:8px 0 40px;color:#e8e8e8">
+        <h2 style="color:#fff;margin:4px 0 12px">Meine Fickliste <span style="font-size:12px;font-weight:400;color:#8c8c8c">· Nur für dich sichtbar</span></h2>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${Object.entries(FSTATES).map(([k, v]) => `<button type="button" class="vaf-tile ${st.status === k ? 'vaf-on' : ''}" data-st="${k}" title="${esc(v.label)}" style="padding:6px 12px">${fickIcon(v.i, 18, true)} <b style="display:inline">${counts[k]}</b></button>`).join('')}</div>
+        <div class="vaf-grid" style="grid-template-columns:repeat(6,1fr)">
+          <input class="vaf-in" data-f="member" list="vaf-fl-names" placeholder="Mitglied" value="${esc(st.member)}"><datalist id="vaf-fl-names">${uniq(rows.map((r) => r.name)).map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+          <input class="vaf-in" data-f="where" placeholder="Was (Party, Anlass)" value="${esc(st.where)}">
+          <select class="vaf-in" data-f="club"><option value="">Wo: alle Clubs/Orte</option><option value="(unbekannt)" ${st.club === '(unbekannt)' ? 'selected' : ''}>(unbekannt)</option>${clubs.filter(Boolean).map((c) => `<option ${c === st.club ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+          <input class="vaf-in" type="date" data-f="from" value="${esc(st.from)}" title="von"><input class="vaf-in" type="date" data-f="to" value="${esc(st.to)}" title="bis">
+          <select class="vaf-in" data-f="pf"><option value="">alle Plattformen</option>${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === st.pf ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></div>
+        <table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr style="text-align:left;color:#a6a6a6">
+          <th style="cursor:pointer;padding:6px" data-sort="date">Datum ${st.sort === 'date' ? (st.dir < 0 ? '▼' : '▲') : ''}</th><th style="cursor:pointer;padding:6px" data-sort="name">Mitglied ${st.sort === 'name' ? (st.dir < 0 ? '▼' : '▲') : ''}</th><th></th><th>Was</th><th>Wo</th><th>Notiz</th></tr></thead>
+          <tbody>${list.map((r, i) => `<tr data-i="${i}" style="border-top:1px solid #2c2c2c;cursor:pointer">
+            <td style="padding:6px;white-space:nowrap">${r.t && r.t.date ? deDate(new Date(r.t.date + 'T12:00')) : '–'}</td>
+            <td style="padding:6px"><a href="${esc(r.url)}" target="_blank" rel="noopener" class="${r.del ? 'vaf-strike' : ''}" style="${r.inactive ? 'color:#ff7875' : ''}">${esc(r.name)}</a><br><a href="${esc(r.arch)}" style="font-size:12px;color:#a6a6a6">Profil-Archiv</a> ${r.pfs.filter((x) => x !== 'poppen').map((x) => pfBadge(x)).join('')}</td>
+            <td>${fickIcon(r.p.status ? FSTATES[r.p.status].i : 0, 18, true)}</td>
+            <td>${esc((r.t && r.t.where) || '')}</td><td>${esc((r.t && r.t.club) || '')}${r.t && r.t.link ? ` <a href="${esc(r.t.link)}" target="_blank" rel="noopener">${pfBadge(r.t.pf || platformOfUrl(r.t.link))}</a>` : ''}</td>
+            <td style="color:#a6a6a6">${esc((r.t && r.t.note) || '')}</td></tr>`).join('') || '<tr><td colspan="6" style="padding:12px;color:#8c8c8c">Keine Einträge.</td></tr>'}</tbody></table>
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap"><button type="button" class="vaf-big" style="width:auto" data-a="ext">+ Externen Fick zufügen</button>
+          <button type="button" class="vaf-big" style="width:auto" data-a="exp">Exportieren</button><button type="button" class="vaf-big" style="width:auto" data-a="imp">Importieren</button></div></div>`;
+      el.querySelectorAll('[data-st]').forEach((b) => b.addEventListener('click', () => { st.status = st.status === b.dataset.st ? '' : b.dataset.st; draw(); }));
+      el.querySelectorAll('[data-f]').forEach((i) => i.addEventListener('change', () => { st[i.dataset.f] = i.value; draw(); }));
+      el.querySelectorAll('[data-sort]').forEach((h) => h.addEventListener('click', () => { if (st.sort === h.dataset.sort) st.dir = -st.dir; else { st.sort = h.dataset.sort; st.dir = h.dataset.sort === 'date' ? -1 : 1; } draw(); }));
+      el.querySelectorAll('tr[data-i]').forEach((tr) => tr.addEventListener('click', (e) => { if (e.target.closest('a')) return; const r = list[+tr.dataset.i]; if (r.t) editMeet(r.p, r.t); else if (!pm(r.p)) goHash('extern=' + encodeURIComponent(r.p.id)); else editMeet(r.p, null); }));
+      el.querySelector('[data-a=ext]').onclick = () => newExternal();
+      el.querySelector('[data-a=exp]').onclick = () => exportFick();
+      el.querySelector('[data-a=imp]').onclick = () => importFick().then(() => { hideOwn(); routeSettings(); });
+    };
+    draw();
+  }
+
+  // ---------- Kasten im eigenen Profil ----------
+  async function ownProfileBox() {
+    if (document.getElementById('vaf-own-fick')) return;
+    const stat = [...document.querySelectorAll('main h2')].find((h) => /^Statistiken/.test(h.textContent.trim()));
+    if (!stat) return;
+    let host = stat; while (host.parentElement && host.parentElement.tagName !== 'MAIN' && host.parentElement.children.length < 3) host = host.parentElement;
+    const persons = await Fick.all();
+    const counts = Object.fromEntries(Object.keys(FSTATES).map((k) => [k, persons.filter((p) => p.status === k).length]));
+    const last = persons.filter(isFickDone).map((p) => ({ p, t: [...(p.meets || [])].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0] })).filter((x) => x.t)
+      .sort((a, b) => (b.t.date || '').localeCompare(a.t.date || '')).slice(0, 3);
+    const box = document.createElement('div');
+    box.id = 'vaf-own-fick'; box.className = host.className; box.dataset.vafSkip = '1';
+    const rowsH = await Promise.all(last.map(async ({ p, t }) => {
+      const img = pm(p) ? await Images.get(pm(p).uid) : (p.ext && p.ext.img) || '';
+      const name = (p.main && p.main.nick) || (p.ext && p.ext.name);
+      return `<div style="display:flex;gap:8px;align-items:center;margin:4px 0"><img src="${esc(img)}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;background:#3a3a3a"><a href="${pm(p) ? esc(profileUrl(name)) : esc(foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id))}" target="_blank">${esc(name)}</a><span style="color:#a6a6a6">${esc([t.where, t.club].filter(Boolean).join(' · '))} · ${t.date ? deDate(new Date(t.date + 'T12:00')) : ''}</span></div>`;
+    }));
+    box.innerHTML = `<div><h2>Fickliste <span style="font-size:12px;font-weight:400;color:#8c8c8c">· Nur für dich sichtbar</span></h2></div>
+      <div style="display:flex;gap:14px;margin:6px 0 10px">${Object.entries(FSTATES).map(([k, v]) => `<a href="/setting/profile#fickliste" data-st="${k}" title="${esc(v.label)}" style="color:#e8e8e8">${fickIcon(v.i, 18, true)} ${counts[k]}</a>`).join('')}</div>
+      <div style="color:#a6a6a6;font-size:12px">Letzte Ficks</div>${rowsH.join('') || '<div style="color:#8c8c8c">–</div>'}
+      <a href="/setting/profile#fickliste" style="display:inline-block;margin-top:8px">Zu meiner Fickliste</a>`;
+    box.querySelectorAll('[data-st]').forEach((a) => a.addEventListener('click', () => { try { sessionStorage.setItem('vaf_fl', JSON.stringify({ status: a.dataset.st })); } catch {} }));
+    host.before(box);
+  }
+
+  // ---------- Export / Import mit automatischem Verknüpfen ----------
+  async function cryptKey(pass, salt) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(norm(pass)), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+  const b64 = (u8) => btoa(String.fromCharCode(...u8));
+  const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  async function encryptJSON(obj, pass) {
+    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await cryptKey(pass, salt);
+    const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj))));
+    let bin = ''; for (let i = 0; i < data.length; i += 0x8000) bin += String.fromCharCode(...data.subarray(i, i + 0x8000));
+    return { alg: 'AES-GCM/PBKDF2', salt: b64(salt), iv: b64(iv), data: btoa(bin) };
+  }
+  async function decryptJSON(enc, pass) {
+    const key = await cryptKey(pass, unb64(enc.salt));
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(enc.iv) }, key, unb64(enc.data));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+  async function exportFick() {
+    const me = Me.get() || await loadMe();
+    const persons = await Fick.all();
+    for (const p of persons) if (pm(p)) { const m = await Members.get(pm(p).uid); if (m && m.nick) { p.main.nick = m.nick; } }
+    const payload = { format: 'fickliste', version: 1, platform: 'poppen', exported: new Date().toISOString(), persons };
+    const enc = await encryptJSON(payload, me.nick);
+    download(`fickliste-poppen-${stamp()}.json`, JSON.stringify({ format: 'fickliste-enc', platform: 'poppen', account: me.nick, ...enc }));
+    toast(`${persons.length} Einträge exportiert (verschlüsselt mit deinem Nick).`);
+  }
+  async function readFickFile(text) {
+    let j = JSON.parse(text);
+    if (j.format === 'fickliste-enc' || j.alg) {
+      let pass = (Me.get() || {}).nick || '';
+      for (let i = 0; i < 3; i++) {
+        try { return await decryptJSON(j, pass); }
+        catch { pass = W.prompt(`Entschlüsseln fehlgeschlagen. Mit welchem Nick wurde die Datei erstellt?${j.account ? ` (Datei von: ${j.account})` : ''}`, j.account || ''); if (!pass) return null; }
+      }
+      return null;
+    }
+    return j;
+  }
+  async function importFick() {
+    const text = await pickFile();
+    if (!text) return;
+    let data;
+    try { data = await readFickFile(text); } catch (e) { toast('Datei nicht lesbar: ' + esc(e.message)); return; }
+    if (!data || !Array.isArray(data.persons)) { toast('Keine Fickliste in der Datei.'); return; }
+    const from = data.platform || 'joyclub';
+    const local = await Fick.all();
+    const mainLink = (p) => (!p.main ? null : pm(p) ? { pf: 'poppen', url: 'https://www.poppen.de' + pathOfName(p.main.nick || '') } : p.main.url ? { pf: p.main.pf, url: p.main.url } : null);
+    const keysOf = (p) => uniq([...(p.profiles || []), mainLink(p)].map(linkKey).filter(Boolean));
+    const index = new Map();
+    for (const p of local) for (const k of keysOf(p)) { if (!index.has(k)) index.set(k, new Set()); index.get(k).add(p.id); }
+    const sum = { neu: 0, verknuepft: 0, konflikt: 0, gleich: 0 };
+    for (const ip0 of data.persons) {
+      const ip = clone(ip0);
+      ip.origin = ip.origin || from;
+      // Herkunfts-Profil als Link aufnehmen
+      const hits = new Set();
+      for (const k of keysOf(ip)) for (const id of index.get(k) || []) hits.add(id);
+      let target = null;
+      if (hits.size === 1) target = local.find((p) => p.id === [...hits][0]);
+      else if (hits.size > 1) {
+        sum.konflikt++;
+        const names = [...hits].map((id) => { const p = local.find((x) => x.id === id); return (p.main && p.main.nick) || (p.ext && p.ext.name) || id; });
+        const v = await ask('Import – Konflikt', `<p>Der Eintrag <b>${esc((ip.main && ip.main.nick) || (ip.ext && ip.ext.name) || '?')}</b> passt zu mehreren Personen: ${names.map(esc).join(', ')}.</p>`, [
+          { label: 'Zusammenführen', value: 'merge', primary: true }, { label: 'Getrennt lassen', value: 'sep', focus: true, cancel: true }]);
+        if (v === 'merge') { target = local.find((p) => p.id === [...hits][0]); for (const id of [...hits].slice(1)) { const o = local.find((p) => p.id === id); mergeFick(target, o); await Fick.del(id); } }
+      }
+      if (target) {
+        const before = JSON.stringify([target.status, target.meets, target.profiles]);
+        mergeFick(target, ip);
+        if (JSON.stringify([target.status, target.meets, target.profiles]) === before) sum.gleich++; else { sum.verknuepft++; await Fick.put(target); }
+      } else if (!hits.size || hits.size > 1) {
+        const np = { ...ip, id: from === 'poppen' && ip.id ? ip.id : `i:${from}:${(ip.id || Math.random().toString(36).slice(2))}`, imported: from };
+        if (!pm(np)) np.ext = np.ext || { name: (np.main && np.main.nick) || '?' };
+        await Fick.put(np); local.push(np); sum.neu++;
+        for (const k of keysOf(np)) { if (!index.has(k)) index.set(k, new Set()); index.get(k).add(np.id); }
+      }
+    }
+    await ask('Import fertig', `<div class="vaf-stats"><span>Neu</span><b>${sum.neu}</b><span>Automatisch verknüpft</span><b>${sum.verknuepft}</b><span>Konflikte</span><b>${sum.konflikt}</b><span>Unverändert</span><b>${sum.gleich}</b></div>`, [{ label: 'OK', value: 1, primary: true, focus: true }]);
+  }
+  // b in a zusammenführen: Status = zuletzt geändert, Treffen und Profile vereinigen
+  function mergeFick(a, b) {
+    if ((b.statusAt || 0) > (a.statusAt || 0)) { a.status = b.status; a.statusAt = b.statusAt; }
+    const mk = (t) => `${t.pf || ''}|${t.uid || ''}|${t.date || ''}|${norm(t.where)}|${norm(t.club)}|${linkKey({ url: t.link })}`;
+    const seenM = new Set((a.meets || []).map(mk));
+    a.meets = [...(a.meets || [])];
+    for (const t of b.meets || []) if (!seenM.has(mk(t))) { a.meets.push({ ...t, id: t.id || 'm' + Math.random().toString(36).slice(2) }); seenM.add(mk(t)); }
+    const seenP = new Set((a.profiles || []).map(linkKey));
+    a.profiles = [...(a.profiles || [])];
+    for (const p of b.profiles || []) {
+      const k = linkKey(p);
+      if (!k) continue;
+      if (!seenP.has(k)) { a.profiles.push({ ...p }); seenP.add(k); continue; }
+      const x = a.profiles.find((y) => linkKey(y) === k);
+      if ('status' in p && (p.statusAt || 0) > (x.statusAt || 0)) { x.status = p.status; x.statusAt = p.statusAt; }
+      if ('sync' in p && !('sync' in x)) x.sync = p.sync;
+      for (const f of Object.keys(p)) if (!(f in x)) x[f] = p[f];          // unbekannte Felder durchreichen
+    }
+    if (b.main && !a.main) a.main = { ...b.main };
+    else if (b.main && b.main.url && a.main && (b.main.pf || 'poppen') !== (a.main.pf || 'poppen')) {
+      // fremdes Hauptprofil der anderen Seite als Profil behalten
+      const k = linkKey(b.main);
+      if (k && !seenP.has(k)) { a.profiles.push({ pf: b.main.pf, url: b.main.url, name: b.main.nick || '', uid: b.main.uid, main: true }); seenP.add(k); }
+    }
+    for (const f of Object.keys(b)) if (!(f in a)) a[f] = clone(b[f]);      // unbekannte Felder durchreichen
+    a.history = [...(a.history || []), ...(b.history || []).map((h) => ({ ...h, what: h.what + ' (importiert)' }))].sort((x, y) => x.at - y.at).slice(-200);
+    if (b.ext && !a.main) a.ext = { ...(b.ext || {}), ...(a.ext || {}) };
+    return a;
+  }
+
+  // =====================================================================================
+  // Figur: „Kurvig“ → „Mollig“, „Plus-size“ → „Mastschwein“ (überall), Zusatzoption „Qualle“ (Suche),
+  // Vermessung über die Größen-/Gewichtsfilter der Suche, Badges, Ausblenden, Sortierung
+  // =====================================================================================
+  const FIG_RENAME = { 'Kurvig': 'Mollig', 'Plus-size': 'Mastschwein', 'Plus-Size': 'Mastschwein' };
+  const FIG_MODES = { mollig: { min: 30, hide: 0 }, mastschwein: { min: 35, hide: 35 }, qualle: { min: 40, hide: 40 } };
+  const BANDS = [[40, 'Qualle'], [35, 'Mastschwein'], [30, 'mollig']];
+
+  function renameTextNodes(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode())) {
+      const t = n.nodeValue.trim();
+      if (FIG_RENAME[t] && !(n.parentElement && n.parentElement.closest('input, textarea, [contenteditable]'))) n.nodeValue = n.nodeValue.replace(t, FIG_RENAME[t]);
+    }
+    if (root.querySelectorAll) for (const e of root.querySelectorAll('[title="Kurvig"], [title="Plus-size"], [title="Plus-Size"]')) e.setAttribute('title', FIG_RENAME[e.getAttribute('title')]);
+  }
+
+  // ---------- „Qualle“ in der Klappliste der Suche ----------
+  const qualleOn = () => location.pathname.startsWith('/search') && G.get('qualle', false);
+  function qualleOption() {
+    for (const dd of document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')) {
+      const opts = [...dd.querySelectorAll('.ant-select-item-option')];
+      const mast = opts.find((o) => !o.classList.contains('vaf-qualle') && /^(Mastschwein|Plus-size)$/i.test(o.textContent.trim()));
+      if (!mast || !opts.some((o) => /^Schlank$/.test(o.textContent.trim()))) continue;
+      if (!location.pathname.startsWith('/search')) continue;
+      let q = dd.querySelector('.vaf-qualle');
+      if (!q) {
+        q = mast.cloneNode(true);
+        q.classList.add('vaf-qualle');
+        q.classList.remove('ant-select-item-option-selected', 'ant-select-item-option-active');
+        q.setAttribute('title', 'Qualle');
+        const c = q.querySelector('.ant-select-item-option-content'); if (c) c.textContent = 'Qualle';
+        q.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
+        q.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          G.set('qualle', true);
+          const m2 = [...dd.querySelectorAll('.ant-select-item-option:not(.vaf-qualle)')].find((o) => /Mastschwein|Plus-size/i.test(o.textContent));
+          if (m2) { m2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); m2.click(); }
+          setTimeout(qualleDisplay, 100);
+        }, true);
+        mast.after(q);
+        // andere Auswahl → Qualle aus
+        for (const o of opts) if (!o.classList.contains('vaf-qualle')) o.addEventListener('click', () => G.set('qualle', false), true);
+      }
+      const sel = qualleOn();
+      q.classList.toggle('ant-select-item-option-selected', sel);
+      mast.classList.toggle('ant-select-item-option-selected', !sel && mast.classList.contains('ant-select-item-option-selected'));
+    }
+    qualleDisplay();
+  }
+  function qualleDisplay() {
+    if (!qualleOn()) return;
+    for (const it of document.querySelectorAll('.ant-select-selection-item')) {
+      if (/^(Mastschwein|Plus-size)$/i.test(it.textContent.trim())) { it.textContent = 'Qualle'; it.title = 'Qualle (sucht „Plus-size“ und blendet unter BMI 40 aus)'; }
+    }
+  }
+
+  // ---------- Körpermaße im Gedächtnis ----------
+  const bmiOf = (h, w) => w / ((h / 100) ** 2);
+  const wFor = (bmi, h) => Math.ceil(bmi * (h / 100) ** 2);
+  function bodyInfo(m, s = S()) {
+    if (!m || !m.body || !m.body[0]) return null;
+    const b = m.body[0];
+    if (now() - b.at > s.expert.bodyValidDays * DAY) return null;
+    const lo = bmiOf(b.h, b.wlo), hi = bmiOf(b.h, b.whi);
+    return { h: b.h, wlo: b.wlo, whi: b.whi, bmi: b.wlo === b.whi ? lo : lo, exact: b.wlo === b.whi, lo, hi };
+  }
+  const bandOf = (bmi) => (BANDS.find(([t]) => bmi >= t) || [0, ''])[1];
+  // Sortier-/Filterwert eines Mitglieds in einem Figur-Modus (UNKNOWN = niedrigster Wert der Suche, 0 kg)
+  function figKey(m, mode) {
+    const bi = bodyInfo(m);
+    if (!bi) return { bmi: FIG_MODES[mode].min, w: 0, unknown: true };
+    return { bmi: Math.floor(bi.lo * 10) / 10, w: bi.wlo, unknown: false };
+  }
+
+  // ---------- Suchantworten umsortieren und filtern ----------
+  let lastFig = null;   // { mode, payload, key }
+  function figModeOf(body) {
+    if (!body || !Array.isArray(body.figure) || !body.figure.length) return null;
+    if (body.figure.includes(6)) return G.get('qualle', false) ? 'qualle' : 'mastschwein';
+    if (body.figure.includes(5)) return 'mollig';
+    return null;
+  }
+  onApi(/^user\/search$/, null, (data, info) => {
+    if (!location.pathname.startsWith('/search')) return null;
+    if (info.body && info.body.size_min === info.body.size_max && info.body.size_min !== 130) return null;   // eigene Vermessungs-Abfrage
+    const mode = figModeOf(info.body);
+    if (!mode) { lastFig = null; return null; }
+    const { page, limit, ...rest } = info.body;
+    const key = JSON.stringify({ ...rest, q: mode });
+    lastFig = { mode, payload: rest, key };
+    if (!Measure.done.has(key)) setTimeout(() => Measure.start(rest, mode, key), 500);
+    const users = (data && data.users) || [];
+    const cache = Members.cached();
+    const withKey = users.map((u, i) => ({ u, i, k: figKey(cache.get(String(u.uid)), mode) }));
+    const hide = FIG_MODES[mode].hide;
+    const kept = withKey.filter((x) => x.k.unknown || x.k.bmi >= hide);
+    kept.sort((a, b) => b.k.bmi - a.k.bmi || b.k.w - a.k.w || a.i - b.i);
+    return { ...data, users: kept.map((x) => x.u) };
+  });
+
+  // ---------- Vermessung im Hintergrund ----------
+  const Measure = {
+    done: new Set(), running: false, stop: false,
+    async start(payload, mode, key) {
+      if (this.running || this.done.has(key)) return;
+      this.running = true; this.stop = false;
+      if (!(await Lock.take('measure', key))) { this.running = false; return; }
+      const tt = toast('Figur-Badges: vermesse Größe und Gewicht über die Suchfilter …', 0);
+      const ctx = { stop: () => this.stop, step: () => {} };
+      try {
+        const ths = mode === 'mollig' ? [30, 35, 40] : mode === 'mastschwein' ? [35, 40] : [40];
+        const base = { ...payload, weight_min: 0, weight_max: 300 };
+        const s = S();
+        const all = new Map();       // uid → { h, wlo, whi }
+        let heights = 0;
+        for (let h = 130; h <= 220 && !this.stop; h++) {
+          const atH = new Set();
+          await searchAll({ ...base, size_min: h, size_max: h }, ctx, async (users) => { for (const u of users) { atH.add(u.uid); all.set(u.uid, { h, wlo: 0, whi: 300 }); } });
+          if (!atH.size) continue;
+          heights++;
+          tt.innerHTML = `Figur-Badges: vermesse … <b>${h} cm</b> (${fmtN(all.size)} Mitglieder)`;
+          // grobe Bänder
+          let prev = null;
+          for (const T of ths) {
+            const inT = new Set();
+            await searchAll({ ...base, size_min: h, size_max: h, weight_min: wFor(T, h) }, ctx, async (users) => { for (const u of users) inT.add(u.uid); });
+            for (const uid of atH) {
+              const b = all.get(uid);
+              if (inT.has(uid)) b.wlo = Math.max(b.wlo, wFor(T, h));
+              else b.whi = Math.min(b.whi, wFor(T, h) - 1);
+            }
+            prev = inT;
+            if (!inT.size) break;
+          }
+          // feine Bänder (ganzzahliger BMI) nur für noch nicht vermessene Treffer ab der untersten Grenze
+          const pending = new Set([...atH].filter((uid) => { const b = all.get(uid); const m = Members.cached().get(uid); return b.wlo >= wFor(ths[0], h) && !bodyInfo(m); }));
+          for (let k = ths[0]; pending.size && k < 90 && !this.stop; k++) {
+            const lo = wFor(k, h), hi = wFor(k + 1, h) - 1;
+            if (lo > 300) break;
+            await searchAll({ ...base, size_min: h, size_max: h, weight_min: lo, weight_max: Math.min(300, hi) }, ctx, async (users) => {
+              for (const u of users) { const b = all.get(u.uid); if (b) { b.wlo = Math.max(b.wlo, lo); b.whi = Math.min(b.whi, hi); } pending.delete(u.uid); }
+            });
+          }
+          for (const uid of atH) {
+            const b = all.get(uid);
+            await Members.update(uid, (m) => {
+              const old = m.body && m.body[0];
+              if (old && old.src === 'Profil' && now() - old.at < s.expert.bodyValidDays * DAY) return;
+              const keepFine = old && old.h === h && old.wlo >= b.wlo && old.whi <= b.whi && now() - old.at < s.expert.bodyValidDays * DAY;
+              m.body = [keepFine ? old : { h, wlo: b.wlo, whi: b.whi, at: now() }];
+              delete m.bodyUnk;
+            });
+          }
+          markSearchFig();
+        }
+        // in der eigentlichen Suche, aber in keiner Größen-Suche → UNKNOWN
+        if (!this.stop) {
+          await searchAll(base, ctx, async (users) => { for (const u of users) if (!all.has(u.uid)) await Members.update(u.uid, (m) => { if (!m.body) m.bodyUnk = now(); }); });
+          this.done.add(key);
+        }
+        tt.innerHTML = `Figur-Badges: <b>fertig</b> – ${fmtN(all.size)} Mitglieder vermessen. <a href="#" id="vaf-fig-reload" style="color:#ffc21a">Liste neu sortieren</a>`;
+        const a = document.getElementById('vaf-fig-reload'); if (a) a.onclick = (e) => { e.preventDefault(); location.reload(); };
+        setTimeout(() => tt.remove(), 20000);
+      } catch (e) { tt.textContent = 'Figur-Vermessung abgebrochen: ' + e.message; setTimeout(() => tt.remove(), 8000); }
+      finally { this.running = false; Lock.release('measure'); markSearchFig(); }
+    },
+  };
+
+  // ---------- Badges auf der Suchseite ----------
+  async function markSearchFig() {
+    if (!location.pathname.startsWith('/search') || !lastFig) return;
+    const mode = lastFig.mode;
+    const min = FIG_MODES[mode].min, hide = FIG_MODES[mode].hide;
+    for (const x of cardsOn(document)) {
+      const m = x.uid ? await Members.get(x.uid) : await Members.byNick(x.nick);
+      const bi = bodyInfo(m);
+      let b = x.card.querySelector('.vaf-fig');
+      if (bi && bi.lo < hide) { x.card.style.display = 'none'; continue; }
+      x.card.style.display = '';
+      const bmi = bi ? Math.floor(bi.lo) : null;
+      const band = bi ? bandOf(bi.lo) : '';
+      if (!bi || bi.lo < min || !band) { if (b) b.remove(); continue; }
+      if (!b) { b = document.createElement('div'); b.className = 'vaf-fig vaf-mark'; (x.host || x.card).prepend(b); }
+      b.textContent = `${band} · BMI ${bmi}${bi.exact ? '' : '+'}`;
+      b.title = `${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg`;
+      b.style.cssText = `background:${band === 'Qualle' ? '#6a1b9a' : band === 'Mastschwein' ? '#ad1457' : '#ef6c00'};color:#fff`;
+    }
+  }
+
+  function initFigur() {
+    renameTextNodes(document.body);
+    let t = null;
+    new MutationObserver((muts) => {
+      for (const mu of muts) for (const n of mu.addedNodes) { if (n.nodeType === 1) renameTextNodes(n); else if (n.nodeType === 3 && n.parentElement) renameTextNodes(n.parentElement); }
+      clearTimeout(t); t = setTimeout(() => { qualleOption(); markSearchFig(); }, 200);
+    }).observe(document.body, { childList: true, subtree: true, characterData: false });
+  }
+
+  // =====================================================================================
+  // ---------- Sonderseiten: Wartung, abgemeldet, Login, Werbung, nicht gefunden ----------
+  // =====================================================================================
+  const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch { return null; } };
+  const ssSet = (k, v) => { try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch {} };
+
+  // Welche Art Seite ist gerade zu sehen?
+  //   'wartung' | 'login' | 'werbung' | 'notfound' | 'abgemeldet' | 'normal' | 'loading'
+  function pageKind(doc = document) {
+    const title = doc.title || '';
+    const body = doc.body ? (doc.body.textContent || '') : '';
+    if (/Wartungszustand/i.test(title) || /routinemäßige Wartungsarbeiten/i.test(body)) return 'wartung';
+    const path = (doc.location && doc.location.pathname) || '';
+    if (doc.querySelector('input#username') && doc.querySelector('input#password')) return 'login';
+    if (path.startsWith('/login')) return 'loading';                       // Login-Formular lädt noch
+    if (path.startsWith('/view/announcement/')) return 'werbung';
+    const skip = [...doc.querySelectorAll('main a[href="/home"]')].find((a) => norm(a.textContent) === 'skip');
+    if (skip) return 'werbung';
+    const err = doc.querySelector('main .ant-result-error');
+    if (err && /spurlos verschwunden|nicht gefunden/i.test(err.textContent || '')) return 'notfound';
+    const header = doc.querySelector('header');
+    if (!header) return 'loading';
+    if (header.querySelector('a[href="/inbox"]')) return 'normal';
+    if (doc.querySelector('a[href="/login"]') || /Neues Konto erstellen/.test(body)) return 'abgemeldet';
+    return 'loading';
+  }
+
+  const runTarget = () => null;
+
+  function specialPanel(title, html) { return toast(`<b>${esc(word())}-Schutz – ${title}</b><br>${html}`, 0); }
+
+  // Wiederaufnahme nach einem Login: wohin wollte dieser Tab?
+  function rememberResume() {
+    if (G.get('resume', null)) return;
+    const url = runTarget() || ssGet('vaf_last_url');
+    if (url) G.set('resume', { tab: TAB_ID, url, ts: Date.now() });
+  }
+
+  // Gibt true zurück, wenn die Seite eine Sonderseite war und init() nicht weitermachen soll
+  async function handleSpecialPage() {
+    const kind = await waitFor(() => { const k = pageKind(); return k === 'loading' ? null : k; }, 8000) || 'normal';
+
+    if (kind !== 'werbung') ssSet('vaf_ad_count', null);
+
+    if (kind === 'normal') {
+      ssSet('vaf_last_url', location.href);
+      ssSet('vaf_notfound_reload', null);
+      // Nach erfolgreichem Login dort weitermachen, wo der Tab unterbrochen wurde
+      const r = G.get('resume', null);
+      if (r && r.tab === TAB_ID) {
+        G.del('resume');
+        if (Date.now() - r.ts < 60 * 60000 && r.url && r.url !== location.href) {
+          specialPanel('wieder eingeloggt', 'Mache weiter, wo ich unterbrochen wurde …');
+          await sleep(1500);
+          location.href = r.url;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    if (kind === 'wartung') {
+      const min = S().maintenanceMin;
+      const at = new Date(Date.now() + min * 60000);
+      const hhmm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+      specialPanel('Wartung', `poppen.de wird gerade gewartet – alles angehalten.<br>Neuer Versuch um ${hhmm} Uhr.`);
+            setTimeout(() => location.reload(), min * 60000);
+      return true;
+    }
+
+    if (kind === 'abgemeldet') {
+      rememberResume();
+            specialPanel('Nicht eingeloggt', 'Nicht eingeloggt – bitte <a href="/login" style="color:#ffc21a">anmelden</a>.<br>Danach geht es automatisch weiter.');
+      return true;
+    }
+
+    if (kind === 'login') {
+      rememberResume();
+            await handleLoginPage();
+      return true;
+    }
+
+    if (kind === 'werbung') {
+      const n = (+ssGet('vaf_ad_count') || 0) + 1;
+      ssSet('vaf_ad_count', String(n));
+      if (n >= 3) {
+        specialPanel('Werbeseite', 'Die Werbe-Zwischenseite kommt immer wieder – angehalten.<br>Bitte einmal selbst auf „SKIP“ klicken.');
+        return true;
+      }
+      const target = runTarget();
+      specialPanel('Werbeseite', 'Werbe-Zwischenseite – wird übersprungen …');
+      await sleep(800);
+      if (target) { location.href = target; return true; }
+      const skip = [...document.querySelectorAll('main a[href="/home"]')].find((a) => norm(a.textContent) === 'skip');
+      if (skip) skip.click(); else location.href = location.origin + '/home';
+      return true;
+    }
+
+    if (kind === 'notfound') {
+      // Profilseiten behandelt der jeweilige Lauf selbst (Konto gilt als nicht vorhanden)
+      if (/^\/p\/[^/]+$/.test(location.pathname.replace(/\/+$/, ''))) return false;
+      const key = location.pathname;
+      if (ssGet('vaf_notfound_reload') !== key) {
+        ssSet('vaf_notfound_reload', key);
+        specialPanel('Seite nicht gefunden', 'Seite nicht gefunden – lade einmal neu …');
+        await sleep(1500);
+        location.reload();
+        return true;
+      }
+      specialPanel('Seite nicht gefunden', 'Diese Seite gibt es nicht (auch nach dem Neuladen) – angehalten.');
+      return true;
+    }
+    return false;
+  }
+
+  // Login-Seite: "Angemeldet bleiben" einschalten, bei ausgefüllten Feldern einmal "Anmelden" klicken
+  async function handleLoginPage() {
+    await sleep(1500);                                   // dem Browser Zeit für das automatische Ausfüllen geben
+    const sw = (() => {
+      const lab = [...document.querySelectorAll('span, label, div')].find((e) => e.children.length === 0 && norm(e.textContent) === 'angemeldet bleiben');
+      let box = lab;
+      for (let i = 0; i < 5 && box; i++, box = box.parentElement) {
+        const b = box.querySelector('button[role=switch]');
+        if (b) return b;
+      }
+      return null;
+    })();
+    if (sw && sw.getAttribute('aria-checked') !== 'true') { sw.click(); await sleep(400); }
+
+    const user = document.querySelector('input#username');
+    const pass = document.querySelector('input#password');
+    const autofilled = (el) => { try { return el.matches(':autofill') || el.matches(':-webkit-autofill'); } catch { return false; } };
+    const filled = (el) => !!el && (el.value.trim() !== '' || autofilled(el));
+    const submit = () => {
+      const f = (pass && pass.closest('form')) || document.querySelector('main form');
+      return f && [...f.querySelectorAll('button')].find((b) => norm(b.textContent) === 'anmelden');
+    };
+    const mark = () => {
+      const b = submit();
+      if (b) { b.style.boxShadow = '0 0 0 4px #ffc21a'; b.scrollIntoView({ block: 'center' }); }
+    };
+
+    if (!filled(user) || !filled(pass)) {
+      specialPanel('Nicht eingeloggt', 'Nicht eingeloggt – bitte anmelden.<br>Danach geht es automatisch weiter.');
+      mark();
+      return;
+    }
+    const lastTry = G.get('login_try', 0);
+    if (S().autoLogin && Date.now() - lastTry > S().autoLoginPauseMin * 60000) {
+      G.set('login_try', Date.now());
+      specialPanel('Login', 'Melde mich an …');
+      const b = submit();
+      if (b) b.click();
+      // Hat es geklappt, verlässt die Seite das Login-Formular (dann übernimmt init() auf der neuen Seite)
+      if (await waitFor(() => !document.querySelector('input#password'), 8000)) return;
+    }
+    specialPanel('Login', 'Bitte einmal auf <b>Anmelden</b> klicken – danach geht es automatisch weiter.');
+    mark();
+  }
+
+  // =====================================================================================
+  // Sichern / Wiederherstellen, Gedächtnis exportieren / importieren, 99-Jährige, Umstellung von 1.x
+  // =====================================================================================
+  async function backupAll() {
+    const me = Me.get() || await loadMe();
+    if (!me || !me.nick) { toast('Eigenes Profil unbekannt – bitte einmal neu laden.'); return; }
+    const tt = toast('Sichere alle Daten …', 0);
+    await Members.flush();
+    const gm = {};
+    for (const k of GM_listValues()) if (k.startsWith('vaf2_') && !k.startsWith('vaf2_lock_')) gm[k] = GM_getValue(k);
+    const out = { format: 'opa-schutz-backup', version: VERSION, at: new Date().toISOString(), account: me.nick, gm, stores: {} };
+    for (const st of ['members', 'queue', 'kv', 'images', 'archive']) out.stores[st] = await DB.all(st);
+    out.fick = await encryptJSON(await DB.all('fick'), me.nick);
+    download(`opa-schutz-sicherung-${stamp()}.json`, JSON.stringify(out));
+    tt.innerHTML = `Gesichert: ${fmtN(out.stores.members.length)} Mitglieder, ${fmtN(out.stores.queue.length)} auf der Warteliste.`;
+    setTimeout(() => tt.remove(), 6000);
+  }
+  async function restoreAll() {
+    const text = await pickFile();
+    if (!text) return;
+    let d;
+    try { d = JSON.parse(text); } catch { toast('Datei nicht lesbar.'); return; }
+    if (d.format !== 'opa-schutz-backup') { toast('Das ist keine Sicherung des Opa-Schutzes.'); return; }
+    const ok = await ask('Alle Daten wiederherstellen', `<p>Alle Daten werden durch die Sicherung vom ${esc(deDateTime(d.at))} (${esc(d.account || '?')}) ersetzt.</p>`, [
+      { label: 'Wiederherstellen', value: true, primary: true }, { label: 'Abbrechen', value: false, focus: true, cancel: true }]);
+    if (!ok) return;
+    let fick = null;
+    let pass = (Me.get() || {}).nick || d.account || '';
+    for (let i = 0; i < 3 && d.fick; i++) {
+      try { fick = await decryptJSON(d.fick, pass); break; }
+      catch { pass = W.prompt('Die Fickliste ist mit dem Nick verschlüsselt, der beim Sichern galt. Welcher war es? (leer = ohne Fickliste wiederherstellen)', d.account || ''); if (!pass) break; }
+    }
+    for (const k of GM_listValues()) if (k.startsWith('vaf2_') && !k.startsWith('vaf2_lock_')) GM_deleteValue(k);
+    for (const [k, v] of Object.entries(d.gm || {})) GM_setValue(k, v);
+    for (const st of ['members', 'queue', 'kv', 'images', 'archive']) { await DB.clear(st); await DB.putMany(st, d.stores[st] || []); }
+    if (fick) { await DB.clear('fick'); await DB.putMany('fick', fick); }
+    Members.cached().clear();
+    loadSettings();
+    toast(`Wiederhergestellt${fick ? '' : ' (ohne Fickliste)'}. Seite wird neu geladen …`);
+    setTimeout(() => location.reload(), 1500);
+  }
+
+  // Nur das Wissen über andere Mitglieder (für ein zweites Konto)
+  const MEM_FIELDS = ['uid', 'nick', 'nl', 'nicks', 'g', 'ages', 'ageAt', 'birth', 'by', 'zod', 'pay', 'city', 'first', 'last', 'lastLogin', 'body', 'bodyUnk', 'fig', 'del', 'active', 'avatar'];
+  async function exportMemory(withImages) {
+    const tt = toast('Exportiere Gedächtnis …', 0);
+    const list = [];
+    await Members.each((m) => { const o = {}; for (const f of MEM_FIELDS) if (m[f] !== undefined) o[f] = m[f]; list.push(o); });
+    const out = { format: 'opa-schutz-gedaechtnis', version: VERSION, at: new Date().toISOString(), members: list };
+    if (withImages) out.images = await DB.all('images');
+    download(`opa-schutz-gedaechtnis-${stamp()}.json`, JSON.stringify(out));
+    tt.innerHTML = `${fmtN(list.length)} Mitglieder exportiert${withImages ? ` (${fmtN(out.images.length)} Bilder)` : ''}.`;
+    setTimeout(() => tt.remove(), 6000);
+  }
+  async function importMemory() {
+    const text = await pickFile();
+    if (!text) return;
+    let d;
+    try { d = JSON.parse(text); } catch { toast('Datei nicht lesbar.'); return; }
+    if (d.format !== 'opa-schutz-gedaechtnis') { toast('Das ist kein Gedächtnis-Export.'); return; }
+    const tt = toast('Mische Gedächtnis …', 0);
+    let neu = 0, erg = 0, eig = 0, i = 0;
+    for (const x of d.members || []) {
+      if (!x.uid) continue;
+      if (++i % 500 === 0) tt.textContent = `Mische Gedächtnis … ${fmtN(i)}`;
+      const m = await Members.get(x.uid);
+      if (!m) { Members.put({ ...x, nl: norm(x.nick) }); neu++; continue; }
+      const before = JSON.stringify(m);
+      if ((x.last || 0) > (m.last || 0) && x.nick && x.nick !== m.nick) { m.nicks = uniq([...(m.nicks || []), m.nick]); m.nick = x.nick; m.nl = norm(x.nick); }
+      m.nicks = uniq([...(m.nicks || []), ...(x.nicks || [])]).filter((n) => n !== m.nick);
+      if (x.birth && x.birth.length) m.birth = m.birth && m.birth.length === x.birth.length ? m.birth.map((b, k) => intersect(b, x.birth[k]) || b) : (m.birth && m.birth.length ? m.birth : x.birth);
+      for (const f of ['zod', 'by', 'g', 'pay', 'city', 'fig']) if (m[f] === undefined && x[f] !== undefined) m[f] = x[f];
+      if (x.body && (!m.body || (x.body[0].at || 0) > (m.body[0].at || 0))) m.body = x.body;
+      if ((x.lastLogin || 0) > (m.lastLogin || 0)) m.lastLogin = x.lastLogin;
+      if ((x.ageAt || '') > (m.ageAt || '')) { m.ages = x.ages; m.ageAt = x.ageAt; }
+      if (x.del && !m.del) m.del = x.del;
+      if (JSON.stringify(m) !== before) { Members.put(m); erg++; } else eig++;
+    }
+    for (const im of d.images || []) {
+      const cur = await DB.get('images', im.uid);
+      if (!cur || (im.at || 0) > (cur.at || 0)) await DB.put('images', im);
+    }
+    await Members.flush();
+    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> eigene behalten.`;
+    setTimeout(() => tt.remove(), 10000);
+  }
+  async function export99() {
+    const l = await KV.get('log99', {});
+    const lines = Object.values(l).map((x) => 'https://www.poppen.de' + pathOfName(x.nick)).sort();
+    download(`poppen-99-jaehrige-${stamp()}.txt`, lines.join('\r\n') + '\r\n', 'text/plain');
+  }
+
+  // ---------- Umstellung von Version 1.x ----------
+  // Die alten Listen kannten keine Benutzer-IDs. Sie werden ins neue Gedächtnis übernommen, sobald
+  // ein Mitglied mit ID auftaucht (Blockierliste, Listen); die alten Daten bleiben erhalten.
+  let legacy = null;
+  async function migrateV1() {
+    if (G.get('migrated_v1', false)) { legacy = await KV.get('legacy', null); return; }
+    const done = GM_getValue('vaf_done', null);
+    if (!Array.isArray(done)) { G.set('migrated_v1', true); return; }
+    const src = GM_getValue('vaf_done_src', {}) || {}, time = GM_getValue('vaf_done_time', {}) || {}, birth = GM_getValue('vaf_birth', {}) || {};
+    const L = { done: {}, birth: {} };
+    for (const p of done) L.done[slugOf(p)] = { src: src[p] || '', at: time[p] ? Date.parse(time[p]) : 0 };
+    for (const [p, b] of Object.entries(birth)) L.birth[slugOf(p)] = b.persons || [];
+    await KV.set('legacy', L);
+    legacy = L;
+    // alte Whitelist-Einträge aus dem Quelltext stehen bereits in den Standardwerten
+    G.set('migrated_v1', true);
+    log(`Umstellung von 1.x: ${done.length} Erledigte, ${Object.keys(L.birth).length} Geburtszeiträume übernommen.`);
+  }
+  // beim ersten Sehen eines Mitglieds: alte Daten einfließen lassen
+  Bus.on('legacy-check', () => {});
+  async function legacyApply(m) {
+    if (!legacy || !m || !m.nl) return;
+    const b = legacy.birth[m.nl];
+    if (b && b.length && m.birth && m.birth.length === b.length) m.birth = m.birth.map((x, i) => intersect(x, b[i]) || x);
+    const d = legacy.done[m.nl];
+    if (d && !m.blk && !m.unblk) m.blk = { at: d.at || now(), src: d.src || 'Sync', note: '', opa: true, legacy: true };
+  }
+
+  // =====================================================================================
+  // Start
+  // =====================================================================================
+  loadSettings();
+  installPassiveHooks();
+
+  function ensureUi() {
+    try { settingsMenu(); } catch (e) { warn('Menü', e); }
+    try { routeSettings(); } catch (e) { warn('Einstellungen', e); }
+    try { ignoreListUi(); } catch (e) { warn('Blockierliste', e); }
+    try { profileMenu(); } catch (e) { warn('Profil-Menü', e); }
+    if (/^\/p\/[^/]+\/?$/.test(location.pathname)) {
+      blockedProfileUi().catch((e) => warn('Geblocktes Profil', e));
+      profilePage().catch((e) => warn('Profil', e));
+    }
+    if (location.pathname === '/setting/profile') readSecondHomeFromPage();
+  }
+
+  async function init() {
+    ensureStyle();
+    await migrateV1().catch((e) => warn('Umstellung', e));
+    if (await handleSpecialPage()) return;
+    loadMe().then(() => { headerButton(); return loadSecondHome(); }).catch(() => {});
+    checkReblock().catch((e) => warn('Wiedersperren', e));
+    hookTrash();
+    leaveGuard();
+    initListPages();
+    initFigur();
+    initGroupRequests();
+    Etappe.start();
+    headerButton();
+    setInterval(headerButton, 1500);
+    refreshPending().catch(() => {});
+    setInterval(() => refreshPending().catch(() => {}), 5 * 60000);
+    // Zahl der Blockierten gelegentlich auffrischen
+    if (now() - G.get('blocked_count_at', 0) > 3600000) {
+      BL.uids().then((l) => { G.set('blocked_count', l.length); G.set('blocked_count_at', now()); }).catch(() => {});
+    }
+    // Gruppen-Whitelist einmal täglich im Hintergrund
+    setTimeout(async () => {
+      if (!isOn() || now() - G.get('grp_wl_at', 0) < DAY) return;
+      if (!(await Lock.take('grpwl'))) return;
+      try { await refreshManagedWhitelist({ stop: () => false, step: () => {}, notes: [] }); } catch (e) { warn('Gruppen-Whitelist', e); }
+      finally { Lock.release('grpwl'); }
+    }, 20000);
+    // Oberfläche aktuell halten (die Seite baut Teile laufend neu auf)
+    let t = null;
+    new MutationObserver(() => { clearTimeout(t); t = setTimeout(ensureUi, 250); }).observe(document.body, { childList: true, subtree: true });
+    W.addEventListener('hashchange', ensureUi);
+    let last = location.pathname + location.hash;
+    setInterval(() => { const cur = location.pathname + location.hash; if (cur !== last) { last = cur; ensureUi(); checkReblock().catch(() => {}); } }, 500);
+    ensureUi();
+    Bus.on('settings', () => { headerButton(); });
+    Bus.on('on', () => headerButton());
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, seen, judge, openScanPopup, scanInteractions, scanGroups, scanSearch, scanVisitors, Me, loadMe };
+    log(`Version ${VERSION} bereit.`);
+  }
+  onReady(() => init().catch((e) => { console.error('[Opa-Schutz] Fehler beim Start:', e); }));
+})();

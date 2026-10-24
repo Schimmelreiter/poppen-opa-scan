@@ -1,0 +1,38 @@
+Changelog – poppen.de Opa-Scan (Userscript)
+Neueste Version oben.
+
+2.1 (24.10.2026)
+- Fickliste, Austauschformat: profiles[] mit eigenem status/statusAt und sync; meets[] mit uid (zusammen mit pf); unbekannte Felder werden durchgereicht
+- Statusänderung gilt für die Person und alle Profile mit sync:true; Profile mit eigenem Status bleiben unverändert
+- Import: verknüpfte Personen behalten das fremde Hauptprofil als Profil; nicht verknüpfte behalten main unverändert
+- Treffen: Felder heißen „Was“ (Party, Anlass) und „Wo“ (Club, Ort)
+- Veröffentlichung auf GitHub mit @updateURL/@downloadURL
+
+2.0 (24.10.2026)
+- Neuer Aufbau: Mitglieder-Gedächtnis (ein Eintrag je Mitglied) in der Browser-Datenbank, Zwischenspeicher mit gebündeltem Schreiben, Abgleich zwischen Tabs
+- Schnittstellen statt Seitenklicks: Blockierliste lesen, blockieren, entsperren und Notizen schreiben über /v2-api
+- Quellen: Likes, Sticker und Nachrichten als „Interaktionen“; Gruppen (alle eigenen, komplett); systematische Mitgliedersuche Alter für Alter in ganz Deutschland; Profilbesucher unsichtbar
+- Blocken in Etappen: Warteliste, 50 je Etappe, alle 5 Minuten, 1–3 s Pause; Vorprüfung auf Freund, Mitarbeiter, verwaltete Gruppe, Alter 99
+- Regeln wie beim JOYclub-Skript: Männer/Frauen/Paare, Grenzen je Quelle, visuelle Stufen, Bezeichnungen, Profiltypen, Paar-Regel, getrenntes Alter, Sugar Daddy/Mom, Warnalter mit Vormerken
+- Whitelist mit Gruppen; automatische Whitelist für poppen-Mitarbeiter, Freunde und Mitglieder verwalteter Gruppen (30 Tage Schonfrist, Geblockte werden entsperrt, Aufgenommene sofort geschützt)
+- Alter 99 gilt als unklar; Profiladressen exportierbar
+- Opa/Oma, Oppa/Omma je nach eigenem Profil und Wohnsitzen (Haupt- und Zweitwohnsitz); Sternzeichen grenzen Geburtszeiträume ein
+- Opa-Scan-Popup mit allen Scans, zwei Balken, Statistik und Zusammenfassung
+- Einstellungsseite „Opa-Schutz“ in den Einstellungen mit Experten-Einstellungen, „°“-Markierung, Rückfrage beim Verlassen und Popup bei Regeländerungen; Limit vorbereitet (10.000.000)
+- Profil-Menü: Opa-Scan, Opa-Schutz konfigurieren, Schalter Opa-Schutz (Automatik)
+- Kopfleiste: Opa-Symbol öffnet die Einstellungen; gelber Punkt für offene Gruppenanfragen
+- Blockierliste: keine Automatik beim Öffnen mehr; Buttons Reparieren und Synchronisieren (zwei Modi, Notizen abgleichen); Rückfrage am Mülleimer
+- Geblocktes Profil: Trotzdem öffnen (einmalig entsperren, beim Verlassen wieder sperren) und Nicht mehr ignorieren
+- Sichtbarkeitswarnung mit Unsichtbar-Schalten (wio/state) vor Profilaufrufen
+- Fickliste komplett: Button mit fünf Zuständen, Abschnitt im Profil, Meine Fickliste, Kasten im eigenen Profil, Profil-Archiv, externe Ficks, andere Plattformen (inkl. Telegram, WhatsApp, Threema, Signal), Export/Import mit automatischem Verknüpfen, gelöschte Konten im Posteingang
+- Mitgliedersuche: Kurvig → Mollig, Plus-size → Mastschwein (überall), Zusatzoption Qualle; Vermessung über die Suchfilter, Badges, Ausblenden, Sortierung; Messungen im Gedächtnis
+- Sicherung/Wiederherstellung aller Daten, Gedächtnis-Export/-Import (mischen), API-Rekorder mit Schwärzung
+- Profilinfos (inkl. kleiner Bildkopie) werden nebenbei gemerkt
+- Daten aus 1.x werden übernommen, sobald die Mitglieder mit ID auftauchen; die alten Daten bleiben erhalten
+
+1.26 (24.10.2026)
+- Gruppen-Beitrittsanfragen: automatische Annahme/Ablehnung nach Typ, Popup „Manuell prüfen“ mit Angaben und Fotos
+- Sonderseiten: Wartung, Werbung, nicht gefunden, abgemeldet, Login mit „Angemeldet bleiben“
+
+1.0–1.25 (Oktober 2026)
+- Besucherliste und Mitgliedersuche nach Alter auswerten und über das Profil bzw. die Blockierliste ignorieren; Whitelist, Notizen, Geburtsjahre, Vormerken, mehrere Tabs, Titelzeilen-Knopf
