@@ -1,6 +1,10 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.3.1 (24.10.2026)
+- Fickliste-Import: Enthält ein importierter Eintrag (z. B. von JOYclub) ein poppen.de-Profil, wird daraus ein poppen-Eintrag – sofort, wenn das Mitglied im Gedächtnis bekannt ist, sonst beim nächsten Aufruf des Profils. Das fremde Hauptprofil bleibt als Profil erhalten; Status, Treffen und Verlauf werden übernommen
+- Meine Fickliste: Der Name öffnet bei solchen Einträgen das poppen.de-Profil statt des fremden
+
 2.3 (24.10.2026)
 - Fickliste, Profile anderer Plattformen (Übernahme aus JOYclub 1.84): neues Popup „Auch auf …“ mit Liste (Häkchen „Profil gelöscht“, ✕), „+ Profil zufügen“ mit Platzhalter je Plattform und Plattformname bei „Andere …“; poppen.de selbst wird nicht angeboten
 - Aufruf über das Menü des Fickliste-Buttons, „+ Profil anderswo“ im Fickliste-Kasten und „Auch auf …“ je Person in „Meine Fickliste“

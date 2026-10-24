@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.3 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.3.1 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -161,7 +161,7 @@ Nur für dich sichtbar.
 
 ### Austausch mit JOYclub
 
-*Exportieren* / *Importieren* in „Meine Fickliste“. Die Datei ist mit dem eigenen Nick verschlüsselt (AES-GCM, Schlüssel per PBKDF2-SHA256 mit 150.000 Runden). Beim Import werden Einträge **automatisch verknüpft**, wenn ein Link übereinstimmt (Groß-/Kleinschreibung, `https`, `www.`, Schrägstrich am Ende und Umlaut-Kodierung spielen keine Rolle); weitere Links werden übernommen, bei mehreren Treffern wird gefragt.
+*Exportieren* / *Importieren* in „Meine Fickliste“. Die Datei ist mit dem eigenen Nick verschlüsselt (AES-GCM, Schlüssel per PBKDF2-SHA256 mit 150.000 Runden). Enthält ein importierter Eintrag ein poppen.de-Profil, wird er zu einem poppen-Eintrag (sofort, wenn das Mitglied bekannt ist, sonst beim nächsten Profilaufruf). Beim Import werden Einträge **automatisch verknüpft**, wenn ein Link übereinstimmt (Groß-/Kleinschreibung, `https`, `www.`, Schrägstrich am Ende und Umlaut-Kodierung spielen keine Rolle); weitere Links werden übernommen, bei mehreren Treffern wird gefragt.
 
 ```
 Datei:  { format:'fickliste-enc', platform, account, alg:'AES-GCM/PBKDF2', salt, iv, data }

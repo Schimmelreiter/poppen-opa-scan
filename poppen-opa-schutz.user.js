@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.3
+// @version      2.3.1
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.3';
+  const VERSION = '2.3.1';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -3691,6 +3691,29 @@
       else for (const x of p.profiles) if (x.pf === 'poppen' && x.uid === String(uid) && nick) { x.url = url; x.name = nick; }
       return p;
     },
+    // Einträge ohne poppen-Hauptprofil, die ein poppen-Profil dieses Mitglieds enthalten (z. B. aus dem JOYclub-Import),
+    // zu einer poppen-Person machen: Hauptprofil = poppen, fremdes Hauptprofil bleibt als Profil (main:true).
+    async adopt(uid, nick) {
+      uid = String(uid);
+      const key = nick ? linkKey({ url: 'https://www.poppen.de' + pathOfName(nick) }) : '';
+      const all = await Fick.all();
+      const cands = all.filter((q) => !pm(q) && (q.profiles || []).some((x) => x.pf === 'poppen' && (x.uid === uid || (key && linkKey(x) === key))));
+      if (!cands.length) return null;
+      let t = await Fick.get(Fick.idOf(uid));
+      if (!t) t = { id: Fick.idOf(uid), status: null, statusAt: 0, profiles: [], meets: [], history: [], created: now(), main: { pf: 'poppen', uid, nick } };
+      for (const q of cands) {
+        const hadExt = 'ext' in t, hadImp = 'imported' in t;
+        mergeFick(t, q);
+        if (!hadExt) delete t.ext;
+        if (!hadImp) delete t.imported;
+        t.main = { ...(t.main || {}), pf: 'poppen', uid, nick: nick || (t.main && t.main.nick) };
+        t.history = [...(t.history || []), { at: now(), what: `Mit poppen-Profil verbunden (aus ${PLATFORMS[(q.main && q.main.pf) || 'other'] ? pfLabel((q.main && q.main.pf) || 'other') : 'Import'})` }];
+        await Fick.del(q.id);
+      }
+      for (const x of t.profiles) if (x.pf === 'poppen' && (x.uid === uid || (key && linkKey(x) === key))) { x.uid = uid; if (nick) x.name = nick; }
+      await Fick.put(t);
+      return t;
+    },
     async setStatus(p, st) {
       const old = p.status;
       p.status = st || null; p.statusAt = now();
@@ -3764,6 +3787,7 @@
         m = await seen({ uid, nick: pi.nick, ages: agesFromText(pi.desc), g: genderFromText(pi.desc), avatar: pi.avatar }, 'Profil');
         setTimeout(async () => { await applyFacts({ uid, nick: pi.nick }, detailsFrom()); await snapshot(uid, pi.nick, 'Profilaufruf'); }, 2500);
       }
+      await Fick.adopt(uid, pi.nick).catch((e) => warn('Fickliste verbinden', e));
       await fickButton(uid, pi);
       await fickSection(uid, pi.nick);
     } finally { profBusy = false; }
@@ -4110,7 +4134,7 @@
     for (const p of persons) {
       const m = await memberOf(p);
       const name = (p.main && (m && m.nick || p.main.nick)) || (p.ext && p.ext.name) || '?';
-      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq([...(p.main && p.main.pf && !pm(p) ? [p.main.pf] : []), ...(p.profiles || []).map((x) => x.pf)]),
+      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : ((p.profiles || []).find((x) => x.pf === OWN_PF && x.url) || {}).url || foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq([...(p.main && p.main.pf && !pm(p) ? [p.main.pf] : []), ...(p.profiles || []).map((x) => x.pf)]),
         badges: uniq([...(foreignUrl(p) ? [p.main.pf + '|'] : []), ...otherProfiles(p).map((x) => `${x.pf}|${x.pf === 'other' ? (x.pfName || '') : ''}`)]) };
       if (!(p.meets || []).length) rows.push({ ...base, t: null });
       for (const t of p.meets || []) rows.push({ ...base, t });
@@ -4279,6 +4303,18 @@
         for (const k of keysOf(np)) { if (!index.has(k)) index.set(k, new Set()); index.get(k).add(np.id); }
       }
     }
+    // Importierte Einträge mit poppen-Profil gleich verbinden, wenn das Mitglied bekannt ist (sonst beim nächsten Profilaufruf)
+    let adopted = 0;
+    for (const q of await Fick.all()) {
+      if (pm(q)) continue;
+      for (const x of (q.profiles || []).filter((y) => y.pf === 'poppen' && y.url)) {
+        const mm = /poppen\.de\/p\/([^/?#]+)/i.exec(x.url);
+        const nick = mm ? decodeURIComponent(mm[1]) : '';
+        const mem = x.uid ? await Members.get(x.uid) : nick ? await Members.byNick(nick) : null;
+        if (mem && await Fick.adopt(mem.uid, mem.nick || nick)) { adopted++; break; }
+      }
+    }
+    if (adopted) sum.verknuepft += adopted;
     await ask('Import fertig', `<div class="vaf-stats"><span>Neu</span><b>${sum.neu}</b><span>Automatisch verknüpft</span><b>${sum.verknuepft}</b><span>Konflikte</span><b>${sum.konflikt}</b><span>Unverändert</span><b>${sum.gleich}</b></div>`, [{ label: 'OK', value: 1, primary: true, focus: true }]);
   }
   // b in a zusammenführen: Status = zuletzt geändert, Treffen und Profile vereinigen
