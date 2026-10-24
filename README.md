@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.1.3 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.2 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -34,7 +34,7 @@ Das Mitglieder-Gedächtnis kann mit Gruppen-Scans weit über 100.000 Einträge g
 
 ## Regeln: Wer wird blockiert?
 
-Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** und **Paare**. Jede Gruppe hat je **Quelle** (Interaktionen, Profilbesucher, Partygäste, Gruppen, Mitgliedersuche) eigene Altersgrenzen:
+Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** und **Paare**. Jede Gruppe hat je **Quelle** (Interaktionen, Profilbesucher, Gruppen, Mitgliedersuche) eigene Altersgrenzen. Partygäste gibt es auf poppen.de nicht; die Zeile ist ausgeblendet und übernimmt intern die Werte der Profilbesucher.
 
 - **Visuelle Einstufung** in drei Stufen (zwei Grenzen): bis zur ersten Grenze Stufe 1 (grün), bis zur zweiten Stufe 2 (orange), darüber Stufe 3 (rot).
 - **Ignorieren ab** einem Alter.
@@ -76,7 +76,7 @@ Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von popp
 | Profilbesucher | Besucherliste (unsichtbar geladen und durchgescrollt) | Besucher |
 | Gruppen | alle eigenen Gruppen (`group/my`, `group/attendee/list`), standardmäßig komplett | Gruppen |
 | Mitgliedersuche | ganz Deutschland, Alter für Alter ab der Grenze (`user/search`) | Suche |
-| Partygäste | gibt es auf poppen.de nicht (ausgegraut) | – |
+| Partygäste | gibt es auf poppen.de nicht (ausgeblendet) | – |
 
 **Opa-Scan** (Profil-Menü → *Opa-Scan*): Popup mit allen Scans, zwei Fortschrittsbalken, Statistik und Zusammenfassung.
 
@@ -95,7 +95,7 @@ Scans **lesen** komplett und legen Treffer auf eine **Warteliste**. Geblockt wir
 - Reihenfolge nach der **Rangfolge der Quellen**, innerhalb einer Quelle die Ältesten zuerst,
 - vor jeder Sperre: Whitelist, Mitarbeiter, Freund, verwaltete Gruppe, Alter 99 und aktuelle Grenzen erneut prüfen.
 
-Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Ohne bekannte Benutzer-ID trägt das Skript den Namen im unsichtbaren Rahmen über „Benutzer hinzufügen“ ein.
+Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Notiz ist Pflicht und hat einen festen Text: Lässt sie sich nicht schreiben, wird die Sperre zurückgenommen und das Mitglied bleibt auf der Warteliste; nach drei Fehlversuchen fällt es heraus. Ohne bekannte Benutzer-ID trägt das Skript den Namen im unsichtbaren Rahmen über „Benutzer hinzufügen“ ein.
 
 ---
 
@@ -111,9 +111,9 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Ohne bek
 - Je Gruppe: Schalter, Grenzen je Quelle (Schieberegler), „Werte der ersten Zeile übernehmen“, Bezeichnungen, Profiltypen; bei Paaren Paar-Regel, getrenntes Alter, Sugar Daddy/Mom.
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
-- Automatik, automatische Anmeldung, Wartungsseite, Gruppenanfragen.
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Limit (Standard 10.000.000), Rangfolge der Quellen, Notiz schreiben/Text/Pflicht, Etappen, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste.
-- Abweichungen vom Quelltext sind mit „°“ markiert; „Quelltext-Wert“ setzt zurück. Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
+- Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen nicht auf der Seite; sie gelten intern weiter (Quelltext bzw. Datensicherung).
+- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Limit (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Etappen, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Abarbeiten**, Leeren). *Abarbeiten* arbeitet die ganze Warteliste sofort in einem Zug ab (ohne Höchstzahl je Etappe), mit Fortschritt, Anhalten und Zusammenfassung.
+- Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
 ### Blockierliste (`/setting/privacy/ignore-list`)

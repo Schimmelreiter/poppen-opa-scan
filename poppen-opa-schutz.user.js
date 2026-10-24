@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.1.3
+// @version      2.2
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.1.3';
+  const VERSION = '2.2';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -137,7 +137,7 @@
 
   // =====================================================================================
   // Einstellungen (Quelltext-Werte). Auf der Seite „Opa-Schutz“ änderbar; dort geänderte Werte
-  // gelten, solange der Quelltext-Wert unverändert bleibt (Abweichungen sind mit „°“ markiert).
+  // gelten, solange der Quelltext-Wert unverändert bleibt.
   // =====================================================================================
   const SRC_KEYS = ['interaktionen', 'besucher', 'party', 'gruppen', 'suche'];
   const SOURCES = {
@@ -187,8 +187,8 @@
       firstScanMax: 1000,
       limit: 10000000,
       rank: ['interaktionen', 'besucher', 'party', 'gruppen', 'suche', 'sync'],
-      writeNote: true,
-      noteRequired: false,
+      writeNote: true,              // fest (nicht mehr einstellbar)
+      noteRequired: true,           // fest: ohne Notiz keine Sperre (nicht mehr einstellbar)
       noteText: '{bezeichnung} ({quelle}) geblockt am {datum} um {uhrzeit}',
       maxPerRun: 50,
       pauseMin: 1,
@@ -237,11 +237,26 @@
       if (def !== undefined && !same(def, e.src)) continue;
       setPath(s, p, clone(e.v));
     }
+    normalizeSettings(s);
     SETTINGS = s;
+    return s;
+  }
+  // Feste Werte und Kopplungen, die auf der Seite nicht (mehr) einstellbar sind
+  function normalizeSettings(s) {
+    // Notiz: immer schreiben, Pflicht, fester Text
+    s.expert.writeNote = true;
+    s.expert.noteRequired = true;
+    s.expert.noteText = DEFAULTS.expert.noteText;
+    // Partygäste (gibt es auf poppen.de nicht, ausgeblendet) = Profilbesucher
+    for (const k of Object.keys(s.groups || {})) {
+      const g = s.groups[k];
+      for (const key of ['src', 'srcW', 'srcM']) if (g[key] && g[key].besucher) g[key].party = [...g[key].besucher];
+    }
     return s;
   }
   // Ganze Einstellungen speichern: nur Abweichungen vom Quelltext werden abgelegt
   function saveSettings(s) {
+    s = normalizeSettings(clone(s));
     const flat = flatten(s);
     const flatDef = flatten(DEFAULTS);
     const out = {};
@@ -1204,7 +1219,8 @@
   const Etappe = {
     running: false, stopFlag: false, last: null,
     status() { return { running: this.running, last: G.get('etappe_last', null) }; },
-    async run(reason = 'automatisch', onProgress) {
+    // opts.all: ganze Warteliste in einem Zug (Button „Abarbeiten“), ohne „Maximal pro Etappe“
+    async run(reason = 'automatisch', onProgress, opts = {}) {
       if (this.running) return null;
       if (!(await Lock.take('etappe', reason))) return null;
       this.running = true; this.stopFlag = false;
@@ -1215,7 +1231,8 @@
         await watchDue();
         const blocked = G.get('blocked_count', 0) || 0;
         if (blocked >= s.expert.limit) { st.limit = true; return st; }
-        const list = (await Queue.list()).slice(0, s.expert.maxPerRun);
+        const all = await Queue.list();
+        const list = opts.all ? all : all.slice(0, s.expert.maxPerRun);
         let i = 0;
         for (const q of list) {
           if (this.stopFlag) break;
@@ -1246,7 +1263,10 @@
             const r = await blockByNickDom(q.nick);
             if (typeof r === 'string') { if (r === 'Test') { st.test++; continue; } await this.fail(q, r, st); continue; }
             m = await seen(r.user, 'Blockierliste', { images: false });
-            if (s.expert.writeNote && !dry()) { try { await BL.note(m.uid, makeNote(m, q.src)); } catch {} }
+            if (!dry()) {
+              try { await BL.note(m.uid, makeNote(m, q.src)); }
+              catch (e) { warn('Notiz fehlgeschlagen', q.nick, e); try { await BL.del(m.uid, m.nick); } catch {} await this.fail(q, 'Fehler: Notiz ließ sich nicht schreiben', st); continue; }
+            }
             await Members.update(m.uid, (x) => { x.blk = { at: now(), src: q.src, note: makeNote(m, q.src), opa: true }; delete x.unblk; });
             await Queue.remove(q.uid); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' });
           } else {
@@ -2390,9 +2410,12 @@
   #vaf-set .vaf-sw::after{content:"";position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
   #vaf-set .vaf-sw.on{background:#ffc21a}
   #vaf-set .vaf-sw.on::after{left:20px}
-  #vaf-set .vaf-dev::after{content:"°";color:#ffc21a;margin-left:2px}
-  #vaf-set .vaf-reset{font-size:11px;color:#ffc21a;cursor:pointer;margin-left:6px}
-  #vaf-set .vaf-x{outline:2px solid #ff4d4f;outline-offset:2px;opacity:.42;border-radius:6px;pointer-events:none}
+  #vaf-set .vaf-rank{display:flex;flex-direction:column;gap:4px}
+  #vaf-set .vaf-rank > div{display:flex;align-items:center;gap:8px;background:#2b2b2b;border-radius:8px;padding:4px 10px;width:260px}
+  #vaf-set .vaf-rank i{font-style:normal;color:#8c8c8c;width:18px}
+  #vaf-set .vaf-rank span{flex:1}
+  #vaf-set .vaf-rank b{cursor:pointer;color:#a6a6a6;font-weight:400;padding:0 3px}
+  #vaf-set .vaf-rank b.off{opacity:.25;cursor:default}
   #vaf-set .vaf-red{color:#ff7875}
   #vaf-set .vaf-chip{background:#2b2b2b;border-radius:12px;padding:2px 10px;font-size:12px;display:inline-flex;gap:6px;align-items:center}
   #vaf-set .vaf-chip b{cursor:pointer;color:#a6a6a6;font-weight:400}
@@ -2566,28 +2589,17 @@
     const W1 = word();
     el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz</h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div></div><div id="vaf-set-body"></div>`;
     const body = el.querySelector('#vaf-set-body');
-    const touch = () => { settingsDirty = true; markDev(); projectLater(); };
-    const markDev = () => {
-      for (const l of el.querySelectorAll('[data-path]')) {
-        const p = l.dataset.path;
-        const dev = !same(getPath(draft, p), getPath(DEFAULTS, p));
-        l.classList.toggle('vaf-dev', dev);
-        let r = l.parentElement.querySelector(':scope > .vaf-reset');
-        if (dev && !r) { r = document.createElement('span'); r.className = 'vaf-reset'; r.textContent = 'Quelltext-Wert'; r.addEventListener('click', () => { setPath(draft, p, clone(getPath(DEFAULTS, p))); rerender(); touch(); }); l.after(r); }
-        if (!dev && r) r.remove();
-      }
-    };
+    const touch = () => { settingsDirty = true; projectLater(); };
     const lab = (text, path) => `<span data-path="${path}">${text}</span>`;
-    const rerender = () => { const y = W.scrollY; body.innerHTML = ''; build(); markDev(); W.scrollTo(0, y); };
+    const rerender = () => { const y = W.scrollY; body.innerHTML = ''; build(); W.scrollTo(0, y); };
 
     function build() {
       // ---- Gruppen ----
       for (const gk of GROUP_KEYS) {
         const g = draft.groups[gk];
-        const c = card(body, GROUP_NAMES[gk], ' <small data-reset="1">Quelltext-Werte</small>');
-        body.lastElementChild.previousElementSibling.querySelector('[data-reset]').addEventListener('click', () => { draft.groups[gk] = clone(DEFAULTS.groups[gk]); rerender(); touch(); });
+        const c = card(body, GROUP_NAMES[gk]);
         row(c, 'Schalter', '',
-          sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung (3 Stufen)', `groups.${gk}.visual`),
+          sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`),
           '<span style="width:20px"></span>',
           sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`));
         if (gk === 'p') {
@@ -2604,13 +2616,12 @@
           grid.className = 'vaf-srcgrid';
           grid.innerHTML = `<div class="vaf-h">Quelle${who ? ' · ' + who : ''}</div><div class="vaf-h">Visuell: Stufe 1 bis · Stufe 2 bis</div><div class="vaf-h">Ignorieren ab</div>`;
           for (const sk of SRC_KEYS) {
+            if (!SOURCES[sk].avail) continue;   // Partygäste: ausgeblendet, intern = Profilbesucher
             const v = g[key][sk];
-            const avail = SOURCES[sk].avail;
             const name = document.createElement('div');
             name.innerHTML = lab(esc(SOURCES[sk].label), `groups.${gk}.${key}.${sk}`); name.title = SOURCES[sk].tip;
             const s1 = slider(18, 100, [v[0], v[1]], (x) => { v[0] = x[0]; v[1] = x[1]; touch(); });
             const s2 = slider(18, 100, [v[2]], (x) => { v[2] = x[0]; touch(); });
-            if (!avail) [name, s1, s2].forEach((e) => e.classList.add('vaf-x'));
             grid.append(name, s1, s2);
           }
           c.appendChild(grid);
@@ -2653,8 +2664,6 @@
       ab.addEventListener('click', showAutoWhitelist);
       row(ca, 'Automatische Whitelist', 'poppen-Mitarbeiter, Freunde, Mitglieder verwalteter Gruppen', '<span id="vaf-autowl">…</span>', ab);
       autoWhitelistCount().then((n) => { const e = el.querySelector('#vaf-autowl'); if (e) e.textContent = `${fmtN(n)} Mitglieder`; });
-      const awo = row(ca, 'AWO-Faktor', 'Anteil alter Männer und Geronto-Paare auf Partys', '<span>gibt es auf poppen.de nicht (keine Partys)</span>');
-      awo.classList.add('vaf-x');
 
       // ---- Gruppen ----
       const cg = card(body, 'Gruppen', ' <small data-reload="1">neu laden</small>');
@@ -2689,24 +2698,6 @@
       row(cu, lab('Automatisch anmelden', 'autoLogin'), 'nur mit vom Browser ausgefüllten Daten', sw(draft.autoLogin, (v) => { draft.autoLogin = v; touch(); }), 'Pause zwischen Versuchen', numIn(draft.autoLoginPauseMin, (x) => { draft.autoLoginPauseMin = x; touch(); }, 1, 1440), 'Min.');
       row(cu, lab('Wartungsseite', 'maintenanceMin'), '', 'neuer Versuch nach', numIn(draft.maintenanceMin, (x) => { draft.maintenanceMin = x; touch(); }, 1, 1440), 'Min.');
 
-      // ---- Gruppenanfragen ----
-      const cq = card(body, 'Gruppenanfragen');
-      row(cq, lab('Gruppen', 'groupReq.match'), 'Name enthält (regulärer Ausdruck)', txtIn(draft.groupReq.match, (v) => { draft.groupReq.match = v; touch(); }));
-      const chips = (arr) => {
-        const box = document.createElement('div'); box.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
-        const draw = () => {
-          box.innerHTML = '';
-          arr.forEach((t, i) => { const c = document.createElement('span'); c.className = 'vaf-chip'; c.innerHTML = `${esc(t)} <b>✕</b>`; c.querySelector('b').addEventListener('click', () => { arr.splice(i, 1); draw(); touch(); }); box.appendChild(c); });
-          const add = document.createElement('button'); add.type = 'button'; add.className = 'vaf-btn'; add.textContent = '+';
-          add.addEventListener('click', () => { const v = W.prompt('Typ (wie im Profil unter „Typ“):'); if (v && v.trim()) { arr.push(v.trim()); draw(); touch(); } });
-          box.appendChild(add);
-        };
-        draw(); return box;
-      };
-      row(cq, lab('Typ annehmen', 'groupReq.accept'), '', chips(draft.groupReq.accept));
-      row(cq, lab('Typ ablehnen', 'groupReq.reject'), '', chips(draft.groupReq.reject));
-      row(cq, lab('Fotos in der Prüfung', 'groupReq.photos'), '', numIn(draft.groupReq.photos, (x) => { draft.groupReq.photos = x; touch(); }, 0, 20));
-
       // ---- Experten ----
       const exp = document.createElement('div'); exp.className = 'vaf-exp'; exp.textContent = '▸ Experten-Einstellungen';
       body.appendChild(exp);
@@ -2718,23 +2709,23 @@
       row(ce, lab('Obergrenze erster Scan', 'expert.firstScanMax'), 'Profilbesucher / Interaktionen', numIn(x.firstScanMax, (v) => { x.firstScanMax = v; touch(); }, 10, 1000000));
       const lim = row(ce, lab('<span class="vaf-red">Limit:</span>', 'expert.limit'), '<span class="vaf-red">Höchstzahl der Einträge auf der Blockierliste</span>', numIn(x.limit, (v) => { x.limit = v; touch(); }, 1, 1e9));
       lim.querySelector('.vaf-num').style.width = '120px';
-      const rank = document.createElement('div'); rank.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+      const rank = document.createElement('div'); rank.className = 'vaf-rank';
+      rank.title = 'Bestimmt, welche Quelle in der Notiz steht und wer auf der Warteliste zuerst drankommt';
       const drawRank = () => {
         rank.innerHTML = '';
-        x.rank.forEach((k, i) => {
-          const c = document.createElement('span'); c.className = 'vaf-chip';
-          c.title = 'Bestimmt, welche Quelle in der Notiz steht und wer auf der Warteliste zuerst drankommt';
-          c.innerHTML = `${esc((SOURCES[k] || { label: 'Synchronisation' }).label)} <b data-u>▲</b><b data-d>▼</b>`;
-          c.querySelector('[data-u]').addEventListener('click', () => { if (i) { [x.rank[i - 1], x.rank[i]] = [x.rank[i], x.rank[i - 1]]; drawRank(); touch(); } });
-          c.querySelector('[data-d]').addEventListener('click', () => { if (i < x.rank.length - 1) { [x.rank[i + 1], x.rank[i]] = [x.rank[i], x.rank[i + 1]]; drawRank(); touch(); } });
-          rank.appendChild(c);
+        // Partygäste ausgeblendet; ihr Platz in x.rank bleibt erhalten
+        const vis = x.rank.filter((k) => !(SOURCES[k] && !SOURCES[k].avail));
+        const swap = (a, b) => { const ia = x.rank.indexOf(a), ib = x.rank.indexOf(b); [x.rank[ia], x.rank[ib]] = [x.rank[ib], x.rank[ia]]; drawRank(); touch(); };
+        vis.forEach((k, i) => {
+          const r = document.createElement('div');
+          r.innerHTML = `<i>${i + 1}.</i><span>${esc((SOURCES[k] || { label: 'Synchronisation' }).label)}</span><b data-u class="${i ? '' : 'off'}">▲</b><b data-d class="${i < vis.length - 1 ? '' : 'off'}">▼</b>`;
+          r.querySelector('[data-u]').addEventListener('click', () => { if (i) swap(vis[i - 1], k); });
+          r.querySelector('[data-d]').addEventListener('click', () => { if (i < vis.length - 1) swap(k, vis[i + 1]); });
+          rank.appendChild(r);
         });
       };
       drawRank();
-      row(ce, lab('Rangfolge der Quellen', 'expert.rank'), '', rank);
-      row(ce, lab('Notiz schreiben', 'expert.writeNote'), '', sw(x.writeNote, (v) => { x.writeNote = v; touch(); }));
-      row(ce, lab('Notiztext', 'expert.noteText'), '{bezeichnung} {quelle} {datum} {uhrzeit}', txtIn(x.noteText, (v) => { x.noteText = v || DEFAULTS.expert.noteText; touch(); }));
-      row(ce, lab('Notiz Pflicht', 'expert.noteRequired'), 'nur blockieren, wenn die Notiz geschrieben werden konnte', sw(x.noteRequired, (v) => { x.noteRequired = v; touch(); }));
+      row(ce, lab('Rangfolge der Quellen', 'expert.rank'), 'oben = wichtigste', rank);
       row(ce, lab('Maximal pro Etappe', 'expert.maxPerRun'), '', numIn(x.maxPerRun, (v) => { x.maxPerRun = v; touch(); }, 1, 10000));
       row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
       row(ce, lab('Etappen-Abstand', 'expert.etappeMin'), 'solange ein poppen-Tab offen und der Schalter an ist', numIn(x.etappeMin, (v) => { x.etappeMin = v; touch(); }, 1, 1440), 'Min.');
@@ -2754,7 +2745,9 @@
       const n99 = document.createElement('span'); n99.className = 'vaf-mini';
       KV.get('log99', {}).then((l) => { n99.textContent = `${Object.keys(l).length} erfasst`; });
       row(ce, '99-Jährige', 'Profile mit Alter 99 (gelten als unklar)', btn('Exportieren (.txt)', export99), btn('Liste leeren', async () => { if (W.confirm('Liste der 99-Jährigen leeren?')) { await KV.set('log99', {}); n99.textContent = '0 erfasst'; } }), n99);
-      row(ce, 'Warteliste', '', btn('Anzeigen', showQueue), btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
+      const work = btn('Abarbeiten', () => workQueue(work));
+      if (Etappe.running && Etappe.manual) work.textContent = 'Anhalten';
+      row(ce, 'Warteliste', 'Abarbeiten: die ganze Warteliste sofort, ohne Höchstzahl je Etappe', btn('Anzeigen', showQueue), work, btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
 
       // ---- Fuß ----
       const foot = document.createElement('div'); foot.className = 'vaf-foot';
@@ -2764,7 +2757,6 @@
       body.appendChild(foot);
     }
     build();
-    markDev();
     updateCounts();
     projectLater();
     const iv = setInterval(() => { if (!el.isConnected) clearInterval(iv); else updateCounts(); }, 5000);
@@ -2898,6 +2890,35 @@
     const l = await Queue.list();
     const m = modal({ title: 'Warteliste', sub: `${fmtN(l.length)} Mitglieder, in dieser Reihenfolge`, html: `<div class="vaf-list">${l.slice(0, 2000).map((q) => `<div>${esc(q.nick)} · ${(q.ages || []).join('/')} · ${esc(q.src)}</div>`).join('') || '<div>leer</div>'}${l.length > 2000 ? '<div>…</div>' : ''}</div>` });
     m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
+  }
+
+  // Button „Abarbeiten“: ganze Warteliste in einem Zug
+  let workCancel = false;
+  async function workQueue(b) {
+    if (Etappe.manual) { workCancel = true; Etappe.stop(); b.textContent = 'Halte an …'; b.disabled = true; return; }
+    const n = await Queue.count();
+    if (!n) { toast('Die Warteliste ist leer.'); return; }
+    if (dry()) toast('Testlauf ist an: es wird nichts blockiert, nur protokolliert.', 5000);
+    Etappe.manual = true; workCancel = false;
+    b.textContent = 'Warte …';
+    try {
+      // läuft gerade eine Etappe (auch in einem anderen Tab): abwarten
+      while (Etappe.running || Lock.other('etappe')) { if (workCancel) return; await sleep(1000); }
+      if (workCancel) return;
+      b.textContent = 'Anhalten';
+      const st = await Etappe.run('Abarbeiten', (i, total) => { if (b.isConnected && !b.disabled) b.textContent = `Anhalten (${fmtN(i)} / ${fmtN(total)})`; updateCounts(); }, { all: true });
+      if (!st) { toast('Konnte nicht starten – ein anderer Tab arbeitet gerade.'); return; }
+      const rows = st.items.map((it) => `<div>${esc(it.nick)} · ${esc(it.res)}</div>`).join('');
+      const m = modal({ title: 'Warteliste abgearbeitet', sub: workCancel ? 'angehalten' : '',
+        html: `<div class="vaf-stats"><span>Blockiert</span><b>${fmtN(st.ok)}</b><span>Fallen weg</span><b>${fmtN(st.dropped)}</b><span>Fehlgeschlagen</span><b>${fmtN(st.fail)}</b>${st.test ? `<span>Testlauf</span><b>${fmtN(st.test)}</b>` : ''}${st.limit ? '<span>Limit erreicht</span><b>ja</b>' : ''}</div>` +
+          (rows ? `<div class="vaf-list" style="margin-top:10px">${rows}</div>` : '') +
+          (st.fail ? '<p class="vaf-mini">Fehlgeschlagene bleiben auf der Warteliste und werden bis zu dreimal versucht.</p>' : '') });
+      m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
+    } finally {
+      Etappe.manual = false;
+      if (b.isConnected) { b.disabled = false; b.textContent = 'Abarbeiten'; }
+      updateCounts();
+    }
   }
 
   // Seite mit ungespeicherten Änderungen verlassen
