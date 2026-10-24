@@ -1,6 +1,14 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.3 (24.10.2026)
+- Fickliste, Profile anderer Plattformen (Übernahme aus JOYclub 1.84): neues Popup „Auch auf …“ mit Liste (Häkchen „Profil gelöscht“, ✕), „+ Profil zufügen“ mit Platzhalter je Plattform und Plattformname bei „Andere …“; poppen.de selbst wird nicht angeboten
+- Aufruf über das Menü des Fickliste-Buttons, „+ Profil anderswo“ im Fickliste-Kasten und „Auch auf …“ je Person in „Meine Fickliste“
+- Vorschläge: importierte Einträge der gewählten Plattform ohne poppen-Profil per Klick zusammenführen (neuerer Status, Treffen/Profile/Verlauf, Anmerkungen angehängt; importierter Eintrag verschwindet)
+- Plattform-Symbole mit Kürzeln und Farben wie im JOYclub-Skript; in „Meine Fickliste“ auch hinter dem Status
+- Filter „Plattform“ als Mehrfachauswahl mit „Andere / ohne“
+- Austausch: profiles[].pfName und profiles[].dead (ältere Felder deleted/gone werden gelesen); Kopieren-Knopf ⧉ ohne Inline-Skript
+
 2.2 (24.10.2026)
 - Notiz: immer schreiben, Pflicht und fester Text; die drei Einstellungen entfallen (auch bei der Sperre über den Namen gilt die Pflicht)
 - Ohne Notiz keine Sperre: Sperre zurücknehmen, auf der Warteliste lassen, nach drei Fehlversuchen heraus

@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.2 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.3 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -151,11 +151,11 @@ Nur für dich sichtbar.
 
 - **Button** nach „Nachricht senden“ mit fünf Zuständen und denselben Symbolen wie im JOYclub-Skript: *Ficken?*, *Will ich*, *Gefickt*, *Nein, danke!*, *Nie wieder!*; Menü mit den anderen Zuständen, „Fickstatus zurücksetzen“ und „Treffen eintragen“.
 - **Abschnitt „Fickliste“** im Profil unter „Fotos“/„Videos“: Status, Treffen (Datum, was, wo, Link, Notiz), Profile auf anderen Plattformen, Profil-Archiv.
-- **Meine Fickliste** (Einstellungen): Zähler je Zustand als Filter, Filter nach Mitglied, Was, Wo, Datum und Plattform, Sortierung nach Datum oder Name; Personen ohne Treffen erscheinen ebenfalls. Gelöschte Profile sind durchgestrichen, deaktivierte rot.
+- **Meine Fickliste** (Einstellungen): Zähler je Zustand als Filter, Filter nach Mitglied, Was, Wo, Datum und Plattform (Mehrfachauswahl, „Andere / ohne“), Sortierung nach Datum oder Name; Personen ohne Treffen erscheinen ebenfalls. Gelöschte Profile sind durchgestrichen, deaktivierte rot. Hinter dem Status stehen die Plattform-Symbole.
 - **Kasten im eigenen Profil** über den Statistiken: Zähler und die letzten Ficks mit drei verschiedenen Personen.
 - **Profil-Archiv:** Bei jedem Profilaufruf und jeder Statusänderung wird ein Stand gespeichert; Navigation ‹ › und « » (direkt vor/nach einem Treffen).
 - **Externe Ficks:** Personen ohne poppen-Profil mit eigenem Bild, Typ, Ort und Texten.
-- **Andere Plattformen:** JOYclub, xHamster, Eronity, SpicyMatch, Kaufmich, Fetish.com, Gays.com, Telegram (`@name` → `https://t.me/name`), WhatsApp (Nummer → `https://wa.me/49…`), Threema (`https://threema.id/ID`), Signal (Nummer → `https://signal.me/#p/+49…`, Benutzername nur als Text) und andere.
+- **Andere Plattformen** (Popup **„Auch auf …“**: im Menü des Fickliste-Buttons, im Fickliste-Kasten über „+ Profil anderswo“ und in „Meine Fickliste“ je Person): JOYclub, xHamster, Eronity, SpicyMatch, Kaufmich, Fetish.com, Gays.com, Telegram (`@Name`/`t.me/Name` → `https://t.me/Name`), WhatsApp (Nummer/`wa.me` → `https://wa.me/49…`, „00“ wird „+“, ohne Vorwahl +49), Threema (`https://threema.id/ID`), Signal (Nummer → `https://signal.me/#p/+49…`, Benutzername nur als Text mit ⧉) und „Andere …“ mit eigenem Plattformnamen. Je Profil Häkchen „Profil gelöscht“ (durchgestrichen) und ✕ zum Entfernen. Symbole und Farben wie im JOYclub-Skript (J, P, xH, Er, SM, KM, Fe, G, TG, WA, Th, Si; bei „Andere“ die ersten 2 Buchstaben). **Vorschläge:** Importierte Einträge der gewählten Plattform ohne poppen-Profil lassen sich mit einem Klick zusammenführen (neuerer Status gewinnt, Treffen, Profile und Verlauf werden übernommen, Anmerkungen angehängt).
 - **Links von Treffen** öffnen immer in einem neuen Tab auf der Plattform, für die sie eingetragen sind.
 - **Gelöschte Konten** im Posteingang: früherer Name durchgestrichen, Link aufs Profil-Archiv, Bild aus dem Archiv.
 
@@ -168,12 +168,13 @@ Datei:  { format:'fickliste-enc', platform, account, alg:'AES-GCM/PBKDF2', salt,
 Inhalt: { format:'fickliste', version:1, platform, exported, persons:[
           { id, status:'want'|'done'|'no'|'never'|null, statusAt,
             main:{ pf, uid, nick, url },
-            profiles:[{ pf, url, name, uid?, text?, status?, statusAt?, sync? }],
+            profiles:[{ pf, url, name, uid?, pfName?, dead?, text?, status?, statusAt?, sync? }],
             meets:[{ id, date:'YYYY-MM-DD', time, where, club, link, pf, uid?, note }],
             history:[{ at, what }], ext? } ] }
 ```
 
 - `where` = „Was“ (Party, Anlass), `club` = „Wo“ (Club, Ort).
+- `profiles[].pfName`: freier Plattformname bei `pf:'other'`; `profiles[].dead:true`: Profil gelöscht.
 - `profiles[].status`/`statusAt`: eigener Status eines Profils; `sync:true` übernimmt Statuswechsel der Person.
 - `meets[].uid` (mit `pf`): Profil, zu dem das Treffen gehört; ohne `uid` gehört es zu `main`.
 - Unbekannte Felder werden unverändert durchgereicht.

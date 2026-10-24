@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.2
+// @version      2.3
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.2';
+  const VERSION = '2.3';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -3571,22 +3571,44 @@
   const TRASH = flIcon('trash', { size: 16, shadow: false });
 
   // ---------- Plattformen und Links ----------
+  // Kürzel und Farben wie im JOYclub-Skript
   const PLATFORMS = {
-    poppen: { name: 'poppen.de', icon: 'P', color: '#ffc21a' },
-    joyclub: { name: 'JOYclub', icon: 'J', color: '#c2185b' },
-    xhamster: { name: 'xHamster', icon: 'x', color: '#f2721e' },
-    eronity: { name: 'Eronity', icon: 'E', color: '#8e24aa' },
-    spicymatch: { name: 'SpicyMatch', icon: 'S', color: '#e53935' },
-    kaufmich: { name: 'Kaufmich', icon: 'K', color: '#6d4c41' },
-    fetish: { name: 'Fetish.com', icon: 'F', color: '#212121' },
-    gays: { name: 'Gays.com', icon: 'G', color: '#1e88e5' },
-    telegram: { name: 'Telegram', icon: 'T', color: '#229ed9' },
-    whatsapp: { name: 'WhatsApp', icon: 'W', color: '#25d366' },
-    threema: { name: 'Threema', icon: 'Th', color: '#05a63f' },
-    signal: { name: 'Signal', icon: 'Si', color: '#3a76f0' },
-    other: { name: 'Andere', icon: '?', color: '#616161' },
+    joyclub: { name: 'JOYclub', icon: 'J', color: '#c71b1b' },
+    poppen: { name: 'poppen.de', icon: 'P', color: '#d6246e' },
+    xhamster: { name: 'xHamster', icon: 'xH', color: '#d9700b' },
+    eronity: { name: 'Eronity', icon: 'Er', color: '#7b3fb5' },
+    spicymatch: { name: 'SpicyMatch', icon: 'SM', color: '#b4440f' },
+    kaufmich: { name: 'Kaufmich', icon: 'KM', color: '#a3164f' },
+    fetish: { name: 'Fetish.com', icon: 'Fe', color: '#3f3f46' },
+    gays: { name: 'Gays.com', icon: 'G', color: '#2563eb' },
+    telegram: { name: 'Telegram', icon: 'TG', color: '#1f8bc4' },
+    whatsapp: { name: 'WhatsApp', icon: 'WA', color: '#1f8a3a' },
+    threema: { name: 'Threema', icon: 'Th', color: '#3c3c3c' },
+    signal: { name: 'Signal', icon: 'Si', color: '#3a6fd8' },
+    other: { name: 'Andere …', icon: '?', color: '#5c6470' },
   };
-  const pfBadge = (pf, title = '') => { const p = PLATFORMS[pf] || PLATFORMS.other; return `<span title="${esc(title || p.name)}" style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 3px;border-radius:4px;background:${p.color};color:#fff;font:700 10px/1 system-ui;margin-right:4px">${esc(p.icon)}</span>`; };
+  const OWN_PF = 'poppen';
+  const PF_HINT = {
+    telegram: '@Name oder t.me/Name', whatsapp: 'Telefonnummer oder wa.me-Link', threema: 'Threema-ID (8 Zeichen)',
+    signal: 'Telefonnummer, signal.me-Link oder Benutzername', other: 'Link oder Name',
+  };
+  const pfHint = (pf) => PF_HINT[pf] || `Profil-Link oder Name auf ${(PLATFORMS[pf] || PLATFORMS.other).name}`;
+  const pfLabel = (pf, pfName) => (pf === 'other' && pfName ? pfName : (PLATFORMS[pf] || PLATFORMS.other).name.replace(' …', ''));
+  const pfBadge = (pf, title = '', pfName = '', size = 16) => {
+    const p = PLATFORMS[pf] || PLATFORMS.other;
+    const ab = pf === 'other' && pfName ? pfName.slice(0, 2) : p.icon;
+    return `<span class="vaf-pf" data-pf="${esc(pf || 'other')}" title="${esc(title || pfLabel(pf, pfName))}" style="display:inline-flex;align-items:center;justify-content:center;min-width:${size}px;height:${size}px;padding:0 3px;margin-right:3px;` +
+      `border-radius:4px;background:${p.color};color:#fff;font:bold ${Math.round(size * 0.58)}px system-ui,sans-serif;line-height:1;vertical-align:-3px;box-sizing:border-box;flex:none">${esc(ab)}</span>`;
+  };
+  // „Profil gelöscht“: Austauschfeld dead (ältere Stände: deleted / gone)
+  const isDead = (x) => !!(x && (x.dead || x.deleted || x.gone));
+  const copyBtn = (t) => `<a href="#" data-copy="${esc(t)}" title="kopieren" style="margin-left:3px">⧉</a>`;
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('[data-copy]');
+    if (!a) return;
+    e.preventDefault(); e.stopPropagation();
+    try { navigator.clipboard.writeText(a.dataset.copy); toast('Kopiert.'); } catch {}
+  }, true);
   const digits = (s) => String(s || '').replace(/\D/g, '');
   function phoneIntl(s) {
     let d = String(s || '').trim();
@@ -3606,7 +3628,7 @@
       return m ? { pf, url: 'https://t.me/' + m[1], name: '@' + m[1] } : null;
     }
     if (pf === 'whatsapp') {
-      const m = /wa\.me\/(\d+)/i.exec(v);
+      const m = /wa\.me\/\+?(\d+)/i.exec(v);
       const intl = m ? m[1] : phoneIntl(v);
       return intl.length >= 8 ? { pf, url: 'https://wa.me/' + intl, name: phonePretty(intl) } : null;
     }
@@ -3784,6 +3806,7 @@
     const items = Object.entries(FSTATES).filter(([k]) => k !== p.status).map(([k, v]) => `<li class="ant-dropdown-menu-item" role="menuitem" data-k="${k}" style="display:flex;gap:8px;align-items:center">${fickIcon(v.i, 16)}<span>${esc(v.label)}</span></li>`);
     if (p.status) items.push(`<li class="ant-dropdown-menu-item" role="menuitem" data-k="reset" style="display:flex;gap:8px;align-items:center">${TRASH}<span>Fickstatus zurücksetzen</span></li>`);
     items.push(`<li class="ant-dropdown-menu-item" role="menuitem" data-k="meet" style="display:flex;gap:8px;align-items:center">＋<span>Treffen eintragen …</span></li>`);
+    items.push(`<li class="ant-dropdown-menu-item" role="menuitem" data-k="also" style="display:flex;gap:8px;align-items:center">${pfBadge('joyclub', 'andere Plattformen')}<span>Auch auf …</span></li>`);
     menu.innerHTML = `<ul class="ant-dropdown-menu ant-dropdown-menu-root ant-dropdown-menu-vertical ant-dropdown-menu-light" role="menu">${items.join('')}</ul>`;
     document.body.appendChild(menu);
     const close = (e) => { if (!menu.contains(e.target) && e.target !== anchor) { menu.remove(); document.removeEventListener('mousedown', close, true); } };
@@ -3792,6 +3815,13 @@
       menu.remove(); document.removeEventListener('mousedown', close, true);
       const k = li.dataset.k;
       if (k === 'meet') { editMeet(p, null); return; }
+      if (k === 'also') {
+        const fresh = !(await Fick.get(p.id));
+        if (fresh) await Fick.put(p);
+        // neu angelegt und nichts eingetragen → wieder entfernen
+        addProfileDialog(p, async () => { const q = await Fick.get(p.id); if (fresh && q && !q.status && !(q.meets || []).length && !otherProfiles(q).length) await Fick.del(p.id); refreshProfileFick(); });
+        return;
+      }
       await Fick.setStatus(p, k === 'reset' ? null : k);
       await snapshot(uid, nick, 'Fickstatus geändert', true);
       refreshProfileFick();
@@ -3827,8 +3857,8 @@
         <div style="margin-bottom:8px">${fickIcon(st ? st.i : 0, 18, true)} <b>${esc(st ? st.label : 'kein Fickstatus')}</b></div>
         ${meets.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">${meets.map((t) => meetLine(t)).join('')}</div>` : '<div style="color:#8c8c8c;margin-bottom:8px">Noch keine Treffen eingetragen.</div>'}
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px"><a href="#" data-a="add">+ Treffen eintragen</a></div>
-        <div style="margin-bottom:6px"><span style="color:#8c8c8c">Auch auf:</span> ${(p.profiles || []).filter((x) => !(x.pf === 'poppen' && x.uid === String(uid))).map(profLink).join(' ') || '<span style="color:#8c8c8c">–</span>'} <a href="#" data-a="prof">+ Profil zufügen</a></div>
-        <div style="display:flex;gap:16px"><a href="/setting/profile#archiv=${encodeURIComponent(uid)}" target="_blank">Profil-Archiv</a><a href="/setting/profile#fickliste" target="_blank">Zu meiner Fickliste</a></div>
+        <div style="margin-bottom:6px"><span style="color:#8c8c8c">Auch auf:</span> ${(p.profiles || []).filter((x) => !(x.pf === 'poppen' && x.uid === String(uid))).map(profLink).join(' ') || '<span style="color:#8c8c8c">–</span>'}</div>
+        <div style="display:flex;gap:16px"><a href="/setting/profile#archiv=${encodeURIComponent(uid)}" target="_blank">Profil-Archiv</a><a href="/setting/profile#fickliste" target="_blank">Zu meiner Fickliste</a><a href="#" data-a="prof" style="font-size:12px">+ Profil anderswo</a></div>
       </div>`;
     if (!sec.isConnected || sec.previousElementSibling !== (ref ? host : null)) { if (ref) host.after(sec); else host.before(sec); }
     sec.querySelector('[data-a=add]').addEventListener('click', (e) => { e.preventDefault(); editMeet(p, null); });
@@ -3842,9 +3872,11 @@
     return `<div><a href="#" data-meet="${esc(t.id)}" title="Treffen bearbeiten">${esc(d)}${t.time ? ' ' + esc(t.time) : ''}</a>${where ? ' · ' + where : ''}${link}${t.note ? ` <span style="color:#a6a6a6">– ${esc(t.note)}</span>` : ''}</div>`;
   }
   function profLink(x) {
-    if (!x.url) return `<span>${pfBadge(x.pf)}${esc(x.name || x.text)} <a href="#" onclick="navigator.clipboard.writeText(${esc(JSON.stringify(x.text || x.name))});return false" title="kopieren">⧉</a></span>`;
+    const strike = isDead(x) ? 'vaf-strike' : '';
+    const title = pfLabel(x.pf, x.pfName) + (isDead(x) ? ' · Profil gelöscht' : '');
+    if (!x.url) return `<span class="${strike}">${pfBadge(x.pf, title, x.pfName)}${esc(x.name || x.text)}</span>${copyBtn(x.text || x.name || '')}`;
     const own = 'status' in x && x.sync !== true ? ` <span title="eigener Status dieses Profils: ${esc(x.status ? FSTATES[x.status].label : 'kein')}">${fickIcon(x.status ? FSTATES[x.status].i : 0, 14, true)}</span>` : '';
-    return `<a href="${esc(x.url)}" target="_blank" rel="noopener" class="${x.deleted ? 'vaf-strike' : ''}">${pfBadge(x.pf)}${esc(x.name || x.url)}</a>${own}`;
+    return `<a href="${esc(x.url)}" target="_blank" rel="noopener" class="${strike}">${pfBadge(x.pf, title, x.pfName)}${esc(x.name || x.url)}</a>${own}`;
   }
   // Treffen eintragen / bearbeiten
   function editMeet(p, t) {
@@ -3868,25 +3900,101 @@
       { label: 'Abbrechen', fn: () => m.close() },
     ]);
   }
+  // Profile, die im Popup „Auch auf …“ erscheinen (nicht das eigene poppen-Hauptprofil)
+  const otherProfiles = (p) => (p.profiles || []).filter((x) => !(x.pf === OWN_PF && pm(p) && x.uid === String(pm(p).uid)));
+  // Importierte Einträge einer Plattform ohne eigenes Profil hier (Vorschläge zum Zusammenführen)
+  async function importSuggestions(p, pf) {
+    const all = await Fick.all();
+    return all.filter((q) => q.id !== p.id && !pm(q) && (q.imported || String(q.id).startsWith('i:')) &&
+      ((q.main && q.main.pf === pf) || (q.profiles || []).some((x) => x.pf === pf)));
+  }
+  // Importierten Eintrag q mit Person p zusammenführen: neuerer Status, Treffen/Profile/Verlauf übernehmen, Anmerkungen anhängen
+  async function mergeImported(p, q) {
+    mergeFick(p, q);
+    const note = [q.ext && q.ext.short, q.ext && q.ext.texts, q.note].filter(Boolean).join('\n').trim();
+    if (note) {
+      const k = q.main && q.main.url ? linkKey(q.main) : '';
+      const x = (k && p.profiles.find((y) => linkKey(y) === k)) || null;
+      if (x) x.text = [x.text, note].filter(Boolean).join('\n');
+      else p.note = [p.note, note].filter(Boolean).join('\n');
+    }
+    p.history = [...(p.history || []), { at: now(), what: `Zusammengeführt mit importiertem Eintrag ${(q.main && q.main.nick) || (q.ext && q.ext.name) || ''}` }];
+    await Fick.put(p);
+    await Fick.del(q.id);
+  }
   function addProfileDialog(p, done) {
-    const opts = Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}">${esc(v.name)}</option>`).join('');
-    const m = modal({ title: 'Profil zufügen', html: `<label>Plattform<select class="vaf-in" data-f="pf">${opts}</select></label>
-      <label style="display:block;margin-top:10px">Name, Nummer oder Link<input class="vaf-in" data-f="v" placeholder="@Name, +49 177 …, https://…"></label><div class="vaf-cur" data-f="hint"></div>` });
-    const pfSel = m.body.querySelector('[data-f=pf]'), inp = m.body.querySelector('[data-f=v]'), hint = m.body.querySelector('[data-f=hint]');
+    const pfOpts = Object.entries(PLATFORMS).filter(([k]) => k !== OWN_PF).map(([k, v]) => `<option value="${k}">${esc(v.name)}</option>`).join('');
+    const nick = (pm(p) && pm(p).nick) || (p.ext && p.ext.name) || (p.main && p.main.nick) || '';
+    const m = modal({ title: 'Auch auf …', sub: esc(nick), html: `<div data-f="list"></div>
+      <h3 style="margin:14px 0 6px;font-size:15px">+ Profil zufügen</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select class="vaf-in" data-f="pf" style="width:auto">${pfOpts}</select>
+        <input class="vaf-in" data-f="pfName" placeholder="Name der Plattform" style="width:180px;display:none">
+        <input class="vaf-in" data-f="v" style="flex:1;min-width:200px">
+        <button type="button" class="vaf-big vaf-pri" data-a="add" style="width:auto">Zufügen</button></div>
+      <div class="vaf-cur" data-f="hint"></div><div data-f="sugg"></div>`, onClose: () => { if (done) done(); else refreshProfileFick(); } });
+    const $ = (f) => m.body.querySelector(`[data-f=${f}]`);
+    const pfSel = $('pf'), inp = $('v'), hint = $('hint'), pfName = $('pfName');
     pfSel.value = 'joyclub';
-    const upd = () => { const r = normalizeProfile(pfSel.value, inp.value); hint.textContent = r ? (r.url ? 'Gespeichert als: ' + r.url : 'Ohne Link (nur Text): ' + r.name) : ''; };
-    pfSel.addEventListener('change', upd); inp.addEventListener('input', upd);
-    m.buttons([
-      { label: 'Zufügen', primary: true, focus: true, fn: async () => {
-        const r = normalizeProfile(pfSel.value, inp.value);
-        if (!r) { hint.textContent = 'Das sieht nicht nach einer gültigen Angabe aus.'; return; }
-        if ((p.profiles || []).some((x) => linkKey(x) === linkKey(r))) { hint.textContent = 'Dieses Profil ist schon eingetragen.'; return; }
-        p.profiles = [...(p.profiles || []), r];
-        p.history = [...(p.history || []), { at: now(), what: `Profil zugefügt: ${PLATFORMS[r.pf].name} ${r.name}` }];
-        await Fick.put(p); m.close(); if (done) done(); else refreshProfileFick();
-      } },
-      { label: 'Abbrechen', fn: () => m.close() },
-    ]);
+    const drawList = () => {
+      const l = otherProfiles(p);
+      $('list').innerHTML = l.length ? l.map((x, i) => `<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid #2c2c2c">
+          <span style="flex:1;min-width:0">${profLink(x)}</span>
+          <label style="display:flex;gap:5px;align-items:center;font-size:12px;color:#a6a6a6;white-space:nowrap"><input type="checkbox" data-dead="${i}" ${isDead(x) ? 'checked' : ''}> Profil gelöscht</label>
+          <a href="#" data-rm="${i}" title="entfernen" style="color:#ff7875;text-decoration:none">✕</a></div>`).join('')
+        : '<div style="color:#8c8c8c">Noch keine Profile auf anderen Plattformen.</div>';
+      $('list').querySelectorAll('[data-dead]').forEach((c) => c.addEventListener('change', async () => {
+        const x = l[+c.dataset.dead];
+        delete x.deleted; delete x.gone;
+        if (c.checked) x.dead = true; else delete x.dead;
+        p.history = [...(p.history || []), { at: now(), what: `${pfLabel(x.pf, x.pfName)} ${x.name || ''}: ${c.checked ? 'Profil gelöscht' : 'Profil wieder da'}` }];
+        await Fick.put(p); drawList();
+      }));
+      $('list').querySelectorAll('[data-rm]').forEach((a) => a.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const x = l[+a.dataset.rm];
+        if (!W.confirm(`${pfLabel(x.pf, x.pfName)}-Profil „${x.name || x.url}“ entfernen?`)) return;
+        p.profiles = p.profiles.filter((y) => y !== x);
+        p.history = [...(p.history || []), { at: now(), what: `Profil entfernt: ${pfLabel(x.pf, x.pfName)} ${x.name || ''}` }];
+        await Fick.put(p); drawList();
+      }));
+    };
+    const drawSugg = async () => {
+      const pf = pfSel.value;
+      const l = await importSuggestions(p, pf);
+      $('sugg').innerHTML = l.length ? `<div class="vaf-mini" style="margin:8px 0 4px">Importierte Einträge von ${esc(pfLabel(pf))} – Klick führt sie mit dieser Person zusammen</div>` +
+        l.map((q) => { const n = (q.main && q.main.nick) || (q.ext && q.ext.name) || '?'; const st = q.status ? FSTATES[q.status] : null;
+          return `<div data-q="${esc(q.id)}" style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:6px;cursor:pointer;background:#2a2a2a;margin-bottom:4px">${pfBadge(pf)}<span>${esc(n)}</span>${st ? fickIcon(st.i, 15, true) : ''}<span class="vaf-mini">${(q.meets || []).length} Treffen</span></div>`; }).join('') : '';
+      $('sugg').querySelectorAll('[data-q]').forEach((d) => d.addEventListener('click', async () => {
+        const q = l.find((x) => x.id === d.dataset.q);
+        const n = (q.main && q.main.nick) || (q.ext && q.ext.name) || '?';
+        if (!W.confirm(`„${n}“ mit dieser Person zusammenführen? Der importierte Eintrag verschwindet danach.`)) return;
+        await mergeImported(p, q);
+        hint.textContent = `„${n}“ zusammengeführt.`;
+        drawList(); drawSugg();
+      }));
+    };
+    const upd = () => {
+      pfName.style.display = pfSel.value === 'other' ? '' : 'none';
+      inp.placeholder = pfHint(pfSel.value);
+      const r = normalizeProfile(pfSel.value, inp.value);
+      hint.textContent = !inp.value.trim() ? '' : r ? (r.url ? 'Gespeichert als: ' + r.url : 'Ohne Link (nur Text): ' + r.name) : 'Das passt nicht zu ' + pfLabel(pfSel.value, pfName.value) + '.';
+    };
+    pfSel.addEventListener('change', () => { upd(); drawSugg(); }); inp.addEventListener('input', upd);
+    const add = async () => {
+      const r = normalizeProfile(pfSel.value, inp.value);
+      if (!r) { hint.textContent = `Das passt nicht zu ${pfLabel(pfSel.value, pfName.value)} (${pfHint(pfSel.value)}).`; return; }
+      if (r.pf === 'other') { const n = pfName.value.trim(); if (!n) { hint.textContent = 'Bitte den Namen der Plattform eingeben.'; pfName.focus(); return; } r.pfName = n; }
+      if ((p.profiles || []).some((x) => linkKey(x) === linkKey(r)) || (p.main && p.main.url && linkKey(p.main) === linkKey(r))) { hint.textContent = 'Dieses Profil ist schon eingetragen.'; return; }
+      p.profiles = [...(p.profiles || []), r];
+      p.history = [...(p.history || []), { at: now(), what: `Profil zugefügt: ${pfLabel(r.pf, r.pfName)} ${r.name}` }];
+      await Fick.put(p);
+      inp.value = ''; upd(); hint.textContent = 'Zugefügt.'; drawList();
+    };
+    m.body.querySelector('[data-a=add]').addEventListener('click', add);
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
+    drawList(); upd(); drawSugg();
   }
 
   // ---------- Profil-Archiv ----------
@@ -3962,7 +4070,7 @@
         <textarea class="vaf-in" data-f="texts" rows="6" placeholder="Steckbrief, Beschreibung, Notizen …" style="margin-top:10px">${esc(x.texts || '')}</textarea>
         <label class="vaf-chk"><input type="checkbox" data-f="gone" ${x.gone ? 'checked' : ''}> Profil gelöscht (war auf einer Plattform)</label>
         <div style="margin:10px 0">${fickIcon(p.status ? FSTATES[p.status].i : 0, 18, true)} <select class="vaf-in" data-f="status" style="width:auto">${['', ...Object.keys(FSTATES)].map((k) => `<option value="${k}" ${k === (p.status || '') ? 'selected' : ''}>${k ? FSTATES[k].label : 'Ficken?'}</option>`).join('')}</select></div>
-        <div><b>Auch auf:</b> ${[...(foreignUrl(p) ? [{ pf: p.main.pf, url: p.main.url, name: p.main.nick }] : []), ...(p.profiles || [])].map(profLink).join(' ') || '–'} <a href="#" data-a="prof">+ Profil zufügen</a></div>
+        <div><b>Auch auf:</b> ${[...(foreignUrl(p) ? [{ pf: p.main.pf, url: p.main.url, name: p.main.nick }] : []), ...(p.profiles || [])].map(profLink).join(' ') || '–'} <a href="#" data-a="prof">Auch auf …</a></div>
         <h3>Treffen</h3><div>${[...(p.meets || [])].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(meetLine).join('') || '–'}</div>
         <div style="margin-top:8px"><a href="#" data-a="add">+ Treffen eintragen</a> · <a href="/setting/profile#archiv=${encodeURIComponent(p.id)}">Profil-Archiv</a> · <a href="#" data-a="del">Eintrag löschen</a></div></div>`;
       const save = async (what) => { await Fick.put(p); await DB.put('archive', { uid: p.id, nick: x.name, at: now(), reason: what, html: el.innerHTML, hash: '' }); };
@@ -3993,18 +4101,23 @@
   async function renderFickList(el) {
     ensureStyle();
     const persons = await Fick.all();
-    const st = { sort: 'date', dir: -1, member: '', where: '', club: '', from: '', to: '', pf: '', status: '' };
+    const st = { sort: 'date', dir: -1, member: '', where: '', club: '', from: '', to: '', pfs: [], status: '' };
     try { Object.assign(st, JSON.parse(sessionStorage.getItem('vaf_fl') || '{}')); } catch {}
+    if (!Array.isArray(st.pfs)) st.pfs = [];
+    delete st.pf;
     const memberOf = async (p) => (pm(p) ? await Members.get(pm(p).uid) : null);
     const rows = [];
     for (const p of persons) {
       const m = await memberOf(p);
       const name = (p.main && (m && m.nick || p.main.nick)) || (p.ext && p.ext.name) || '?';
-      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq((p.profiles || []).map((x) => x.pf)) };
+      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq([...(p.main && p.main.pf && !pm(p) ? [p.main.pf] : []), ...(p.profiles || []).map((x) => x.pf)]),
+        badges: uniq([...(foreignUrl(p) ? [p.main.pf + '|'] : []), ...otherProfiles(p).map((x) => `${x.pf}|${x.pf === 'other' ? (x.pfName || '') : ''}`)]) };
       if (!(p.meets || []).length) rows.push({ ...base, t: null });
       for (const t of p.meets || []) rows.push({ ...base, t });
     }
     const clubs = uniq(rows.map((r) => (r.t && r.t.club) || '')).sort();
+    const pfOrder = Object.keys(PLATFORMS);
+    const pfAll = uniq(rows.flatMap((r) => [...r.pfs, ...(r.t && r.t.link ? [r.t.pf || platformOfUrl(r.t.link)] : [])])).sort((a, b) => pfOrder.indexOf(a) - pfOrder.indexOf(b));
     const counts = Object.fromEntries(Object.keys(FSTATES).map((k) => [k, persons.filter((p) => p.status === k).length]));
     const draw = () => {
       try { sessionStorage.setItem('vaf_fl', JSON.stringify(st)); } catch {}
@@ -4015,7 +4128,11 @@
         if (st.club) { const c = (r.t && r.t.club) || ''; if (st.club === '(unbekannt)' ? c : c !== st.club) return false; }
         if (st.from && (!r.t || (r.t.date || '') < st.from)) return false;
         if (st.to && (!r.t || (r.t.date || '') > st.to)) return false;
-        if (st.pf && !r.pfs.includes(st.pf) && !(r.t && r.t.pf === st.pf)) return false;
+        if (st.pfs.length) {
+          const foreign = r.pfs.filter((x) => x !== OWN_PF && x !== 'other');
+          const ok = st.pfs.some((f) => f === 'none' ? !foreign.length : r.pfs.includes(f) || (r.t && r.t.pf === f));
+          if (!ok) return false;
+        }
         return true;
       });
       list.sort((a, b) => st.sort === 'name' ? st.dir * a.name.localeCompare(b.name, 'de') : st.dir * (((a.t && a.t.date) || '').localeCompare((b.t && b.t.date) || '') || a.name.localeCompare(b.name, 'de')));
@@ -4027,13 +4144,16 @@
           <input class="vaf-in" data-f="where" placeholder="Was (Party, Anlass)" value="${esc(st.where)}">
           <select class="vaf-in" data-f="club"><option value="">Wo: alle Clubs/Orte</option><option value="(unbekannt)" ${st.club === '(unbekannt)' ? 'selected' : ''}>(unbekannt)</option>${clubs.filter(Boolean).map((c) => `<option ${c === st.club ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
           <input class="vaf-in" type="date" data-f="from" value="${esc(st.from)}" title="von"><input class="vaf-in" type="date" data-f="to" value="${esc(st.to)}" title="bis">
-          <select class="vaf-in" data-f="pf"><option value="">alle Plattformen</option>${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${k === st.pf ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></div>
+          <div style="position:relative"><button type="button" class="vaf-in" data-a="pfdd" style="text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Plattform: ${st.pfs.length ? st.pfs.map((f) => (f === 'none' ? 'Andere / ohne' : pfLabel(f))).map(esc).join(', ') : 'alle'}</button>
+            <div data-a="pfmenu" style="display:none;position:absolute;z-index:50;top:100%;right:0;background:#1f1f1f;border:1px solid #444;border-radius:8px;padding:6px 10px;min-width:190px">
+              ${[...pfAll.filter((k) => k !== 'other'), 'none'].map((k) => `<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer"><input type="checkbox" data-pfc="${k}" ${st.pfs.includes(k) ? 'checked' : ''}>${k === 'none' ? 'Andere / ohne' : pfBadge(k) + esc(pfLabel(k))}</label>`).join('')}
+              <a href="#" data-a="pfall" style="font-size:12px">alle</a></div></div></div>
         <table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr style="text-align:left;color:#a6a6a6">
           <th style="cursor:pointer;padding:6px" data-sort="date">Datum ${st.sort === 'date' ? (st.dir < 0 ? '▼' : '▲') : ''}</th><th style="cursor:pointer;padding:6px" data-sort="name">Mitglied ${st.sort === 'name' ? (st.dir < 0 ? '▼' : '▲') : ''}</th><th></th><th>Was</th><th>Wo</th><th>Notiz</th></tr></thead>
           <tbody>${list.map((r, i) => `<tr data-i="${i}" style="border-top:1px solid #2c2c2c;cursor:pointer">
             <td style="padding:6px;white-space:nowrap">${r.t && r.t.date ? deDate(new Date(r.t.date + 'T12:00')) : '–'}</td>
-            <td style="padding:6px"><a href="${esc(r.url)}" target="_blank" rel="noopener" class="${r.del ? 'vaf-strike' : ''}" style="${r.inactive ? 'color:#ff7875' : ''}">${esc(r.name)}</a><br><a href="${esc(r.arch)}" style="font-size:12px;color:#a6a6a6">Profil-Archiv</a> ${r.pfs.filter((x) => x !== 'poppen').map((x) => pfBadge(x)).join('')}</td>
-            <td>${fickIcon(r.p.status ? FSTATES[r.p.status].i : 0, 18, true)}</td>
+            <td style="padding:6px"><a href="${esc(r.url)}" target="_blank" rel="noopener" class="${r.del ? 'vaf-strike' : ''}" style="${r.inactive ? 'color:#ff7875' : ''}">${esc(r.name)}</a><br><a href="${esc(r.arch)}" style="font-size:12px;color:#a6a6a6">Profil-Archiv</a> · <a href="#" data-also="${i}" style="font-size:12px;color:#a6a6a6">Auch auf …</a></td>
+            <td style="white-space:nowrap">${fickIcon(r.p.status ? FSTATES[r.p.status].i : 0, 18, true)} ${r.badges.map((b) => { const [pf, n] = b.split('|'); return pfBadge(pf, '', n); }).join('')}</td>
             <td>${esc((r.t && r.t.where) || '')}</td><td>${esc((r.t && r.t.club) || '')}${r.t && r.t.link ? ` <a href="${esc(r.t.link)}" target="_blank" rel="noopener">${pfBadge(r.t.pf || platformOfUrl(r.t.link))}</a>` : ''}</td>
             <td style="color:#a6a6a6">${esc((r.t && r.t.note) || '')}</td></tr>`).join('') || '<tr><td colspan="6" style="padding:12px;color:#8c8c8c">Keine Einträge.</td></tr>'}</tbody></table>
         <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap"><button type="button" class="vaf-big" style="width:auto" data-a="ext">+ Externen Fick zufügen</button>
@@ -4042,6 +4162,11 @@
       el.querySelectorAll('[data-f]').forEach((i) => i.addEventListener('change', () => { st[i.dataset.f] = i.value; draw(); }));
       el.querySelectorAll('[data-sort]').forEach((h) => h.addEventListener('click', () => { if (st.sort === h.dataset.sort) st.dir = -st.dir; else { st.sort = h.dataset.sort; st.dir = h.dataset.sort === 'date' ? -1 : 1; } draw(); }));
       el.querySelectorAll('tr[data-i]').forEach((tr) => tr.addEventListener('click', (e) => { if (e.target.closest('a')) return; const r = list[+tr.dataset.i]; if (r.t) editMeet(r.p, r.t); else if (!pm(r.p)) goHash('extern=' + encodeURIComponent(r.p.id)); else editMeet(r.p, null); }));
+      const dd = el.querySelector('[data-a=pfmenu]');
+      el.querySelector('[data-a=pfdd]').onclick = (e) => { e.stopPropagation(); dd.style.display = dd.style.display === 'none' ? '' : 'none'; };
+      dd.querySelectorAll('[data-pfc]').forEach((c) => c.addEventListener('change', () => { const k = c.dataset.pfc; st.pfs = c.checked ? uniq([...st.pfs, k]) : st.pfs.filter((x) => x !== k); draw(); el.querySelector('[data-a=pfmenu]').style.display = ''; }));
+      dd.querySelector('[data-a=pfall]').onclick = (e) => { e.preventDefault(); st.pfs = []; draw(); };
+      el.querySelectorAll('[data-also]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); addProfileDialog(list[+a.dataset.also].p, () => renderFickList(el)); }));
       el.querySelector('[data-a=ext]').onclick = () => newExternal();
       el.querySelector('[data-a=exp]').onclick = () => exportFick();
       el.querySelector('[data-a=imp]').onclick = () => importFick().then(() => { hideOwn(); routeSettings(); });
@@ -4096,6 +4221,7 @@
   async function exportFick() {
     const me = Me.get() || await loadMe();
     const persons = await Fick.all();
+    for (const p of persons) for (const x of p.profiles || []) { if (isDead(x)) x.dead = true; delete x.deleted; delete x.gone; }
     for (const p of persons) if (pm(p)) { const m = await Members.get(pm(p).uid); if (m && m.nick) { p.main.nick = m.nick; } }
     const payload = { format: 'fickliste', version: 1, platform: 'poppen', exported: new Date().toISOString(), persons };
     const enc = await encryptJSON(payload, me.nick);
