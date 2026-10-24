@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.1.2
+// @version      2.1.3
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.1.2';
+  const VERSION = '2.1.3';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -2400,11 +2400,11 @@
   #vaf-set .vaf-info b{color:#ffc21a}
   #vaf-set .vaf-srcgrid{display:grid;grid-template-columns:150px 1fr 1fr;gap:6px 18px;align-items:center;padding:10px 0;border-bottom:1px solid #2c2c2c}
   #vaf-set .vaf-srcgrid .vaf-h{color:#8c8c8c;font-size:12px}
-  #vaf-set .vaf-sl{position:relative;height:26px;min-width:180px;user-select:none;touch-action:none}
-  #vaf-set .vaf-sl .t{position:absolute;top:11px;left:8px;right:8px;height:4px;background:#444;border-radius:2px}
-  #vaf-set .vaf-sl .f{position:absolute;top:11px;height:4px;background:#ffc21a;border-radius:2px}
-  #vaf-set .vaf-sl .h{position:absolute;top:5px;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #ffc21a;margin-left:-8px;cursor:grab;box-sizing:border-box}
-  #vaf-set .vaf-sl .v{position:absolute;top:-10px;font-size:11px;color:#ddd;transform:translateX(-50%)}
+  #vaf-set .vaf-sl{position:relative;height:36px;min-width:180px;user-select:none;touch-action:none}
+  #vaf-set .vaf-sl .t{position:absolute;top:22px;left:8px;right:8px;height:4px;background:#444;border-radius:2px}
+  #vaf-set .vaf-sl .f{position:absolute;top:22px;height:4px;background:#ffc21a;border-radius:2px}
+  #vaf-set .vaf-sl .h{position:absolute;top:16px;width:16px;height:16px;border-radius:50%;background:#fff;border:2px solid #ffc21a;margin-left:-8px;cursor:grab;box-sizing:border-box}
+  #vaf-set .vaf-sl .v{position:absolute;left:50%;bottom:100%;margin-bottom:3px;font-size:11px;line-height:12px;color:#ddd;transform:translateX(-50%);white-space:nowrap;pointer-events:none}
   #vaf-set .vaf-exp{margin:24px 0 8px;font-size:16px;font-weight:600;cursor:pointer;color:#fff}
   #vaf-set .vaf-foot{display:flex;gap:10px;margin:26px 0 40px}
   #vaf-set .vaf-grp{display:flex;flex-direction:column;gap:4px;max-height:260px;overflow:auto;width:100%}
@@ -2624,8 +2624,8 @@
           row(c, lab('Sugar Mom', 'groups.p.sugarMom'), 'Frau deutlich älter als der Mann', sw(g.sugarMom.on, (v) => { g.sugarMom.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarMom.gap, (x) => { g.sugarMom.gap = x; touch(); }, 1, 60), 'Jahren');
         }
         const lbl = document.createElement('div'); lbl.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:100%';
-        g.labels.forEach((t, i) => { const inp = txtIn(t, (v) => { g.labels[i] = v.trim() || DEFAULTS.groups[gk].labels[i]; touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; lbl.appendChild(inp); });
-        row(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Stufe 1 · 2 · 3, je Einzahl / Mehrzahl', lbl);
+        [0, 2, 4, 1, 3, 5].forEach((i) => { const t = g.labels[i]; const inp = txtIn(t, (v) => { g.labels[i] = v.trim() || DEFAULTS.groups[gk].labels[i]; touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; lbl.appendChild(inp); });
+        row(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Stufe 1 · 2 · 3; oben Einzahl, unten Mehrzahl', lbl);
         const types = document.createElement('div'); types.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap';
         for (const t of ['m', 'w', 'p', 'ts', 'tv']) {
           const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:6px;align-items:center';

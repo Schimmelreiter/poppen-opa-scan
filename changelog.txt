@@ -1,6 +1,10 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.1.3 (24.10.2026)
+- Einstellungen: Bezeichnungen untereinander (oben Einzahl, unten Mehrzahl, je Stufe eine Spalte)
+- Schieberegler: Zahlen sauber mittig über den Griffen, mehr Abstand zum Griff
+
 2.1.2 (24.10.2026)
 - Fickliste: dieselben Symbole wie im JOYclub-Skript (Ficken-Symbol, Umriss für „Ficken?“, Verbotsring für „Nein, danke!“ und „Nie wieder!“, Mülleimer); „Gefickt“ in Listen rot, der Button bei „Gefickt“ rot mit weißem Symbol
 - Popup „Regeln geändert“: Derzeit blockiert / Nach Anwenden ebenfalls auf Basis der ganzen Blockierliste

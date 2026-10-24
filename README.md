@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.1.2 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.1.3 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
