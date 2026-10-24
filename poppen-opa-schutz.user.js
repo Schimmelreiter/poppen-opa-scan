@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.1.1
+// @version      2.1.2
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.1.1';
+  const VERSION = '2.1.2';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -2825,8 +2825,9 @@
     const old = S();
     if (RULE_PATHS(old) === RULE_PATHS(draft)) { saveSettings(draft); settingsDirty = false; toast('Gespeichert.'); return; }
     const p = await projection(old, draft);
-    const html = `<div class="vaf-stats"><span>Derzeit blockiert (vom ${esc(word())}-Schutz)</span><b>${fmtN(p.keep + p.drop)}</b>` +
-      `<span>Nach Anwenden</span><b>${fmtN(p.keep + p.add)}</b><span>Fallen weg</span><b>${fmtN(p.drop)}</b><span>Kommen dazu</span><b>${fmtN(p.add)}</b>` +
+    const cur = G.get('blocked_count', null);
+    const html = `<div class="vaf-stats"><span>Derzeit blockiert</span><b>${fmtN(cur == null ? p.keep + p.drop : cur)}</b>` +
+      `<span>Nach Anwenden</span><b>${fmtN(cur == null ? p.keep + p.add : Math.max(0, cur - p.drop + p.add))}</b><span>Fallen weg</span><b>${fmtN(p.drop)}</b><span>Kommen dazu</span><b>${fmtN(p.add)}</b>` +
       `<span>Notizen weichen ab</span><b>${fmtN(p.notes)}</b><span>Unklar (Alter 99)</span><b>${fmtN(p.unclear)}</b></div>`;
     const v = await ask('Regeln geändert', html, [
       { label: 'Änderungen speichern und anwenden', value: 'all', primary: true },
@@ -3521,16 +3522,32 @@
     no: { label: 'Nein, danke!', i: 3 },
     never: { label: 'Nie wieder!', i: 4 },
   };
-  const HEART = 'M12 20.6s-7.2-4.4-9.3-8.9C1.2 8.3 3.3 4.7 6.8 4.7c2 0 3.5 1.1 4.3 2.5h1.8c.8-1.4 2.3-2.5 4.3-2.5 3.5 0 5.6 3.6 4.1 7C19.2 16.2 12 20.6 12 20.6z';
-  // 0 inaktiv (dünner Umriss) · 1 will ich (gefüllt) · 2 gefickt (gefüllt, roter Kreis) · 3 nein danke (Umriss + Verbotsring) · 4 nie wieder (gefüllt + Ring)
-  function fickIcon(i, size = 18, circle = false) {
-    const fill = i === 1 || i === 2 || i === 4;
-    const shape = `<path d="${HEART}" fill="${fill ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="${i === 0 ? 1.2 : 1.8}" stroke-linejoin="round"/>`;
-    const ring = i === 3 || i === 4 ? '<circle cx="12" cy="12.4" r="10.4" fill="none" stroke="#e53935" stroke-width="2"/><line x1="4.8" y1="19.6" x2="19.2" y2="5.2" stroke="#e53935" stroke-width="2"/>' : '';
-    const bg = circle && i === 2 ? '<circle cx="12" cy="12" r="12" fill="#e53935"/>' : '';
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" style="vertical-align:middle;color:${circle && i === 2 ? '#fff' : 'currentColor'}">${bg}<g transform="${bg ? 'translate(2.4 2.4) scale(.8)' : ''}">${shape}</g>${ring}</svg>`;
+  // Symbole wie beim JOYclub-Skript (Ficken-Icon; Quelle: SVG Repo „sex-doggy“)
+  const FL_D = 'M65.9,26.7c0-13.6,11-24.6,24.6-24.6s24.6,11,24.6,24.6s-11,24.6-24.6,24.6S65.9,40.3,65.9,26.7z M254,191.2c0,8.7-7.1,15.8-15.8,15.8h-78.8c-8.7,0-15.8-7.1-15.8-15.8v-27.5H74.8v30.4c0,7.1-5.7,12.8-12.8,12.8H14.8c-7.1,0-12.8-5.7-12.8-12.8s5.7-12.8,12.8-12.8h34.5c0,0,0.1-36.7,0.1-37.3c-0.4-7.9,5.2-14.9,13.1-16.3l45.9-7.7c0,0,0-59.2,0-59.2c0-11.7,9.5-21.3,21.3-21.3c3.7,0,7.2,0.9,10.2,2.6c8.4,4.5,41.9,29.7,61.1,44c8.8,6.6,13.9,16.9,13.9,27.8l0.1,61.4h23.3C246.9,175.4,254,182.5,254,191.2z M183.5,175.4l-0.2-36c0-10.4-4.8-20.1-13-26.5L134,84.7v31.1l10.9-1.8c0,0,0.1,0,0.1,0c7.5-1.2,15.2,0.9,21,5.8c5.8,4.9,9.2,12.1,9.3,19.7c0,0.1,0,0.1,0,0.2v35.7h7.9H183.5z M16.5,140.3c12.4,5.6,26.3-0.3,32.6-12.3c8-15.5,4.5-33.1-2.4-42.9c0,0,0,0,0,0c-4.8,5.8-12.2,7.6-19.6,8.1C15.3,94,8.4,98.4,4.2,107.7C-1.4,120.1,4.1,134.7,16.5,140.3z';
+  const FL_RED = '#e01b1b';
+  const FL_KIND = ['', 'will', 'gef', 'nein', 'nie'];
+  // kind: '' (Umriss dünn = inaktiv) | will | gef | nein | nie | trash; opt: { size, color, shadow, redGef }
+  function flIcon(kind, opt = {}) {
+    const size = opt.size || 20;
+    const sh = opt.shadow === false ? '' : 'filter:drop-shadow(1px 2px 1.5px rgba(0,0,0,.7));';
+    const st = `width:${size}px;height:${size}px;flex:none;vertical-align:middle;${sh}`;
+    if (kind === 'trash') {
+      return `<svg class="vaf-fl-svg" viewBox="0 0 24 24" style="${st}color:${opt.color || 'currentColor'}" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v9h1.6v-9H10zm3.4 0v9H15v-9h-1.6z"/></svg>`;
+    }
+    const fill = `<path fill="currentColor" d="${FL_D}"/>`;
+    const line = `<path fill="none" stroke="currentColor" stroke-width="${kind === 'nein' ? 12 : 9}" stroke-linejoin="round" d="${FL_D}"/>`;
+    const col = opt.color || (kind === 'gef' && opt.redGef ? FL_RED : 'currentColor');
+    if (kind === 'nein' || kind === 'nie') {
+      return `<svg class="vaf-fl-svg" viewBox="-48 -71.5 352 352" style="${st}color:${col}" aria-hidden="true">` +
+        `<g transform="translate(128 104.5) scale(.78) translate(-128 -104.5)">${kind === 'nein' ? line : fill}</g>` +
+        `<circle cx="128" cy="104.5" r="158" fill="none" stroke="${FL_RED}" stroke-width="22"/>` +
+        `<line x1="16.3" y1="216.2" x2="239.7" y2="-7.2" stroke="${FL_RED}" stroke-width="22" stroke-linecap="round"/></svg>`;
+    }
+    return `<svg class="vaf-fl-svg" viewBox="${kind ? '-4 -4 264 217' : '-8 -8 272 225'}" style="${st}color:${col}" aria-hidden="true">${kind ? fill : line}</svg>`;
   }
-  const TRASH = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="vertical-align:middle"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>';
+  // 0 inaktiv · 1 will ich · 2 gefickt · 3 nein danke · 4 nie wieder; red = „Gefickt“ rot (Listen, Karten)
+  const fickIcon = (i, size = 18, red = false) => flIcon(FL_KIND[i] || '', { size, redGef: red });
+  const TRASH = flIcon('trash', { size: 16, shadow: false });
 
   // ---------- Plattformen und Links ----------
   const PLATFORMS = {
@@ -3728,7 +3745,10 @@
       pi.send.after(b);
     }
     b.dataset.st = st || '';
-    b.innerHTML = `<span class="ant-btn-icon">${fickIcon(i, 16, true)}</span><span>${esc(label)}</span>`;
+    // wie auf JOYclub: „Gefickt“ als roter (primärer) Button mit weißem Symbol
+    const prim = ['ant-btn-primary', 'ant-btn-color-primary', 'ant-btn-variant-solid'], dflt = ['ant-btn-default', 'ant-btn-color-default', 'ant-btn-variant-outlined'];
+    b.classList.remove(...prim, ...dflt); b.classList.add(...(st === 'done' ? prim : dflt));
+    b.innerHTML = `<span class="ant-btn-icon" style="display:inline-flex">${fickIcon(i, 18)}</span><span>${esc(label)}</span>`;
     b.title = 'Fickliste – nur für dich sichtbar';
   }
   // Menü wie „Speichern“: alle anderen Zustände + zurücksetzen

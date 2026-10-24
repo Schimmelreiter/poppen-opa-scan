@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.1.1 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.1.2 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -149,7 +149,7 @@ Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name auf das Muster passt) p
 
 Nur für dich sichtbar.
 
-- **Button** nach „Nachricht senden“ mit fünf Zuständen: *Ficken?*, *Will ich*, *Gefickt*, *Nein, danke!*, *Nie wieder!*; Menü mit den anderen Zuständen, „Fickstatus zurücksetzen“ und „Treffen eintragen“.
+- **Button** nach „Nachricht senden“ mit fünf Zuständen und denselben Symbolen wie im JOYclub-Skript: *Ficken?*, *Will ich*, *Gefickt*, *Nein, danke!*, *Nie wieder!*; Menü mit den anderen Zuständen, „Fickstatus zurücksetzen“ und „Treffen eintragen“.
 - **Abschnitt „Fickliste“** im Profil unter „Fotos“/„Videos“: Status, Treffen (Datum, was, wo, Link, Notiz), Profile auf anderen Plattformen, Profil-Archiv.
 - **Meine Fickliste** (Einstellungen): Zähler je Zustand als Filter, Filter nach Mitglied, Was, Wo, Datum und Plattform, Sortierung nach Datum oder Name; Personen ohne Treffen erscheinen ebenfalls. Gelöschte Profile sind durchgestrichen, deaktivierte rot.
 - **Kasten im eigenen Profil** über den Statistiken: Zähler und die letzten Ficks mit drei verschiedenen Personen.

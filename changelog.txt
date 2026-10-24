@@ -1,6 +1,10 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.1.2 (24.10.2026)
+- Fickliste: dieselben Symbole wie im JOYclub-Skript (Ficken-Symbol, Umriss für „Ficken?“, Verbotsring für „Nein, danke!“ und „Nie wieder!“, Mülleimer); „Gefickt“ in Listen rot, der Button bei „Gefickt“ rot mit weißem Symbol
+- Popup „Regeln geändert“: Derzeit blockiert / Nach Anwenden ebenfalls auf Basis der ganzen Blockierliste
+
 2.1.1 (24.10.2026)
 - Nach einem Update (und danach wöchentlich) liest das Skript die Blockierliste still ins Gedächtnis ein: Opa-Sperren mit Quelle und Notiz, von Hand Blockierte nur als solche vermerkt; auf poppen.de wird dabei nichts geändert
 - Einstellungen: „Nach Anwenden der neuen Einstellungen“ rechnet mit der ganzen Blockierliste (derzeit blockiert − fallen weg + kommen dazu); vor dem ersten Einlesen steht dort „Blockierliste wird eingelesen …“
