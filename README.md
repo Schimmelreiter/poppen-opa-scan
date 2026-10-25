@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.5 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.6 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -145,7 +145,7 @@ Funktionen, die ein Profil aufrufen (Prüfung von Gruppenanfragen, „Trotzdem �
 
 ## Gruppen-Beitrittsanfragen
 
-Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name „BBC“, „Black“ oder „interracial“ enthält) prüft **Automatische Annahme/Ablehnung** jedes Profil unsichtbar: Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen; Typ leer, kein Profilbild (nur Platzhalter und kein öffentliches Foto) und als einzige Sprache Deutsch → ablehnen; sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
+Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name „BBC“, „Black“ oder „interracial“ enthält) prüft **Automatische Annahme/Ablehnung** jedes Profil über die Schnittstellen (`user/info`, Galerie) statt mit einem unsichtbaren Profilaufruf; der Typ kommt als Zahl und wird über die Übersetzungen der Seite (`i18n/pull`) benannt, sonst prüft das Skript wie bisher über das Profil. Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen; Typ leer, kein Profilbild (nur Platzhalter und kein öffentliches Foto) und als einzige Sprache Deutsch → ablehnen; sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
 
 ---
 
@@ -154,7 +154,7 @@ Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name „BBC“, „Black“ 
 Nur für dich sichtbar.
 
 - **Button** nach „Nachricht senden“ mit fünf Zuständen und denselben Symbolen wie im JOYclub-Skript: *Ficken?*, *Will ich*, *Gefickt*, *Nein, danke!*, *Nie wieder!*; Menü mit den anderen Zuständen, „Fickstatus zurücksetzen“ und „Treffen eintragen“.
-- **Abschnitt „Fickliste“** im Profil unter „Fotos“/„Videos“: Status, Treffen (Datum, was, wo, Link, Notiz), Profile auf anderen Plattformen, Profil-Archiv.
+- **Abschnitt „Fickliste“** im Profil unter „Fotos“/„Videos“: Status, Treffen (Datum, was, wo, Link, Notiz), **Anmerkungen** (freies Textfeld zur Person, bis 8000 Zeichen, mit ✎ bearbeiten), Profile auf anderen Plattformen, Profil-Archiv.
 - **Meine Fickliste** (Einstellungen): Zähler je Zustand als Filter, Filter nach Mitglied, Was, Wo, Datum und Plattform (Mehrfachauswahl, „Andere / ohne“), Sortierung nach Datum oder Name; Personen ohne Treffen erscheinen ebenfalls. Gelöschte Profile sind durchgestrichen, deaktivierte rot. Hinter dem Status stehen die Plattform-Symbole.
 - **Kasten im eigenen Profil** über den Statistiken: Zähler und die letzten Ficks mit drei verschiedenen Personen.
 - **Profil-Archiv:** Bei jedem Profilaufruf und jeder Statusänderung wird ein Stand gespeichert; Navigation ‹ › und « » (direkt vor/nach einem Treffen).
@@ -192,6 +192,16 @@ In der rechten Spalte eines Chats steht zwischen „Aktionen“ und „Anhänge�
 - Gelesen wird von oben; vergangene Termine werden übersprungen (ein Zeitraum zählt bis zu seinem letzten Tag), nach den ersten **5 kommenden** ist Schluss. Diese stehen nach Datum sortiert (gleiches Datum: Reihenfolge der Datei).
 - Jeder Termin ist eine Zeile mit „wann - wo - was“ als Beschriftung; ein Klick fügt die vollständige Zeile (mit Link) ins Eingabefeld ein. Abgeschickt wird nichts.
 - Die Datei wird beim Aufklappen neu gelesen. Chrome fragt gelegentlich, ob der Zugriff weiter erlaubt ist („Zugriff auf die Datei erlauben“).
+
+## Messenger: Textvorlagen
+
+Eigene Textbausteine (bis **100**, je bis **8000 Zeichen**), gespeichert im Tampermonkey-Speicher.
+
+- **Knopf** mit dem Vorlagen-Symbol links neben der Eingabezeile (`/inbox/p/<Nick>`). Ein Klick zeigt die **Namen** der Vorlagen; ein Klick darauf fügt den Text an der Schreibmarke ein (nicht gesendet).
+- **Verwalten** über das Drei-Punkte-Menü des Messengers → **Textvorlagen** (nach „Nachrichtenfilter“): Liste, Bearbeiten (Name + Nachricht mit Zeichenzähler), Löschen, Export/Import.
+- **Termine-Bereich:** Enthält der Name „Termin“, erscheinen im Bearbeiten-Fenster die nächsten 5 Termine aus der Termin-Datei; „Alle übernehmen“ ersetzt den Text. 
+- **Termin-Kurzform:** Beim Einfügen wird eine Zeile `wann - wo - Link` ohne „was“ anhand der Termin-Datei wieder zur vollen Zeile ausgeschrieben.
+- **Export/Import** per Datei oder Zwischenablage, in derselben verschlüsselten Hülle wie die Fickliste (`templates` statt `persons`). Beim Import werden Smileys zwischen JOYclub, poppen.de und Unicode übersetzt (Tabelle fest im Skript); gleiche Vorlagen bleiben unverändert, nur vorne/hinten verlängerte werden ergänzt, sonst Rückfrage. Nicht übersetzbare Smileys stehen im Bericht.
 
 ## Mitgliedersuche: Figur
 

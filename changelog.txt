@@ -1,6 +1,13 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.6 (25.10.2026)
+- Messenger: Textvorlagen (bis 100, je bis 8000 Zeichen) – Knopf links neben der Eingabezeile zeigt die Namen und fügt ein; Verwalten über ⋮ → „Textvorlagen“ (Liste, Bearbeiten, Export/Import per Datei oder Zwischenablage, Termine-Bereich)
+- Textvorlagen-Import übersetzt Smileys zwischen JOYclub, poppen.de und Unicode (Tabelle fest eingebaut, smiley-map.json im Repo); gleiche bleiben, verlängerte werden ergänzt, sonst Rückfrage
+- Termin-Kurzform „wann - wo - Link“ wird beim Einfügen anhand der Termin-Datei wieder ausgeschrieben
+- Fickliste: Anmerkungen je Person (persons[].notes mit notesAt/notesBy, bis 8000 Zeichen; liest auch joy.notes), im Profil-Kasten, auf der Seite externer Ficks und in „Meine Fickliste“
+- Gruppenanfragen werden über user/info und die Galerie geprüft statt über einen unsichtbaren Profilaufruf; Typ-Zahl wird über i18n/pull benannt, sonst wie bisher über das Profil
+
 2.5 (25.10.2026)
 - Blocken im Hintergrund statt in Etappen: einer nach dem anderen, andere Vorgänge haben Vorrang (auch in anderen Tabs), Übernahme durch einen anderen Tab nach einer Minute, 5 Minuten Pause nach mehreren Fehlschlägen; „Jetzt abarbeiten“ auch bei ausgeschaltetem Schalter; „Maximal pro Etappe“ und „Etappen-Abstand“ entfallen
 - Freunde und Favoriten: Listen werden täglich und beim Öffnen der Seiten eingelesen → automatische Whitelist, Opa-Sperren werden aufgehoben
