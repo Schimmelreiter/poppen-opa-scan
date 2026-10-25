@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.12
+// @version      2.13
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.12';
+  const VERSION = '2.13';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -1683,7 +1683,10 @@
   // „Besonders böse Popsters“ aus den Einstellungen: User-IDs und Nicknames getrennt
   function evilTargets(s = S()) {
     const list = (s.expert.evil || []).map((t) => String(t).trim()).filter(Boolean);
-    return { size: list.length, uids: new Set(list.filter((t) => /^\d+$/.test(t))), nicks: new Set(list.filter((t) => !/^\d+$/.test(t)).map((t) => t.toLowerCase())) };
+    const uids = new Set(list.filter((t) => /^\d+$/.test(t)));
+    for (const u of G.get('evil_ids', [])) uids.add(String(u));     // dauerhafte ID-Liste aus dem Tampermonkey-Speicher
+    const nicks = new Set(list.filter((t) => !/^\d+$/.test(t)).map((t) => t.toLowerCase()));
+    return { size: uids.size + nicks.size, uids, nicks };
   }
   const isEvil = (u, evil) => evil.size && (evil.uids.has(String(u.uid)) || evil.nicks.has((u.nick || '').toLowerCase()));
   // Ein Mitglied aus einer verwalteten Gruppe entfernen (mit Vermerk). Braucht den Nickname.
@@ -1699,28 +1702,50 @@
       await Members.update(u.uid, (x) => { x.kicked = x.kicked || {}; x.kicked[g.cms] = now(); });
     } catch (e) { warn('Entfernen', u.nick, e); (ctx.notes || []).push(`${u.nick}: Entfernen aus ${g.name} fehlgeschlagen (${e.message})`); }
   }
-  // „Besonders böse Popsters“ aus der Liste der mich blockierenden Popsters füllen (ersetzt den bisherigen Inhalt)
-  async function refreshEvilFromBlockers() {
-    let d;
-    try { d = await apiGet('ignore/be-ignored/uid/list', { _version: 2 }); }
-    catch (e) { warn('Blockierer-Liste', e); return; }
-    const uids = [...new Set(((d && d.list) || []).map(String).filter((u) => /^\d+$/.test(u)))];
-    G.set('evil_at', now());
-    // User-IDs zu Nicknames auflösen (soweit im Gedächtnis bekannt); unbekannte bleiben als ID
-    const entries = [];
-    for (const uid of uids) {
-      const m = Members.cached().get(uid) || await Members.get(uid).catch(() => null);
-      entries.push(m && m.nick ? m.nick : uid);
-    }
+  // Zuordnung ID → Nickname für die bösen Popsters liegt dauerhaft im Tampermonkey-Speicher (überlebt das Löschen der poppen.de-Browserdaten).
+  const evilNames = () => G.get('evil_names', {});
+  // Anzeigeliste (Nicknames, alphabetisch) aus den gemerkten IDs aufbauen und in die Einstellungen schreiben
+  function buildEvilList() {
+    const names = evilNames();
     const seenE = new Set();
-    const list = entries
+    const list = G.get('evil_ids', [])
+      .map((uid) => names[uid] || String(uid))
       .filter((e) => { const k = e.toLowerCase(); if (seenE.has(k)) return false; seenE.add(k); return true; })
       .sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }));
     const s = clone(S());
     if (same(s.expert.evil || [], list)) return;
     s.expert.evil = list;
     saveSettings(s);
-    log(`Besonders böse Popsters aus Blockierer-Liste ersetzt: ${list.length} Einträge.`);
+  }
+  // „Besonders böse Popsters“ aus der Liste der mich blockierenden Popsters füllen (ersetzt den bisherigen Inhalt).
+  // Nick-Auflösung: zuerst der Tampermonkey-Speicher; nur wenn dort noch keine Zuordnung steht, das Profilgedächtnis (und von dort in den TM-Speicher kopieren).
+  async function refreshEvilFromBlockers() {
+    let d;
+    try { d = await apiGet('ignore/be-ignored/uid/list', { _version: 2 }); }
+    catch (e) { warn('Blockierer-Liste', e); return; }
+    const uids = [...new Set(((d && d.list) || []).map(String).filter((u) => /^\d+$/.test(u)))];
+    G.set('evil_at', now());
+    G.set('evil_ids', uids);
+    const names = evilNames();
+    let changed = false;
+    for (const uid of uids) {
+      if (names[uid]) continue;                          // TM-Speicher hat bereits eine Zuordnung → Gedächtnis nicht nötig
+      const m = Members.cached().get(uid) || await Members.get(uid).catch(() => null);
+      if (m && m.nick) { names[uid] = m.nick; changed = true; }
+    }
+    if (changed) G.set('evil_names', names);
+    buildEvilList();
+    log(`Besonders böse Popsters aus Blockierer-Liste ersetzt: ${uids.length} Einträge.`);
+  }
+  // Umgekehrt: TM-Speicher aus dem Profilgedächtnis nachführen, falls sich ein Nick geändert hat, die ID aber gleich blieb.
+  async function syncEvilNames() {
+    const names = evilNames();
+    let changed = false;
+    for (const uid of G.get('evil_ids', [])) {
+      const m = Members.cached().get(uid) || await Members.get(uid).catch(() => null);
+      if (m && m.nick && m.nick !== names[uid]) { names[uid] = m.nick; changed = true; }
+    }
+    if (changed) { G.set('evil_names', names); buildEvilList(); log('Besonders böse Popsters: Nicknames aus dem Gedächtnis nachgeführt.'); }
   }
 
   // ---------- Gruppen-Leitung (Besitzer + Moderatoren) ----------
@@ -1847,7 +1872,7 @@
     ctx.outer && ctx.outer(1, 1);
     return res;
   }
-  const scanGroupsWhite = (ctx) => refreshManagedWhitelist({ ...ctx, full: true });
+  const scanGroupsWhite = async (ctx) => { const r = await refreshManagedWhitelist({ ...ctx, full: true }); await syncEvilNames().catch((e) => warn('Nick-Abgleich', e)); return r; };
 
   // ---------- Gruppen (Blacklist) ----------
   // Mitglieder der Gruppen, in denen ich Mitglied bin, nach den Regeln prüfen (Whitelist wird in judge berücksichtigt)
@@ -6162,6 +6187,12 @@
       try { await refreshManagedWhitelist({ stop: () => false, step: () => {}, notes: [] }); } catch (e) { warn('Gruppen-Whitelist', e); }
       finally { Lock.release('grpwl'); }
     }, 20000);
+    // Nick-Abgleich der bösen Popsters einmal täglich (TM-Speicher aus dem Gedächtnis nachführen)
+    setTimeout(async () => {
+      if (now() - G.get('evil_sync_at', 0) < DAY) return;
+      if (!(await Lock.take('evilsync'))) return;
+      try { await syncEvilNames(); G.set('evil_sync_at', now()); } catch (e) { warn('Nick-Abgleich', e); } finally { Lock.release('evilsync'); }
+    }, 22000);
     // „Besonders böse Popsters“ alle 30 Minuten aus der Blockierer-Liste auffüllen (ersetzt den Inhalt)
     const EVIL_EVERY = 30 * 60000;
     const evilTick = async () => {
@@ -6180,7 +6211,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);
