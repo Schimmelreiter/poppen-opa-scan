@@ -1,6 +1,17 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.5 (25.10.2026)
+- Blocken im Hintergrund statt in Etappen: einer nach dem anderen, andere Vorgänge haben Vorrang (auch in anderen Tabs), Übernahme durch einen anderen Tab nach einer Minute, 5 Minuten Pause nach mehreren Fehlschlägen; „Jetzt abarbeiten“ auch bei ausgeschaltetem Schalter; „Maximal pro Etappe“ und „Etappen-Abstand“ entfallen
+- Freunde und Favoriten: Listen werden täglich und beim Öffnen der Seiten eingelesen → automatische Whitelist, Opa-Sperren werden aufgehoben
+- Größe und Gewicht aus user/info (beim Öffnen eines Profils) genau ins Gedächtnis (Figur-Badges)
+- Verschleierte Gruppenmitglieder (Prüfsumme statt ID, Sternchen-Name) werden übersprungen; alte Einträge einmalig entfernt
+- „Du hast die Regie!“ wird immer übersprungen, auch bei Seitenwechseln ohne Neuladen
+- API-Rekorder: vollständigere Schwärzung (eingebettete Nachrichten, private Notizen, Wünsche, Interview-Antworten; Geburtstage nur Jahr), keine falschen „Zweitwohnsitz“-Hinweise; alte Aufnahmen werden einmalig gelöscht
+- Einstellungen: „Höchstzahl der Einträge auf der Blockierliste“ ohne Rot und ohne „Limit:“
+- Profil-Menü: „Opa-Schutz“ (Opa mit Stift) statt „Opa-Schutz konfigurieren“, Schalter heißt „Opa-Schutz aktiv“
+- Messenger, Termine: nach Datum sortiert; Pfeil wie bei „Aktionen“/„Anhänge“
+
 2.4 (24.10.2026)
 - Fickliste: echte Favicons statt Kürzel für die Plattformen (fest eingebaut, kein Nachladen); Eronity und „Andere“ behalten das Kürzel; Datei favicons.json im Repo
 - Fickliste-Kasten: breiter Knopf „+“ hinter „Auch auf:“ öffnet das Popup „Auch auf …“, größerer Abstand zwischen den Profil-Links; „+ Profil anderswo“ entfällt

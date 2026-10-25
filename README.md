@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.4 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.5 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -54,7 +54,7 @@ Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** un
 
 - **Whitelist** (Namen, Präfixe, eigene Gruppen) – auf der Seite *Opa-Schutz* bearbeitbar.
 - **poppen-Mitarbeiter** (`payclass: site_admin`).
-- **Freunde** – vor jeder Sperre fragt das Skript die Profil-Kurzinfo ab (`friend_status`).
+- **Freunde und Favoriten** – die Listen (`friends/list`, `favourite/list`) werden täglich und beim Öffnen der Seiten eingelesen; zusätzlich fragt das Skript vor jeder Sperre die Profil-Kurzinfo ab (`friend_status`). Opa-Sperren von Freunden und Favoriten werden aufgehoben.
 - **Mitglieder verwalteter Gruppen** (Eigentümerin oder Moderatorin), je Gruppe abschaltbar. Wer aus allen verwalteten Gruppen verschwindet, bleibt noch **30 Tage** geschützt (er könnte sich nur unsichtbar geschaltet haben). Bereits vom Opa-Schutz Blockierte werden entsperrt. Über das Gruppenanfragen-Popup Aufgenommene sind sofort geschützt.
 
 ### Bezeichnungen und Notizen
@@ -86,14 +86,18 @@ Nebenbei merkt sich das Skript zu jedem Mitglied uid, Nick (und frühere Nicks),
 
 ---
 
-## Blocken in Etappen
+## Blocken im Hintergrund
 
-Scans **lesen** komplett und legen Treffer auf eine **Warteliste**. Geblockt wird in **Etappen**:
+Scans **lesen** komplett und legen Treffer auf eine **Warteliste**. Geblockt wird **im Hintergrund**, einer nach dem anderen:
 
-- höchstens **50** je Etappe, zwischen zwei Sperren eine zufällige Pause von **1–3 Sekunden**,
-- alle **5 Minuten** eine Etappe, solange ein poppen.de-Tab offen und der Schalter *Opa-Schutz* an ist (nur ein Tab arbeitet),
+- solange der Schalter *Opa-Schutz aktiv* an ist; zwischen zwei Sperren eine zufällige Pause von **1–3 Sekunden**,
+- **andere Vorgänge haben Vorrang** (Scans, Blockierliste, Gruppenanfragen, Speichern mit „Regeln geändert“, Fickliste-Import, „Trotzdem öffnen“ – auch in anderen Tabs): Das Blockieren pausiert und läuft danach weiter,
+- nur ein Tab arbeitet; wird er geschlossen, übernimmt ein anderer poppen.de-Tab, sobald dieser seit einer Minute offen ist,
+- nach mehreren Fehlschlägen hintereinander 5 Minuten Pause,
 - Reihenfolge nach der **Rangfolge der Quellen**, innerhalb einer Quelle die Ältesten zuerst,
-- vor jeder Sperre: Whitelist, Mitarbeiter, Freund, verwaltete Gruppe, Alter 99 und aktuelle Grenzen erneut prüfen.
+- vor jeder Sperre: Whitelist, Mitarbeiter, Freund, Favorit, verwaltete Gruppe, Alter 99 und aktuelle Grenzen erneut prüfen.
+
+**Jetzt abarbeiten** (Experten-Einstellungen bzw. Opa-Scan) arbeitet die Warteliste in diesem Tab bis zum Ende ab – auch bei ausgeschaltetem Schalter.
 
 Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Notiz ist Pflicht und hat einen festen Text: Lässt sie sich nicht schreiben, wird die Sperre zurückgenommen und das Mitglied bleibt auf der Warteliste; nach drei Fehlversuchen fällt es heraus. Ohne bekannte Benutzer-ID trägt das Skript den Namen im unsichtbaren Rahmen über „Benutzer hinzufügen“ ein.
 
@@ -102,7 +106,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 ## Oberfläche
 
 - **Kopfleiste:** Opa-Symbol mit der Zahl der Blockierten (Tooltip: „X geblockt, Y in der Warteschlange“); Klick öffnet die Einstellungen. Ein **gelber Punkt** zeigt offene Gruppenanfragen in verwalteten Gruppen; Klick öffnet die Anfragenseite.
-- **Profil-Menü** (Klick auf das eigene Profilbild): *Fickliste* und *Opa-Scan* (vor „Profil bearbeiten“), *Opa-Schutz konfigurieren* (danach) und der Schalter **Opa-Schutz** (vor „Unsichtbar“) für die Automatik.
+- **Profil-Menü** (Klick auf das eigene Profilbild): *Fickliste* und *Opa-Scan* (vor „Profil bearbeiten“), *Opa-Schutz* (danach, Opa mit Stift; öffnet die Einstellungen) und der Schalter **Opa-Schutz aktiv** (vor „Unsichtbar“) für die Automatik.
 - **Einstellungen:** In der linken Spalte stehen **Meine Fickliste** (nach „Meine Kontaktanzeigen“) und **Opa-Schutz** (vor „Privatsphäre“).
 
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
@@ -112,7 +116,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
 - Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen nicht auf der Seite; sie gelten intern weiter (Quelltext bzw. Datensicherung).
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Limit (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Etappen, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Abarbeiten**, Leeren). *Abarbeiten* arbeitet die ganze Warteliste sofort in einem Zug ab (ohne Höchstzahl je Etappe), mit Fortschritt, Anhalten und Zusammenfassung.
+- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
 - Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
@@ -185,7 +189,7 @@ Inhalt: { format:'fickliste', version:1, platform, exported, persons:[
 
 In der rechten Spalte eines Chats steht zwischen „Aktionen“ und „Anhänge“ der Abschnitt **Termine** (nur Chrome/Edge). Er liest eine lokale Textdatei, die einmal gewählt wird (im Abschnitt selbst oder auf der Seite *Opa-Schutz* unter „Party-Termine“). Jede Zeile hat das Format `wann - wo - was - Link`; `was` und `Link` sind optional, `wann` darf ein Zeitraum sein (`14.09.-23.09.2026`, `14.-23.09.2026`, `28.12.2026 - 02.01.2027`).
 
-- Gelesen wird von oben; vergangene Termine werden übersprungen (ein Zeitraum zählt bis zu seinem letzten Tag), nach den ersten **5 kommenden** ist Schluss.
+- Gelesen wird von oben; vergangene Termine werden übersprungen (ein Zeitraum zählt bis zu seinem letzten Tag), nach den ersten **5 kommenden** ist Schluss. Diese stehen nach Datum sortiert (gleiches Datum: Reihenfolge der Datei).
 - Jeder Termin ist eine Zeile mit „wann - wo - was“ als Beschriftung; ein Klick fügt die vollständige Zeile (mit Link) ins Eingabefeld ein. Abgeschickt wird nichts.
 - Die Datei wird beim Aufklappen neu gelesen. Chrome fragt gelegentlich, ob der Zugriff weiter erlaubt ist („Zugriff auf die Datei erlauben“).
 
@@ -202,7 +206,7 @@ In der rechten Spalte eines Chats steht zwischen „Aktionen“ und „Anhänge�
 
 ## Sonderseiten
 
-Wartung (neuer Versuch nach 15 Minuten), Werbe-Zwischenseiten (werden übersprungen), „Seite nicht gefunden“ (einmal neu laden) und abgemeldet. Auf der Login-Seite schaltet das Skript „Angemeldet bleiben“ ein und klickt **nur dann** auf „Anmelden“, wenn der Browser die Felder selbst ausgefüllt hat – höchstens einmal je 30 Minuten. Ein Passwort speichert das Skript nicht.
+Wartung (neuer Versuch nach 15 Minuten), Werbe-Zwischenseiten (werden übersprungen; „Du hast die Regie!“ immer, auch bei Seitenwechseln ohne Neuladen), „Seite nicht gefunden“ (einmal neu laden) und abgemeldet. Auf der Login-Seite schaltet das Skript „Angemeldet bleiben“ ein und klickt **nur dann** auf „Anmelden“, wenn der Browser die Felder selbst ausgefüllt hat – höchstens einmal je 30 Minuten. Ein Passwort speichert das Skript nicht.
 
 ---
 
@@ -216,7 +220,7 @@ Wartung (neuer Versuch nach 15 Minuten), Werbe-Zwischenseiten (werden übersprun
 
 ### API-Rekorder
 
-Schneidet die Abfragen der Seite an `/v2-api/` mit (nur neue Muster, je zwei Beispiele, Listen gekürzt) und exportiert sie als JSON. **E-Mail-Adressen, Passwörter, Zugangsschlüssel, Nachrichten- und Profiltexte, Telefonnummern und Koordinaten werden geschwärzt.** Standardmäßig aus.
+Schneidet die Abfragen der Seite an `/v2-api/` mit (nur neue Muster, je zwei Beispiele, Listen gekürzt) und exportiert sie als JSON. **E-Mail-Adressen, Passwörter, Zugangsschlüssel, Nachrichten- (auch eingebettete beim Senden) und Profiltexte, private Notizen, Wünsche, Interview-Antworten, Telefonnummern und Koordinaten werden geschwärzt; von Geburtstagen bleibt nur das Jahr.** Standardmäßig aus.
 
 ---
 

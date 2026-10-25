@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.4
+// @version      2.5
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -25,7 +25,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.4';
+  const VERSION = '2.5';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
   // =====================================================================================
@@ -190,10 +190,8 @@
       writeNote: true,              // fest (nicht mehr einstellbar)
       noteRequired: true,           // fest: ohne Notiz keine Sperre (nicht mehr einstellbar)
       noteText: '{bezeichnung} ({quelle}) geblockt am {datum} um {uhrzeit}',
-      maxPerRun: 50,
       pauseMin: 1,
       pauseMax: 3,
-      etappeMin: 5,
       bodyValidDays: 90,
       bodyUnknownDays: 30,
       groupGraceDays: 30,
@@ -606,17 +604,22 @@
   // Schneidet Abfragen der Seite mit (nur neue Muster, je 2 Beispiele, Listen gekürzt, Sensibles geschwärzt).
   const KNOWN_API = ['v2/ignore/list', 'ignore/uid/list', 'ignore/add', 'ignore/delete', 'ignore/comment/add', 'user/search', 'rates',
     'my/received/gift', 'group/my', 'group/attendee/list', 'messenger/group/list', 'messenger/p2p/profile/display', 'user/session/info',
-    'wio/state', 'messenger/message/list', 'messenger/backend/settings', 'v2/comment/list'];
+    'wio/state', 'messenger/message/list', 'messenger/backend/settings', 'v2/comment/list', 'friends/list', 'favourite/list', 'group/moderator/list',
+    'group/profile', 'group/attendee/specific/pending/list', 'group/attendee/deny', 'v3/profile/gallery', 'ignore/be-ignored/uid/list', 'global/emojis', 'i18n/pull'];
   const API_HINTS = [
     [/^\/connection\/visitors/, '#1 Profilbesucher'], [/^\/groups\/\d+\/requests/, '#2/#3 Gruppenanfragen'],
-    [/^\/p\//, '#4/#8/#11 Profil'], [/^\/setting\/profile/, '#5 Zweitwohnsitz'], [/^\/search\/member/, '#10 Suchseite'],
+    [/^\/p\//, '#4/#8/#11 Profil'], [/^\/search\/member/, '#10 Suchseite'],
   ];
   const REDACT_KEYS = /(e-?mail|pass(word|wd)?|token|secret|session_?id|auth|dino_client|cookie|phone|telefon|mobile)/i;
-  const TEXT_KEYS = /^(content|description|text|message|body_text|about|desc)$/i;
+  const TEXT_KEYS = /^(content|description|private_description|text|message|body_text|about|desc|private_comment|public_comment|friendComment|note|media_note|wishes|profileNote|notes|metrics|status_text)$/i;
   function redact(v, key = '', depth = 0) {
     if (depth > 12) return '…';
     if (key && REDACT_KEYS.test(key)) return '«entfernt»';
     if (key && TEXT_KEYS.test(key) && typeof v === 'string') return v ? '«entfernt»' : '';
+    if (key && /^(answers)$/i.test(key) && v && typeof v === 'object') return '«entfernt»';             // Interview-Antworten
+    if (key && /^birthday$/i.test(key)) return Array.isArray(v) ? v.map((b) => (typeof b === 'string' ? b.slice(0, 4) + '-…' : b)) : v;   // nur das Jahr
+    // Text, der selbst JSON enthält (z. B. data beim Senden): auspacken und mitschwärzen
+    if (typeof v === 'string' && /^\s*[{[]/.test(v)) { try { const j = JSON.parse(v); return JSON.stringify(redact(j, key, depth + 1)); } catch {} }
     if (key && /^(geo_location|location)$/i.test(key) && v && typeof v === 'object' && !Array.isArray(v)) return { city: v.city || '' };
     if (key && /^(lat|lon|latitude|longitude|zipcode)$/i.test(key)) return '«entfernt»';
     if (Array.isArray(v)) {
@@ -645,7 +648,9 @@
           e.n++; e.last = now();
           if (!e.pages.includes(info.page) && e.pages.length < 10) e.pages.push(info.page);
           if (e.examples.length < 2) e.examples.push({ page: info.page, query: redact(info.query), body: redact(info.body), response: redact(json) });
-          const hint = API_HINTS.find(([re]) => re.test(info.page));
+          // Hinweis nur für seitenbezogene Abfragen, nicht für allgemeine (Smileys, Übersetzungen, Zähler …)
+          const general = /^(i18n|global|dino|egg-hunt|feedback|fakecheck|fsk18|wio|user\/gaclient|messenger\/(status|irc|backend)|browser-notification|tooltip|points)\b/.test(info.path);
+          const hint = !general && API_HINTS.find(([re]) => re.test(info.page));
           if (hint && !e.known) e.hint = 'Kandidat für ' + hint[1];
           clearTimeout(saveT); saveT = setTimeout(() => KV.set('recorder', data), 1500);
           Bus.emit('recorder');
@@ -738,12 +743,14 @@
     if ((s.whitelist.prefixes || []).some((p) => p && n.startsWith(norm(p)))) return 'Whitelist (Präfix)';
     return '';
   }
-  // automatische Whitelist: Mitarbeiter, Freunde, verwaltete Gruppen (mit Schonfrist)
+  // automatische Whitelist: Mitarbeiter, Freunde, Favoriten, Gruppen-Leitungen, verwaltete Gruppen (mit Schonfrist)
   function autoWhite(m, s = S()) {
     if (!m) return '';
     if (m.pay === 'site_admin') return 'poppen-Mitarbeiter';
     const a = m.auto || {};
     if (a.friend) return 'Freund';
+    if (a.fav) return 'Favorit';
+    if (a.lead && Object.keys(a.lead).length) return 'Gruppen-Leitung';
     const grp = Object.entries(a.grp || {}).filter(([cms]) => s.managedWhitelist[cms] !== false);
     if (grp.length) {
       const grace = s.expert.groupGraceDays * DAY;
@@ -867,6 +874,8 @@
     if (!u) return null;
     const uid = String(u.uid || u.user_id || u.id || '');
     if (!uid || uid === '0') return null;
+    // verschleierte Mitglieder (Prüfsumme statt Nummer, Sternchen-Name, is_blurry): nicht verwertbar
+    if (!/^\d+$/.test(uid) || u.is_blurry === true || /^\S\*{3,}$/.test(u.nickname || '')) return null;
     const g = Array.isArray(u.gender) ? u.gender.filter(Boolean) : u.gender_string ? (u.gender_string === 'p' ? ['w', 'm'] : [u.gender_string]) : [];
     return {
       uid, nick: u.nickname || u.name || '', g,
@@ -1216,73 +1225,117 @@
   }
 
   // ---------- eine Etappe ----------
+  // ---------- Vorrang: andere Vorgänge pausieren das Hintergrundblockieren ----------
+  // Prio.run('name', fn) markiert einen Vorgang (für alle Tabs sichtbar); das Blockieren wartet, bis er fertig ist.
+  const Prio = (() => {
+    const pre = 'vaf2_prio_';
+    const mine = new Map();
+    setInterval(() => { for (const [k, v] of mine) GM_setValue(k, { ...v, ts: now() }); }, 5000);
+    W.addEventListener('pagehide', () => { for (const k of mine.keys()) try { GM_deleteValue(k); } catch {} });
+    const LOCKS = ['scan', 'blocklist', 'grpreq', 'grpwl'];
+    return {
+      enter(what) { const k = pre + what + '_' + TAB_ID + '_' + Math.random().toString(36).slice(2, 6); const v = { what, ts: now() }; mine.set(k, v); GM_setValue(k, v); return k; },
+      leave(k) { mine.delete(k); try { GM_deleteValue(k); } catch {} },
+      async run(what, fn) { const k = this.enter(what); try { return await fn(); } finally { this.leave(k); } },
+      // läuft gerade etwas mit Vorrang (in irgendeinem Tab)?
+      busy() {
+        for (const k of GM_listValues()) {
+          if (!k.startsWith(pre) && !LOCKS.some((l) => k === 'vaf2_lock_' + l)) continue;
+          const v = GM_getValue(k, null);
+          if (v && now() - (v.ts || 0) < 30000) return (v.what || v.info || k.replace('vaf2_lock_', ''));
+        }
+        return '';
+      },
+    };
+  })();
+
+  // ---------- Hintergrundblockieren (ersetzt die Etappen) ----------
+  // Solange Kandidaten auf der Warteliste stehen und der Schalter an ist, blockiert ein Tab einen nach dem anderen.
+  const TAB_SINCE = (() => { try { const v = +sessionStorage.getItem('vaf_tab_since'); if (v) return v; const t = now(); sessionStorage.setItem('vaf_tab_since', String(t)); return t; } catch { return now(); } })();
   const Etappe = {
-    running: false, stopFlag: false, last: null,
-    status() { return { running: this.running, last: G.get('etappe_last', null) }; },
-    // opts.all: ganze Warteliste in einem Zug (Button „Abarbeiten“), ohne „Maximal pro Etappe“
+    running: false, stopFlag: false, manual: false, listeners: new Set(), state: 'idle',
+    status() { return { running: this.running, state: this.state, last: G.get('etappe_last', null) }; },
+    setState(st) { this.state = st; G.set('blk_state', { st, at: now(), tab: TAB_ID }); Bus.emit('etappe', { running: this.running, state: st }); },
+    // Prüft und blockiert einen Kandidaten. Ergebnis wird in st gezählt.
+    async one(q, s, st) {
+      let m = q.uid.startsWith('nick:') ? await Members.byNick(q.nick) : await Members.get(q.uid);
+      if (!m && !q.uid.startsWith('nick:')) m = { uid: q.uid, nick: q.nick, g: q.g, ages: q.ages };
+      // Vorprüfung 1: Profil-Kurzinfo (Freund? schon geblockt? aktuelles Alter)
+      const ps = await profileShort(q.nick);
+      if (ps) {
+        if (ps.friend_status && ps.friend_status !== 'none') {
+          if (m && m.uid && !String(m.uid).startsWith('nick:')) await Members.update(m.uid, (x) => { x.auto = x.auto || {}; x.auto.friend = now(); x.friend = ps.friend_status; });
+          await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: 'Freund – nicht blockiert' }); return 'skip';
+        }
+        if (Array.isArray(ps.age) && ps.age.length && m) m = { ...m, ages: ps.age };
+        if (ps.note && isOpaNote(ps.note) && m && m.uid) {
+          const pn = parseNote(ps.note);
+          await Members.update(m.uid, (x) => { x.blk = { at: pn.at, src: pn.src, note: ps.note, opa: true }; });
+          await Queue.remove(q.uid); st.dropped++; return 'skip';
+        }
+      }
+      // Vorprüfung 2: Regeln (Whitelist, Favoriten, Mitarbeiter, verwaltete Gruppen, Alter 99, Grenzen)
+      const c = classify({ ...(m || q), nick: q.nick }, q.src);
+      if (!c.ignore) { await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: c.white ? 'Whitelist: ' + c.white : c.unclear ? 'Alter unklar' : 'nicht mehr über der Grenze' }); return 'skip'; }
+      if (!m || !m.uid || String(m.uid).startsWith('nick:')) {
+        const r = await blockByNickDom(q.nick);
+        if (typeof r === 'string') { if (r === 'Test') { st.test++; return 'test'; } await this.fail(q, r, st); return 'fail'; }
+        m = await seen(r.user, 'Blockierliste', { images: false });
+        if (!dry()) {
+          try { await BL.note(m.uid, makeNote(m, q.src)); }
+          catch (e) { warn('Notiz fehlgeschlagen', q.nick, e); try { await BL.del(m.uid, m.nick); } catch {} await this.fail(q, 'Fehler: Notiz ließ sich nicht schreiben', st); return 'fail'; }
+        }
+        await Members.update(m.uid, (x) => { x.blk = { at: now(), src: q.src, note: makeNote(m, q.src), opa: true }; delete x.unblk; });
+        await Queue.remove(q.uid); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' });
+        return 'ok';
+      }
+      const r = await blockOne(m, q.src);
+      if (r === 'ok') { await Queue.remove(q.uid); await watchMark(m, false); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' }); return 'ok'; }
+      if (r === 'Test') { st.test++; st.items.push({ nick: q.nick, res: 'Testlauf' }); return 'test'; }
+      await this.fail(q, r, st);
+      return 'fail';
+    },
+    // Arbeitet die Warteliste ab, solange erlaubt. manual=true: auch bei ausgeschaltetem Schalter, bis die Liste leer ist.
     async run(reason = 'automatisch', onProgress, opts = {}) {
       if (this.running) return null;
       if (!(await Lock.take('etappe', reason))) return null;
-      this.running = true; this.stopFlag = false;
-      const s = S();
+      this.running = true; this.stopFlag = false; this.manual = !!opts.manual;
       const st = { ok: 0, fail: 0, dropped: 0, test: 0, items: [], started: now(), reason };
-      Bus.emit('etappe', { running: true, st });
+      let fails = 0, i = 0;
+      const done = new Set();                       // im Testlauf bleiben Einträge stehen: jeden nur einmal je Lauf
       try {
-        await watchDue();
-        const blocked = G.get('blocked_count', 0) || 0;
-        if (blocked >= s.expert.limit) { st.limit = true; return st; }
-        const all = await Queue.list();
-        const list = opts.all ? all : all.slice(0, s.expert.maxPerRun);
-        let i = 0;
-        for (const q of list) {
+        const total0 = await Queue.count();
+        for (;;) {
           if (this.stopFlag) break;
+          if (!this.manual && !isOn()) break;
+          const ho = G.get('blk_handover', null);
+          if (ho && ho.tab !== TAB_ID && now() - ho.at < 60000) break;          // ein anderer Tab übernimmt („Jetzt abarbeiten“)
+          const pauseUntil = G.get('blk_pause_until', 0);
+          if (pauseUntil > now()) { this.setState('pause-fehler'); await sleep(Math.min(5000, pauseUntil - now())); continue; }
+          const busy = Prio.busy();
+          if (busy) { this.setState('pause'); await sleep(2000); continue; }
+          const s = S();
+          if ((G.get('blocked_count', 0) || 0) >= s.expert.limit) { st.limit = true; break; }
+          const q = (await Queue.list()).find((x) => !done.has(x.uid));
+          if (!q) break;
+          done.add(q.uid);
+          this.setState('blockiert');
           i++;
-          if (onProgress) onProgress(i, list.length, q);
-          Bus.emit('etappe', { running: true, st, i, n: list.length, cur: q });
-          let m = q.uid.startsWith('nick:') ? await Members.byNick(q.nick) : await Members.get(q.uid);
-          if (!m && !q.uid.startsWith('nick:')) m = { uid: q.uid, nick: q.nick, g: q.g, ages: q.ages };
-          // Vorprüfung 1: Profil-Kurzinfo (Freund? schon geblockt? aktuelles Alter)
-          const ps = await profileShort(q.nick);
-          if (ps) {
-            if (ps.friend_status && ps.friend_status !== 'none') {
-              if (m && m.uid && !String(m.uid).startsWith('nick:')) await Members.update(m.uid, (x) => { x.auto = x.auto || {}; x.auto.friend = now(); x.friend = ps.friend_status; });
-              await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: 'Freund – nicht blockiert' }); continue;
-            }
-            if (Array.isArray(ps.age) && ps.age.length && m) m = { ...m, ages: ps.age };
-            if (ps.note && isOpaNote(ps.note) && m && m.uid) {
-              const pn = parseNote(ps.note);
-              await Members.update(m.uid, (x) => { x.blk = { at: pn.at, src: pn.src, note: ps.note, opa: true }; });
-              await Queue.remove(q.uid); st.dropped++; continue;
-            }
-          }
-          // Vorprüfung 2: Regeln (Whitelist, Mitarbeiter, verwaltete Gruppen, Alter 99, Grenzen)
-          const c = classify({ ...(m || q), nick: q.nick }, q.src);
-          if (!c.ignore) { await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: c.white ? 'Whitelist: ' + c.white : c.unclear ? 'Alter unklar' : 'nicht mehr über der Grenze' }); continue; }
-          // ohne Benutzer-ID: über die Blockierliste
-          if (!m || !m.uid || String(m.uid).startsWith('nick:')) {
-            const r = await blockByNickDom(q.nick);
-            if (typeof r === 'string') { if (r === 'Test') { st.test++; continue; } await this.fail(q, r, st); continue; }
-            m = await seen(r.user, 'Blockierliste', { images: false });
-            if (!dry()) {
-              try { await BL.note(m.uid, makeNote(m, q.src)); }
-              catch (e) { warn('Notiz fehlgeschlagen', q.nick, e); try { await BL.del(m.uid, m.nick); } catch {} await this.fail(q, 'Fehler: Notiz ließ sich nicht schreiben', st); continue; }
-            }
-            await Members.update(m.uid, (x) => { x.blk = { at: now(), src: q.src, note: makeNote(m, q.src), opa: true }; delete x.unblk; });
-            await Queue.remove(q.uid); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' });
-          } else {
-            const r = await blockOne(m, q.src);
-            if (r === 'ok') { await Queue.remove(q.uid); await watchMark(m, false); st.ok++; st.items.push({ nick: q.nick, res: 'blockiert' }); }
-            else if (r === 'Test') { st.test++; st.items.push({ nick: q.nick, res: 'Testlauf' }); }
-            else await this.fail(q, r, st);
-          }
-          if (i < list.length && !this.stopFlag) await sleep(rand(s.expert.pauseMin * 1000, s.expert.pauseMax * 1000));
+          const left = await Queue.count();
+          if (onProgress) onProgress(i, Math.max(total0, i + left - 1), q);
+          Bus.emit('etappe', { running: true, st, i, cur: q });
+          let r;
+          try { r = await this.one(q, s, st); } catch (e) { warn('Blockieren', e); r = 'fail'; await this.fail(q, 'Fehler: ' + (e.message || e), st); }
+          if (r === 'fail') { if (++fails >= 5) { G.set('blk_pause_until', now() + 5 * 60000); fails = 0; } } else if (r === 'ok') fails = 0;
+          if (r === 'ok' || r === 'fail') await sleep(rand(s.expert.pauseMin * 1000, s.expert.pauseMax * 1000));
         }
         return st;
       } finally {
-        this.running = false;
+        this.running = false; this.manual = false;
         st.ended = now();
         G.set('etappe_last', { at: now(), ok: st.ok, fail: st.fail, dropped: st.dropped, reason });
         Lock.release('etappe');
+        this.setState('idle');
         Bus.emit('etappe', { running: false, st });
         Queue.changed();
       }
@@ -1291,19 +1344,24 @@
       st.fail++; st.items.push({ nick: q.nick, res: msg });
       q.tries = (q.tries || 0) + 1;
       if (q.tries >= 3) { await Queue.remove(q.uid); await KV.set('failed', { ...(await KV.get('failed', {})), [q.uid]: { nick: q.nick, msg, at: now() } }); }
-      else await DB.put('queue', q);
+      else { q.prio = (q.prio || 0) + 100000; await DB.put('queue', q); }           // ans Ende, nächster Versuch später
     },
     stop() { this.stopFlag = true; },
-    // Zeitgeber: alle 30 s prüfen, ob eine Etappe fällig ist
+    // Zeitgeber: alle 10 s prüfen, ob blockiert werden soll; Vorgemerkte alle 5 Minuten
     start() {
       setInterval(async () => {
         if (!isOn() || this.running) return;
-        const last = (G.get('etappe_last', null) || {}).at || 0;
-        if (now() - last < S().expert.etappeMin * 60000) return;
+        if (now() - TAB_SINCE < 60000) return;          // frischer Tab: erst nach einer Minute übernehmen
         if (Lock.other('etappe')) return;
-        if (!(await Queue.count()) && !Object.keys(await KV.get('watch', {})).length) return;
-        this.run('automatisch').catch((e) => warn('Etappe', e));
-      }, 30000);
+        if (!(await Queue.count())) return;
+        this.run('automatisch').catch((e) => warn('Blockieren', e));
+      }, 10000);
+      setInterval(async () => {
+        if (!isOn() || Lock.other('watch')) return;
+        if (now() - G.get('watch_at', 0) < 5 * 60000) return;
+        G.set('watch_at', now());
+        try { const n = await watchDue(); if (n) log(`${n} Vorgemerkte auf die Warteliste.`); } catch (e) { warn('Vormerken', e); }
+      }, 60000);
     },
   };
 
@@ -1492,6 +1550,68 @@
     return res;
   }
 
+  // ---------- Freunde und Favoriten (friends/list, favourite/list) ----------
+  // Beide Listen haben denselben Aufbau: { users, next_page, total_count }. Alle Einträge → automatische Whitelist.
+  const FF = { friend: { path: 'friends/list', label: 'Freund' }, fav: { path: 'favourite/list', label: 'Favorit' } };
+  const validUid = (u) => u && /^\d+$/.test(String(u.uid || '')) && !u.is_blurry && !/^\S\*{3,}$/.test(u.nickname || '');
+  async function readFF(kind, ctx) {
+    const out = [];
+    let page = 1;
+    for (let guard = 0; guard < 1000 && !(ctx && ctx.stop && ctx.stop()); guard++) {
+      const d = await apiPost(FF[kind].path, { sort: 'online', page });
+      const l = (d && d.users) || [];
+      for (const u of l) { if (validUid(u)) out.push(u); else warn(`${FF[kind].label}: Eintrag ohne gültige uid übersprungen`, u && Object.keys(u)); }
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+    }
+    return out;
+  }
+  async function markFF(kind, users, { complete = false, ctx = null } = {}) {
+    const res = { whitelisted: 0, unblocked: 0 };
+    const ids = new Set();
+    for (const u of users) {
+      const m = await seen(u, FF[kind].label === 'Freund' ? 'Freunde' : 'Favoriten', { images: false });
+      if (!m) continue;
+      ids.add(m.uid);
+      const was = !!(m.auto && m.auto[kind]);
+      await Members.update(m.uid, (x) => { x.auto = x.auto || {}; x.auto[kind] = now(); });
+      if (!was) res.whitelisted++;
+      if (m.blk && m.blk.opa && !m.unblk) {
+        const r = await unblockOne(m);
+        if (r === 'ok' || r === 'Test') { res.unblocked++; if (ctx && ctx.notes) ctx.notes.push(`${m.nick}: entsperrt (${FF[kind].label})`); else log(`${m.nick}: entsperrt (${FF[kind].label})`); }
+      }
+    }
+    if (complete) {
+      const gone = [];
+      await Members.each((m) => { if (m.auto && m.auto[kind] && !ids.has(m.uid)) gone.push(m.uid); });
+      for (const uid of gone) await Members.update(uid, (x) => { delete x.auto[kind]; if (kind === 'friend') delete x.friend; });
+    }
+    return res;
+  }
+  async function refreshFriendsFavs(ctx) {
+    const res = newRes();
+    for (const kind of ['friend', 'fav']) {
+      try { const l = await readFF(kind, ctx); if (ctx && ctx.stop && ctx.stop()) break; addRes(res, await markFF(kind, l, { complete: true, ctx })); }
+      catch (e) { warn(FF[kind].label, e); }
+    }
+    G.set('ff_at', now());
+    return res;
+  }
+
+  // ---------- user/info: Angaben eines Profils ----------
+  async function ingestUserInfo(d) {
+    const ui = d && d.userInfo, tr = d && d.user_trait;
+    if (!ui || !/^\d+$/.test(String(ui.uid || ''))) return null;
+    const m = await seen({ uid: ui.uid, nickname: ui.nickname, gender: Array.isArray(tr && tr.gender) ? tr.gender : [ui.gender], age: ui.age, avatar: ui.avatar, payclass: ui.userClass }, 'Profil', { images: false });
+    if (!m || !tr) return m;
+    const g = Array.isArray(tr.gender) ? tr.gender : [];
+    const h = +((tr.size || [])[0] || 0), w = +((tr.weight || [])[0] || 0);
+    if (g.length <= 1 && h >= 120 && h <= 230 && w >= 30 && w <= 350) {
+      await Members.update(m.uid, (x) => { x.body = [{ h, wlo: w, whi: w, at: now(), src: 'Profil', fig: (tr.figure_name || [])[0] || 0 }]; delete x.bodyUnk; });
+    }
+    return m;
+  }
+
   // ---------- Gruppen ----------
   async function myGroups(subset) {
     const out = [];
@@ -1517,12 +1637,17 @@
   }
   async function groupMembers(cms, ctx, onPage) {
     let page = 1, n = 0, meta = null;
+    ctx = ctx || { stop: () => false };
     for (let guard = 0; guard < 100000 && !ctx.stop(); guard++) {
       const d = await apiGet('group/attendee/list', { _version: 2, page, cms_id: cms, limit: 30 });
       const l = (d && d.users) || [];
-      if (!meta) meta = { total: d.total || 0, invisible: d.invisible_count || 0 };
+      if (!meta) meta = { total: d.total || 0, invisible: d.invisible_count || 0, masked: 0 };
       n += l.length;
-      await onPage(l.map(normUser).filter(Boolean), page, meta);
+      const valid = l.map(normUser).filter(Boolean);
+      meta.masked += l.length - valid.length;
+      // nur verschleierte Mitglieder: Gruppe nicht einsehbar, nicht weiter blättern
+      if (page === 1 && l.length && !valid.length) { meta.hidden = true; break; }
+      await onPage(valid, page, meta);
       if (!l.length || !d.next_page || d.next_page === page) break;
       page = d.next_page;
     }
@@ -1662,6 +1787,11 @@
       }));
     });
     onApi(/^messenger\/p2p\/profile\/display$/, () => {});
+    // Profil-Angaben (user/info/<nick>): genaue Größe und Gewicht ins Gedächtnis (Figur-Badges)
+    onApi(/^user\/info\/[^/]+$/, async (d) => { try { await ingestUserInfo(d); } catch (e) { warn('user/info', e); } });
+    // eigene Freunde/Favoriten (ohne uid im Body; mit uid sind es die Freunde eines anderen Mitglieds)
+    onApi(/^friends\/list$/, (d, info) => { if (info.body && info.body.uid) return; return markFF('friend', ((d && d.users) || []).filter(validUid)); });
+    onApi(/^favourite\/list$/, (d, info) => { if (info.body && info.body.uid) return; return markFF('fav', ((d && d.users) || []).filter(validUid)); });
   }
 
   // =====================================================================================
@@ -1669,6 +1799,10 @@
   // =====================================================================================
   const OLD_MAN_PATH = 'M3408 12790 c-235 -43 -487 -227 -651 -477 -33 -50 -47 -63 -67 -63 -37 0 -119 -24 -168 -49 -102 -52 -148 -120 -201 -298 -48 -164 -73 -337 -69 -483 3 -112 6 -131 30 -180 15 -30 41 -64 58 -75 29 -19 30 -23 30 -92 0 -39 -3 -74 -8 -77 -4 -2 -86 -1 -182 4 -273 12 -411 -7 -566 -80 -227 -105 -387 -276 -518 -551 -127 -266 -203 -574 -253 -1019 -22 -199 -25 -1016 -5 -1265 20 -240 60 -603 82 -750 12 -82 15 -131 9 -133 -6 -3 -6 -8 0 -16 7 -8 -3 -51 -30 -136 -109 -339 -191 -737 -235 -1140 -22 -191 -25 -693 -6 -845 33 -258 72 -434 158 -699 234 -721 431 -1986 554 -3566 12 -145 22 -265 23 -266 1 -1 52 -16 114 -34 98 -29 113 -36 121 -59 45 -127 347 -276 743 -366 622 -140 1209 -69 1131 137 l-10 28 168 0 c273 0 423 30 492 100 62 62 50 120 -43 204 -59 53 -250 150 -377 191 l-84 27 6 77 c35 439 116 2702 166 4611 15 587 12 548 44 595 65 94 130 255 161 400 9 44 19 87 21 97 4 13 23 4 102 -49 201 -134 411 -220 617 -252 109 -16 209 -22 222 -14 18 13 32 57 39 126 l6 64 69 -35 69 -36 0 -156 c0 -170 4 -186 60 -215 37 -19 64 -19 104 0 55 26 61 45 66 214 l5 155 28 7 27 7 0 -2924 c0 -3216 -5 -2965 60 -2999 62 -32 136 -10 164 49 15 31 16 279 16 3052 l0 3017 25 64 c99 246 -33 525 -286 604 -33 10 -83 19 -110 19 -27 0 -60 6 -72 14 -37 24 -132 36 -367 46 -124 6 -272 15 -330 20 -98 9 -467 74 -476 83 -3 2 -9 91 -14 198 -27 543 -53 829 -125 1389 l-6 45 53 35 c141 94 296 282 422 513 20 37 42 67 49 67 7 0 46 -17 87 -38 59 -29 78 -45 93 -74 30 -59 36 -140 25 -308 -13 -195 -6 -359 17 -424 26 -71 104 -148 178 -175 200 -73 369 48 421 302 9 42 16 81 16 86 0 17 -87 71 -148 92 -72 26 -220 28 -308 5 -34 -9 -66 -16 -72 -16 -5 0 -11 71 -15 173 -4 137 -9 186 -26 239 -28 89 -88 155 -173 193 -35 15 -65 29 -66 31 -2 1 10 39 27 83 40 105 106 337 122 433 11 69 16 78 40 88 77 32 105 336 42 457 -16 31 -21 68 -27 190 -4 84 -14 199 -21 255 -14 100 -13 104 6 120 23 19 35 74 25 113 -6 24 -10 26 -39 21 l-32 -6 -19 82 c-10 46 -35 137 -57 203 -171 527 -466 883 -824 994 -79 25 -249 36 -327 21z';
   const oldManSvg = (scale = 1.25) => `<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 640 1280" preserveAspectRatio="xMidYMid meet" fill="currentColor" style="transform:scale(${scale})"><g transform="translate(0,1280) scale(0.1,-0.1)"><path d="${OLD_MAN_PATH}"></path></g></svg>`;
+
+  // Opa mit Stift (Menüeintrag „Opa-Schutz“): Stift von „Profil bearbeiten“ verkleinert unten rechts, mit Rand in Hintergrundfarbe
+  const PEN_PATH = 'M21.988 2.514C21.14 1.698 19.395.258 18.273.057c-1.873-.328-3.069.826-4.222 1.938-1.82 1.758-3.62 3.6-5.365 5.38-2.19 2.244-4.455 4.553-6.794 6.734-.836.922-.846 1.673-.857 2.626 0 .202 0 .403-.01.625-.053 1.165-.085 2.542 0 3.908.116 1.99.687 2.541 2.74 2.658A42 42 0 0 0 6.326 24c.836 0 1.661-.021 2.392-.074.952-.064 1.534-.307 2.158-.868 2.074-1.885 4.085-3.993 6.032-6.026 2.064-2.16 4.19-4.395 6.413-6.375 1.069-.964 1.63-2.001 1.65-3.092.032-1.906-1.565-3.707-2.973-5.051zm-1.778 8.672-9.789 9.732-.127-.052c-1.598-2.097-3.576-4.078-6.2-6.238l9.745-9.838c.37.138 2.074 1.494 2.54 1.896 1.249 1.112 2.35 2.33 3.196 3.516l.137.2s.085.107.138.17c.106.127.423.52.37.604zM15.194 3.52a7 7 0 0 1 .444-.52c1.037-1.111 1.937-1.408 2.847-.931.444.233 1.185.826 1.735 1.302l.477.435c.846.815 2.18 2.53 2.338 3.61.127.9-.624 1.578-1.29 2.182-.075.064-.149.138-.223.201l-1.714-2.181c-1.45-1.567-2.91-2.88-4.487-4.024a.6.6 0 0 0-.138-.074zM8.982 22.062h-.37c-1.418.074-2.89.127-4.318.064-.074 0-.137-.021-.211-.032-.074-.021-.149-.032-.223-.043h-.306c-.35.022-.604.022-.635-.137-.106-2.298-.117-4.183-.011-5.93.064.042.148.106.275.211 1.905 1.515 3.556 3.145 5.185 5.126l.096.116s.042.053.084.096c.212.243.36.413.445.53h-.01Z';
+  const oldManPenSvg = () => `<span style="position:relative;display:inline-flex;width:1em;height:1em">${oldManSvg(1)}<svg viewBox="0 0 25 24" width="0.62em" height="0.62em" style="position:absolute;right:-0.28em;bottom:-0.12em;overflow:visible" aria-hidden="true"><path d="${PEN_PATH}" fill="none" stroke="var(--vaf-menu-bg,#1f1f1f)" stroke-width="5" stroke-linejoin="round"/><path d="${PEN_PATH}" fill="currentColor"/></svg></span>`;
 
   const UI_CSS = `
   .vaf-ov{position:fixed;inset:0;z-index:2147483640;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1.45;color:#e8e8e8}
@@ -2118,7 +2252,7 @@
           }
           if (opts.notes) for (const [uid, e] of onList) { const pn = parseNote(e.note); if (pn) notes += await alignNote(uid, e, pn); }
           text = `Sync (Script hat Vorrang): ${a} auf die Warteliste zum Neu-Blockieren, ${b} entsperrt${opts.notes ? `, ${notes} Notizen angepasst` : ''}`;
-          if (a) Etappe.run('Synchronisieren').catch(() => {});
+          if (a) Etappe.run('Synchronisieren', null, { manual: true }).catch(() => {});
         }
       }
       G.set('il_last', { text, at: now() });
@@ -2220,7 +2354,8 @@
       trashBypass = true; unb.click(); setTimeout(() => { trashBypass = false; }, 500);
     }, true);
   }
-  async function openBlockedOnce(m, nick) {
+  async function openBlockedOnce(...a) { return Prio.run('Trotzdem öffnen', () => openBlockedOnce_(...a)); }
+  async function openBlockedOnce_(m, nick) {
     if (!m || !m.uid) { toast('Benutzer-ID unbekannt – „Trotzdem öffnen“ geht hier nicht.'); return; }
     const vis = await Vis.guard('„Trotzdem öffnen“');
     if (!vis) return;
@@ -2290,7 +2425,8 @@
     const w = Object.keys(await KV.get('watch', {})).length;
     const b = G.get('blocked_count', null);
     return `Blockiert: <b style="color:#fff">${b == null ? '?' : fmtN(b)}</b> · Warteliste: <b style="color:#fff">${fmtN(q)}</b> · Vorgemerkt: <b style="color:#fff">${fmtN(w)}</b>` +
-      (dry() ? ' · <span style="color:#ffb300">Testlauf</span>' : '') + (isOn() ? '' : ' · <span style="color:#ff8a80">Automatik aus</span>');
+      (dry() ? ' · <span style="color:#ffb300">Testlauf</span>' : '') + (isOn() ? '' : ' · <span style="color:#ff8a80">Automatik aus</span>') +
+      (() => { const bs = (G.get('blk_state', null) || {}).st; return bs === 'blockiert' ? ' · blockiert gerade' : bs === 'pause' ? ' · Blockieren pausiert' : bs === 'pause-fehler' ? ' · Pause nach Fehlern' : q ? ' · wartet' : ''; })();
   }
 
   async function openScanPopup() {
@@ -2307,7 +2443,7 @@
     m.body.querySelectorAll('.vaf-tile').forEach((b) => b.addEventListener('click', () => runScans(m, [b.dataset.k])));
     m.buttons([
       { label: 'Alle Scans nacheinander', primary: true, focus: true, fn: () => runScans(m, SCANS.filter((x) => x.fn).map((x) => x.k)) },
-      { label: 'Jetzt eine Etappe blockieren', fn: () => runEtappeInPopup(m) },
+      { label: 'Jetzt abarbeiten', fn: () => runEtappeInPopup(m) },
       { label: 'Schließen', fn: () => m.close() },
     ]);
   }
@@ -2367,7 +2503,7 @@
     if (run.notes.length) m.body.insertAdjacentHTML('beforeend', `<h3>Entsperrt (Gruppen-Whitelist)</h3><div class="vaf-list">${run.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>`);
     const q = await Queue.count();
     m.buttons([
-      ...(q ? [{ label: `Jetzt eine Etappe blockieren (${Math.min(q, S().expert.maxPerRun)} von ${fmtN(q)})`, primary: true, fn: () => runEtappeInPopup(m) }] : []),
+      ...(q ? [{ label: `Jetzt abarbeiten (${fmtN(q)} auf der Warteliste)`, primary: true, fn: () => runEtappeInPopup(m) }] : []),
       { label: 'Schließen', focus: true, fn: () => m.close() },
     ]);
   }
@@ -2377,14 +2513,18 @@
     m.body.innerHTML = `<div class="vaf-cur" data-r="cur">Starte Etappe …</div><div class="vaf-bar"><div data-r="b"></div></div><div class="vaf-list" data-r="list"></div>`;
     const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
     m.buttons([{ label: 'Anhalten', focus: true, fn: () => Etappe.stop() }]);
+    G.set('blk_handover', { tab: TAB_ID, at: now() });
+    if (Etappe.running) Etappe.stop();
+    for (let t = 0; (Etappe.running || Lock.other('etappe')) && t < 120; t++) await sleep(500);
     const st = await Etappe.run('Opa-Scan', (i, n, q) => {
       $('cur').textContent = `${i}/${n}: ${q.nick} (${(q.ages || []).join('/')}) – ${q.src}`;
       $('b').style.width = `${Math.round(i / n * 100)}%`;
-    });
+    }, { manual: true });
+    G.del('blk_handover');
     m.closable = true;
-    if (!st) { $('cur').textContent = 'Es läuft schon eine Etappe (evtl. in einem anderen Tab).'; }
+    if (!st) { $('cur').textContent = 'Das Blockieren läuft gerade in einem anderen Tab.'; }
     else {
-      $('cur').innerHTML = `Etappe fertig: ${st.ok} blockiert, ${st.fail} Fehler, ${st.dropped} übersprungen${st.test ? `, ${st.test} Testlauf` : ''}${st.limit ? ' – Limit erreicht' : ''}.<br>` + await statusLine();
+      $('cur').innerHTML = `Fertig: ${st.ok} blockiert, ${st.fail} Fehler, ${st.dropped} übersprungen${st.test ? `, ${st.test} Testlauf` : ''}${st.limit ? ' – Höchstzahl erreicht' : ''}.<br>` + await statusLine();
       $('b').style.width = '100%';
       $('list').innerHTML = st.items.map((x) => `<div>${esc(x.nick)}: ${esc(x.res)}</div>`).join('') || '<div>Nichts zu tun.</div>';
     }
@@ -2717,7 +2857,7 @@
       row(ce, lab('Debug-Ausgaben', 'expert.debug'), 'zusätzliche Ausgaben in der Konsole (F12)', sw(x.debug, (v) => { x.debug = v; touch(); }));
       row(ce, lab('Testlauf', 'expert.dryRun'), 'nichts wird verändert, nur protokolliert', sw(x.dryRun, (v) => { x.dryRun = v; touch(); }));
       row(ce, lab('Obergrenze erster Scan', 'expert.firstScanMax'), 'Profilbesucher / Interaktionen', numIn(x.firstScanMax, (v) => { x.firstScanMax = v; touch(); }, 10, 1000000));
-      const lim = row(ce, lab('<span class="vaf-red">Limit:</span>', 'expert.limit'), '<span class="vaf-red">Höchstzahl der Einträge auf der Blockierliste</span>', numIn(x.limit, (v) => { x.limit = v; touch(); }, 1, 1e9));
+      const lim = row(ce, lab('Höchstzahl der Einträge auf der Blockierliste', 'expert.limit'), '', numIn(x.limit, (v) => { x.limit = v; touch(); }, 1, 1e9));
       lim.querySelector('.vaf-num').style.width = '120px';
       const rank = document.createElement('div'); rank.className = 'vaf-rank';
       rank.title = 'Bestimmt, welche Quelle in der Notiz steht und wer auf der Warteliste zuerst drankommt';
@@ -2736,9 +2876,7 @@
       };
       drawRank();
       row(ce, lab('Rangfolge der Quellen', 'expert.rank'), 'oben = wichtigste', rank);
-      row(ce, lab('Maximal pro Etappe', 'expert.maxPerRun'), '', numIn(x.maxPerRun, (v) => { x.maxPerRun = v; touch(); }, 1, 10000));
       row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
-      row(ce, lab('Etappen-Abstand', 'expert.etappeMin'), 'solange ein poppen-Tab offen und der Schalter an ist', numIn(x.etappeMin, (v) => { x.etappeMin = v; touch(); }, 1, 1440), 'Min.');
       row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
       row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
       const recSt = document.createElement('span'); recSt.className = 'vaf-mini';
@@ -2755,9 +2893,9 @@
       const n99 = document.createElement('span'); n99.className = 'vaf-mini';
       KV.get('log99', {}).then((l) => { n99.textContent = `${Object.keys(l).length} erfasst`; });
       row(ce, '99-Jährige', 'Profile mit Alter 99 (gelten als unklar)', btn('Exportieren (.txt)', export99), btn('Liste leeren', async () => { if (W.confirm('Liste der 99-Jährigen leeren?')) { await KV.set('log99', {}); n99.textContent = '0 erfasst'; } }), n99);
-      const work = btn('Abarbeiten', () => workQueue(work));
+      const work = btn('Jetzt abarbeiten', () => workQueue(work));
       if (Etappe.running && Etappe.manual) work.textContent = 'Anhalten';
-      row(ce, 'Warteliste', 'Abarbeiten: die ganze Warteliste sofort, ohne Höchstzahl je Etappe', btn('Anzeigen', showQueue), work, btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
+      row(ce, 'Warteliste', 'Blockiert wird im Hintergrund; „Jetzt abarbeiten“ arbeitet die Warteliste auch bei ausgeschaltetem Schalter einmal ganz ab', btn('Anzeigen', showQueue), work, btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
 
       // ---- Fuß ----
       const foot = document.createElement('div'); foot.className = 'vaf-foot';
@@ -2823,7 +2961,8 @@
   }
   const RULE_PATHS = (s) => JSON.stringify([GROUP_KEYS.map((k) => { const g = s.groups[k]; return [g.ignore, g.types, g.src, g.srcW, g.srcM, g.separate, g.coupleMode, g.sugarDaddy, g.sugarMom, g.labels[4]]; }), s.whitelist, s.expert.limit]);
 
-  async function saveFromPage() {
+  async function saveFromPage(...a) { return Prio.run('Einstellungen speichern', () => saveFromPage_(...a)); }
+  async function saveFromPage_() {
     const old = S();
     if (RULE_PATHS(old) === RULE_PATHS(draft)) { saveSettings(draft); settingsDirty = false; toast('Gespeichert.'); return; }
     const p = await projection(old, draft);
@@ -2902,31 +3041,33 @@
     m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
   }
 
-  // Button „Abarbeiten“: ganze Warteliste in einem Zug
+  // Button „Jetzt abarbeiten“: Warteliste in diesem Tab bis zum Ende abarbeiten (auch bei ausgeschaltetem Schalter)
   let workCancel = false;
   async function workQueue(b) {
     if (Etappe.manual) { workCancel = true; Etappe.stop(); b.textContent = 'Halte an …'; b.disabled = true; return; }
     const n = await Queue.count();
     if (!n) { toast('Die Warteliste ist leer.'); return; }
     if (dry()) toast('Testlauf ist an: es wird nichts blockiert, nur protokolliert.', 5000);
-    Etappe.manual = true; workCancel = false;
-    b.textContent = 'Warte …';
+    workCancel = false;
+    b.textContent = 'Übernehme …';
     try {
-      // läuft gerade eine Etappe (auch in einem anderen Tab): abwarten
-      while (Etappe.running || Lock.other('etappe')) { if (workCancel) return; await sleep(1000); }
+      // läuft das Blockieren schon (hier oder in einem anderen Tab): übernehmen
+      G.set('blk_handover', { tab: TAB_ID, at: now() });
+      if (Etappe.running) Etappe.stop();
+      for (let t = 0; (Etappe.running || Lock.other('etappe')) && t < 120; t++) { if (workCancel) return; await sleep(500); }
       if (workCancel) return;
       b.textContent = 'Anhalten';
-      const st = await Etappe.run('Abarbeiten', (i, total) => { if (b.isConnected && !b.disabled) b.textContent = `Anhalten (${fmtN(i)} / ${fmtN(total)})`; updateCounts(); }, { all: true });
+      const st = await Etappe.run('Jetzt abarbeiten', (i, total) => { if (b.isConnected && !b.disabled) b.textContent = `Anhalten (${fmtN(i)} / ${fmtN(total)})`; updateCounts(); }, { manual: true });
       if (!st) { toast('Konnte nicht starten – ein anderer Tab arbeitet gerade.'); return; }
       const rows = st.items.map((it) => `<div>${esc(it.nick)} · ${esc(it.res)}</div>`).join('');
       const m = modal({ title: 'Warteliste abgearbeitet', sub: workCancel ? 'angehalten' : '',
-        html: `<div class="vaf-stats"><span>Blockiert</span><b>${fmtN(st.ok)}</b><span>Fallen weg</span><b>${fmtN(st.dropped)}</b><span>Fehlgeschlagen</span><b>${fmtN(st.fail)}</b>${st.test ? `<span>Testlauf</span><b>${fmtN(st.test)}</b>` : ''}${st.limit ? '<span>Limit erreicht</span><b>ja</b>' : ''}</div>` +
+        html: `<div class="vaf-stats"><span>Blockiert</span><b>${fmtN(st.ok)}</b><span>Fallen weg</span><b>${fmtN(st.dropped)}</b><span>Fehlgeschlagen</span><b>${fmtN(st.fail)}</b>${st.test ? `<span>Testlauf</span><b>${fmtN(st.test)}</b>` : ''}${st.limit ? '<span>Höchstzahl erreicht</span><b>ja</b>' : ''}</div>` +
           (rows ? `<div class="vaf-list" style="margin-top:10px">${rows}</div>` : '') +
           (st.fail ? '<p class="vaf-mini">Fehlgeschlagene bleiben auf der Warteliste und werden bis zu dreimal versucht.</p>' : '') });
       m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
     } finally {
-      Etappe.manual = false;
-      if (b.isConnected) { b.disabled = false; b.textContent = 'Abarbeiten'; }
+      G.del('blk_handover');
+      if (b.isConnected) { b.disabled = false; b.textContent = 'Jetzt abarbeiten'; }
       updateCounts();
     }
   }
@@ -2949,7 +3090,7 @@
   }
 
   // =====================================================================================
-  // Profil-Menü (Klick auf das eigene Profilbild): „Opa-Scan“, „Opa-Schutz konfigurieren“, Schalter
+  // Profil-Menü (Klick auf das eigene Profilbild): „Opa-Scan“, „Opa-Schutz“ (Einstellungen), Schalter „Opa-Schutz aktiv“
   // =====================================================================================
   function leafWithText(root, text) {
     const t = norm(text);
@@ -2981,14 +3122,14 @@
       // „Fickliste“ vor dem Scan (wie im JOYclub-Skript)
       item.before(mk('vaf-pm-fick', 'Fickliste', () => goHash('fickliste'), fickIcon(1, 18)));
       item.before(mk('vaf-pm-scan', `${W1}-Scan`, () => openScanPopup(), oldManSvg(1)));
-      item.after(mk('vaf-pm-conf', `${W1}-Schutz konfigurieren`, () => goHash('opa-schutz'), oldManSvg(1)));
+      item.after(mk('vaf-pm-conf', `${W1}-Schutz`, () => goHash('opa-schutz'), oldManPenSvg()));
       // Schalter vor „Unsichtbar“
       const inv = leafWithText(pop, 'Unsichtbar');
       if (inv) {
         const r = rowOf(inv, pop);
         const c = r.cloneNode(true);
         c.id = 'vaf-pm-toggle';
-        const lf = leafWithText(c, 'Unsichtbar'); if (lf) lf.textContent = `${W1}-Schutz`;
+        const lf = leafWithText(c, 'Unsichtbar'); if (lf) lf.textContent = `${W1}-Schutz aktiv`;
         const swb = c.querySelector('button[role=switch]') || c.querySelector('.ant-switch');
         const paint = () => {
           const on = isOn();
@@ -3034,7 +3175,7 @@
       const sup = wrap.querySelector('sup');
       sup.style.display = txt ? '' : 'none';
       if (sup.querySelector('bdi').textContent !== txt) { sup.querySelector('bdi').textContent = txt; sup.classList.toggle('ant-badge-multiple-words', txt.length > 1); }
-      const et = Etappe.running ? ' · Etappe läuft' : '';
+      const bs = (G.get('blk_state', null) || {}).st; const et = Etappe.running || bs === 'blockiert' ? ' · blockiert gerade' : bs === 'pause' ? ' · Blockieren pausiert' : bs === 'pause-fehler' ? ' · Blockieren pausiert (Fehler)' : '';
       const tip = `${word()}-Schutz${isOn() ? '' : ' (Automatik aus)'}${dry() ? ' – Testlauf' : ''}: ${n == null ? '?' : fmtN(n)} geblockt, ${fmtN(q)} in der Warteschlange${et} – Einstellungen öffnen`;
       const a = wrap.querySelector('a');
       if (a.title !== tip) { a.title = tip; a.setAttribute('aria-label', tip); }
@@ -3384,7 +3525,8 @@
 
   // ---------- Popup "Beitrittsanfragen prüfen" ----------
   let groupRun = null;
-  async function openGroupCheck() {
+  async function openGroupCheck(...a) { return Prio.run('Gruppenanfragen', () => openGroupCheck_(...a)); }
+  async function openGroupCheck_() {
     if (groupRun) { if (groupRun.modal && !groupRun.modal.ov.isConnected) document.body.appendChild(groupRun.modal.ov); return; }
     const m = openModal();
     m.md.innerHTML = `<h2>Beitrittsanfragen prüfen</h2><div class="vaf-sub">Lese die offenen Anfragen …</div>`;
@@ -4305,7 +4447,8 @@
     }
     return j;
   }
-  async function importFick() {
+  async function importFick(...a) { return Prio.run('Fickliste-Import', () => importFick_(...a)); }
+  async function importFick_() {
     const text = await pickFile();
     if (!text) return;
     let data;
@@ -4617,6 +4760,35 @@
 
   const runTarget = () => null;
 
+  // ---------- „Du hast die Regie!“ (/view/announcement/page/1236): immer überspringen ----------
+  const isRegie = (path = location.pathname, doc = document) => /^\/view\/announcement\/page\/1236\b/.test(path) ||
+    (/^\/view\/announcement\//.test(path) && /Du hast die Regie/i.test((doc.querySelector('main') || {}).textContent || ''));
+  function skipRegie() {
+    const last = +(ssGet('vaf_regie_at') || 0);
+    ssSet('vaf_regie_at', String(now()));
+    const ref = document.referrer && document.referrer.startsWith(location.origin) ? document.referrer : '';
+    const prev = ssGet('vaf_prev_url') || ssGet('vaf_last_url') || ref;
+    // zweiter Treffer innerhalb weniger Sekunden: nicht zurück, sondern auf /home (keine Endlosschleife)
+    if (now() - last < 8000 || !prev || /\/view\/announcement\//.test(prev)) { location.replace(location.origin + '/home'); return; }
+    if (history.length > 1) history.back(); else location.replace(prev);
+  }
+  // Seitenwechsel ohne Neuladen beobachten (pushState/replaceState/popstate)
+  (() => {
+    let cur = location.href;
+    const check = () => {
+      if (location.href === cur) return;
+      if (!/\/view\/announcement\//.test(cur)) ssSet('vaf_prev_url', cur);
+      cur = location.href;
+      if (isRegie()) skipRegie();
+      else setTimeout(() => { if (isRegie()) skipRegie(); }, 1200);    // Überschrift erst nach dem Laden sichtbar
+    };
+    for (const fn of ['pushState', 'replaceState']) {
+      const orig = W.history[fn];
+      W.history[fn] = function (...a) { const r = orig.apply(this, a); setTimeout(check, 0); return r; };
+    }
+    W.addEventListener('popstate', () => setTimeout(check, 0));
+  })();
+
   function specialPanel(title, html) { return toast(`<b>${esc(word())}-Schutz – ${title}</b><br>${html}`, 0); }
 
   // Wiederaufnahme nach einem Login: wohin wollte dieser Tab?
@@ -4670,6 +4842,7 @@
       return true;
     }
 
+    if (isRegie() || (kind === 'werbung' && isRegie(location.pathname))) { skipRegie(); return true; }
     if (kind === 'werbung') {
       const n = (+ssGet('vaf_ad_count') || 0) + 1;
       ssSet('vaf_ad_count', String(n));
@@ -4889,6 +5062,8 @@
     if (!end.m) return null;
     const endDate = new Date(end.y, end.m - 1, end.d);
     if (endDate.getMonth() !== end.m - 1) return null;                // ungültiges Datum
+    const st = { d: +d1, m: +(m1 || end.m), y: +(y1 || (d2 && +(m1 || end.m) > end.m ? end.y - 1 : end.y)) };
+    const startDate = new Date(st.y, st.m - 1, st.d);
     const wann = m[0].trim();
     const rest = line.slice(m[0].length).replace(/^\s*[-–]\s*/, '');
     const parts = rest.split(/\s+[-–]\s+/).map((x) => x.trim()).filter(Boolean);
@@ -4896,7 +5071,7 @@
     if (parts.length > 1 && /^(https?:\/\/|www\.)\S+$/i.test(parts[parts.length - 1])) link = parts.pop();
     const wo = parts.shift() || '';
     const was = parts.join(' - ');
-    return { line: line.trim(), wann, wo, was, link, end: endDate, label: [wann, wo, was].filter(Boolean).join(' - ') };
+    return { line: line.trim(), wann, wo, was, link, start: startDate, end: endDate, label: [wann, wo, was].filter(Boolean).join(' - ') };
   }
   function upcomingTerms(text) {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -4910,8 +5085,15 @@
       out.push(t);
       if (out.length >= TERM_MAX) break;
     }
+    // chronologisch; gleiches Datum: Reihenfolge der Datei (stabile Sortierung)
+    out.sort((a, b) => a.start - b.start);
     return { list: out, bad };
   }
+  // alle gültigen Zeilen (auch vergangene) – zum Ausschreiben verkürzter Termin-Zeilen
+  function allTerms(text) { return String(text).split(/\r?\n/).map((l) => (l.trim() ? parseTermLine(l) : null)).filter(Boolean); }
+  // JOYclub-Links vereinheitlichen: https://www.joyclub.de/…
+  const normJoyLink = (u) => String(u || '').replace(/^(?:https?:\/\/)?(?:www\.)?joyclub\.(de|com)\//i, 'https://www.joyclub.de/');
+  const linkCmp = (u) => normJoyLink(u).toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
 
   let termMem = null;                       // zuletzt gewählte Datei (auch falls das Speichern scheitert)
   async function termHandle() {
@@ -4990,8 +5172,8 @@
       head.setAttribute('aria-expanded', String(open));
       panel.className = 'ant-collapse-panel ' + (open ? 'ant-collapse-panel-active' : 'ant-collapse-panel-inactive ant-collapse-panel-hidden');
       panel.style.display = open ? '' : 'none';
-      const svg = head.querySelector('.ant-collapse-expand-icon svg, .ant-collapse-expand-icon span');
-      if (svg) svg.style.transform = open ? 'rotate(90deg)' : '';
+      const svg = head.querySelector('.ant-collapse-expand-icon svg');
+      if (svg) svg.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';      // wie bei „Aktionen“/„Anhänge“
     };
     const li = (html, title, fn, extraCss = '') => {
       const e = document.createElement('li');
@@ -5079,6 +5261,23 @@
       try { await ingestBlocklist(); } catch (e) { warn('Blockierliste einlesen', e); }
       finally { Lock.release('blocklist'); }
     }, 8000);
+    // einmalig: alte Rekorder-Aufnahmen verwerfen (vor 2.5 unvollständig geschwärzt)
+    if (!G.get('rec_cleared_25', 0)) { Recorder.clear().catch(() => {}); G.set('rec_cleared_25', now()); }
+    // einmalig: verschleierte Einträge (uid ohne Nummer) aus Gedächtnis und Warteliste räumen
+    if (!G.get('masked_purged', 0)) setTimeout(async () => {
+      try {
+        const bad = []; await Members.each((m) => { if (!/^\d+$/.test(String(m.uid))) bad.push(m.uid); });
+        for (const uid of bad) { Members.cached().delete(uid); await DB.del('members', uid); }
+        for (const q of await Queue.list()) if (!q.uid.startsWith('nick:') && !/^\d+$/.test(q.uid)) await Queue.remove(q.uid);
+        G.set('masked_purged', now()); if (bad.length) log(`${bad.length} verschleierte Einträge entfernt.`);
+      } catch (e) { warn('Aufräumen', e); }
+    }, 12000);
+    // Freunde und Favoriten einmal täglich vollständig einlesen
+    setTimeout(async () => {
+      if (now() - G.get('ff_at', 0) < DAY) return;
+      if (!(await Lock.take('ff'))) return;
+      try { await refreshFriendsFavs(null); } catch (e) { warn('Freunde/Favoriten', e); } finally { Lock.release('ff'); }
+    }, 15000);
     // Gruppen-Whitelist einmal täglich im Hintergrund
     setTimeout(async () => {
       if (!isOn() || now() - G.get('grp_wl_at', 0) < DAY) return;
@@ -5095,8 +5294,9 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, seen, judge, openScanPopup, scanInteractions, scanGroups, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, seen, judge, openScanPopup, scanInteractions, scanGroups, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
+  if (/^\/view\/announcement\/page\/1236\b/.test(location.pathname) && W.top === W) { try { skipRegie(); } catch {} }
   onReady(() => init().catch((e) => { console.error('[Opa-Schutz] Fehler beim Start:', e); }));
 })();
