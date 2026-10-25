@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.6
+// @version      2.7
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
 // @updateURL    https://raw.githubusercontent.com/Schimmelreiter/poppen-opa-scan/main/poppen-opa-schutz.user.js
 // @downloadURL  https://raw.githubusercontent.com/Schimmelreiter/poppen-opa-scan/main/poppen-opa-schutz.user.js
 // @match        https://www.poppen.de/*
+// @match        https://www.joyclub.de/*
+// @match        https://schimmelreiter.github.io/joyclub-opa-scan/briefkasten.html*
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzAiIGZpbGw9IiMyYjJiMmIiIHN0cm9rZT0iI2U1MzkzNSIgc3Ryb2tlLXdpZHRoPSI1Ii8+PHRleHQgeD0iMzIiIHk9IjQxIiBmb250LWZhbWlseT0iQXJpYWwsSGVsdmV0aWNhLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj41MCs8L3RleHQ+PGxpbmUgeDE9IjEyIiB5MT0iNTIiIHgyPSI1MiIgeTI9IjEyIiBzdHJva2U9IiNlNTM5MzUiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -18,20 +20,25 @@
 // @grant        unsafeWindow
 // @connect      poppen.de
 // @connect      img-z.poppen.de
+// @connect      schimmelreiter.github.io
 // @sandbox      JavaScript
 // @run-at       document-start
-// @noframes
 // ==/UserScript==
 
 (function () {
   'use strict';
-  const VERSION = '2.6';
+  const VERSION = '2.7';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+  const IN_FRAME = W.top !== W;
+  const HOST = location.hostname;
+  const ON_POPPEN = /(^|\.)poppen\.de$/.test(HOST) && !IN_FRAME;    // volle Funktion nur auf poppen.de (kein iframe)
 
   // =====================================================================================
   // Hilfsfunktionen
   // =====================================================================================
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); }));
+  async function sha256hex(str) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(str))); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
   const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
   const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -520,6 +527,7 @@
   }
 
   // fetch der Seite
+  if (ON_POPPEN) {
   W.fetch = async function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     if (!/\/v2-api\//.test(url)) return origFetch(input, init);
@@ -569,6 +577,7 @@
       return xSend.apply(this, arguments);
     };
   }
+  }   // Ende if (ON_POPPEN): Seiten-Hooks nur auf poppen.de
 
   // ---------- eigene Abfragen ----------
   class ApiError extends Error { constructor(msg, code, status) { super(msg); this.code = code; this.status = status; } }
@@ -2888,6 +2897,13 @@
       row(ce, lab('API-Rekorder', 'expert.recorder'), 'schneidet Abfragen der Seite mit (Sensibles geschwärzt)', sw(x.recorder, (v) => { x.recorder = v; touch(); }), recSt, recEx, recCl);
       // Daten
       const btn = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
+      // Abgleich mit JOYclub (Briefkasten)
+      const bkSt = document.createElement('span'); bkSt.className = 'vaf-mini';
+      const bkInfo = () => { const t = G.get('bk_test', null); const at = G.get('bk_full_sent', 0); bkSt.textContent = (t ? t.msg : 'noch nicht geprüft') + (at ? ` · letzter Abgleich ${deDateTime(at)}` : ''); };
+      bkInfo();
+      const bkBtn = btn('Jetzt prüfen', async () => { bkSt.textContent = 'prüfe …'; try { await bkTest(); } catch {} bkInfo(); });
+      row(ce, 'Abgleich mit JOYclub', 'automatisch über den Briefkasten (Fickliste und Textvorlagen)', bkSt, bkBtn);
+
       row(ce, 'Alle Daten', 'Einstellungen, Gedächtnis, Warteliste, Fickliste (verschlüsselt) …', btn('Alle Daten sichern', () => backupAll()), btn('Alle Daten wiederherstellen', () => restoreAll()));
       row(ce, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder (z. B. für ein zweites Profil)', btn('Exportieren ohne Bilder', () => exportMemory(false)), btn('mit Bildern', () => exportMemory(true)), btn('Importieren (mischen)', () => importMemory()));
       const n99 = document.createElement('span'); n99.className = 'vaf-mini';
@@ -3913,7 +3929,7 @@
   const Fick = {
     async get(id) { return DB.get('fick', id); },
     async all() { return DB.all('fick'); },
-    async put(p) { p.updated = now(); await DB.put('fick', p); chan.post({ t: 'fick' }); Bus.emit('fick'); return p; },
+    async put(p) { p.updated = now(); await DB.put('fick', p); chan.post({ t: 'fick' }); Bus.emit('fick'); try { if (typeof bkSendPerson === 'function' && !p.__fromBk) bkSendPerson(p); } catch {} return p; },
     async del(id) { await DB.del('fick', id); Bus.emit('fick'); },
     idOf: (uid) => 'p:' + uid,
     async forMember(uid, nick) {
@@ -5372,6 +5388,13 @@
   const K_TPL = 'vaf2_templates';
   const getTpls = () => { const l = GM_getValue(K_TPL, []); return Array.isArray(l) ? l : []; };
   const setTpls = (l) => { GM_setValue(K_TPL, l); Bus.emit('tpl'); };
+  // Beim Speichern einer Vorlage: Metadaten setzen und über den Briefkasten senden (falls aktiv)
+  function saveTemplate(list, t, isNew) {
+    if (typeof tplEnsureMeta === 'function') tplEnsureMeta(t);
+    t.updatedAt = now(); t.updatedBy = { platform: 'poppen', account: (Me.get() || {}).nick || '' };
+    setTpls(list);
+    try { if (typeof bkSendTemplate === 'function') bkSendTemplate({ id: t.id, name: t.name, text: t.text, updatedAt: t.updatedAt, updatedBy: t.updatedBy, deletedAt: null }); } catch {}
+  }
   const tplNameKey = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const tplIcon = (sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v5h5"/><path d="M8.5 15.5l5.4-5.4a1.2 1.2 0 0 1 1.7 1.7L10.2 17.2l-2.4.6.7-2.3z"/></svg>`;
   // Symbol des Benutzers für den Messenger-Knopf
@@ -5421,7 +5444,8 @@
   }
   function openTemplates() {
     const m = tplOverlay();
-    const counter = () => `<div style="display:flex;justify-content:space-between;align-items:baseline;margin:2px 0 10px"><b style="color:#fff">Textvorlagen</b><span class="vaf-mini">${getTpls().length} von ${TPL_MAX}</span></div>`;
+    const trashCount = () => { try { return (G.get('tpl_trash', []) || []).length; } catch { return 0; } };
+    const counter = () => `<div style="display:flex;justify-content:space-between;align-items:baseline;margin:2px 0 10px"><b style="color:#fff">Textvorlagen</b><span class="vaf-mini">${getTpls().length} von ${TPL_MAX}${trashCount() ? ` · <a href="#" data-a="trash">Papierkorb (${trashCount()})</a>` : ''}</span></div>`;
     const showList = () => {
       m.backFn = null; m.title('Textvorlagen');
       const tpls = getTpls();
@@ -5430,6 +5454,7 @@
           <div style="min-width:0"><div style="font-weight:600;color:#fff">${esc(t.name)}</div><div class="vaf-mini" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap">${esc(t.text)}</div></div></div>`).join('')
         : '<div class="vaf-mini" style="padding:12px 0">Noch keine Textvorlagen.</div>'));
       body.querySelectorAll('.vaf-tpl-item').forEach((el) => el.addEventListener('click', () => showEdit(+el.dataset.i)));
+      const tl = body.querySelector('[data-a=trash]'); if (tl) tl.addEventListener('click', (e) => { e.preventDefault(); showTrash(); });
       m.setFoot([
         { label: 'Textvorlage hinzufügen', primary: true, disabled: tpls.length >= TPL_MAX, title: tpls.length >= TPL_MAX ? `Höchstens ${TPL_MAX} Textvorlagen` : '', fn: () => showEdit(-1) },
         { label: 'Textvorlagen exportieren/importieren', fn: () => exportImportDialog(showList) },
@@ -5481,13 +5506,21 @@
         if (!text.trim()) { m.toast('Bitte einen Text eingeben.'); return; }
         const list = getTpls();
         if (list.some((x, i) => i !== idx && tplNameKey(x.name) === tplNameKey(name))) { m.toast('Name schon vergeben.'); return; }
-        if (idx < 0) list.push({ name, text }); else list[idx] = { ...list[idx], name, text };
-        setTpls(list); showList();
+        let t;
+        if (idx < 0) { t = { name, text }; list.push(t); } else { t = { ...list[idx], name, text }; list[idx] = t; }
+        saveTemplate(list, t, idx < 0); showList();
       };
       m.setFoot([
-        ...(idx < 0 ? [] : [{ label: 'Textvorlage löschen', half: true, fn: () => { if (W.confirm('Diese Textvorlage löschen?')) { const l = getTpls(); l.splice(idx, 1); setTpls(l); showList(); } } }]),
+        ...(idx < 0 ? [] : [{ label: 'Textvorlage löschen', half: true, fn: () => { if (W.confirm('Diese Textvorlage löschen?')) { const l = getTpls(); const cur = l[idx]; if (cur && cur.id && typeof tplTrash === 'function') tplTrash(cur.id); else { l.splice(idx, 1); setTpls(l); } showList(); } } }]),
         { label: 'Textvorlage speichern', primary: true, half: idx >= 0, fn: save },
       ]);
+    };
+    const showTrash = () => {
+      m.backFn = showList; m.title('Papierkorb');
+      const tr = (G.get('tpl_trash', []) || []);
+      const body = m.setBody(tr.length ? tr.map((t, i) => `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #2c2c2c"><div><div style="font-weight:600;color:#fff">${esc(t.name)}</div><div class="vaf-mini">gelöscht am ${deDateTime(t.deletedAt || 0)}</div></div><button type="button" class="vaf-btn" data-i="${i}">Wiederherstellen</button></div>`).join('') : '<div class="vaf-mini" style="padding:12px 0">Papierkorb ist leer.</div>');
+      body.querySelectorAll('[data-i]').forEach((b) => b.addEventListener('click', () => { if (typeof tplRestore === 'function') tplRestore(tr[+b.dataset.i].id); showTrash(); }));
+      m.setFoot([{ label: 'Zurück', fn: showList }]);
     };
     showList();
     return m;
@@ -5634,10 +5667,246 @@
   function templateUi() { try { templateButton(); templateMenuEntry(); } catch (e) { warn('Textvorlagen', e); } }
 
   // =====================================================================================
+  // Briefkasten: automatischer Abgleich von Fickliste und Textvorlagen mit dem JOYclub-Skript
+  // über eine leere, neutrale Seite (GitHub Pages). Siehe Nachtrag „Abgleich über den Briefkasten“.
+  // =====================================================================================
+  const BK_URL = 'https://schimmelreiter.github.io/joyclub-opa-scan/briefkasten.html';
+  const BK_HOST = 'schimmelreiter.github.io';
+  const PLAT = (() => { const h = location.hostname; return /joyclub\.de$/.test(h) ? 'joyclub' : /poppen\.de$/.test(h) ? 'poppen' : h === BK_HOST ? 'bk' : 'other'; })();
+  // Betriebsart: 'poppen' (eigene Seite) | 'joyclub' (passiv) | 'briefkasten' (iframe) | 'inert' (nichts tun)
+  const BK_MODE = (() => {
+    const inFrame = W.top !== W;
+    if (PLAT === 'bk') return inFrame ? 'briefkasten' : 'inert';
+    if (inFrame) return 'inert';                       // in fremden iframes (auch poppen eigene) nichts tun
+    if (PLAT === 'poppen') return 'poppen';
+    if (PLAT === 'joyclub') return 'joyclub';
+    return 'inert';
+  })();
+
+  // ---------- Postausgang/-eingang im GM-Speicher (die Seiten-Instanz füllt, die iframe-Instanz leert) ----------
+  let bkApplying = false;              // während des Anwendens eingegangener Daten nicht zurücksenden
+  const bkOut = () => G.get('bk_out', { nextSeq: 1, items: [] });
+  function bkSend(kind, data) {
+    if (BK_MODE !== 'poppen' || bkApplying) return;
+    const o = bkOut();
+    o.items.push({ seq: o.nextSeq, ts: now(), kind, data });
+    o.nextSeq++;
+    // Grenze 1 MB: bei Überlauf Vollabgleich vormerken
+    try { if (JSON.stringify(o).length > 1024 * 1024) { o.items = [{ seq: o.nextSeq, ts: now(), kind: 'full', data: null }]; o.nextSeq++; } } catch {}
+    G.set('bk_out', o);
+  }
+  function bkSendTemplate(t) { bkSend('template', t); }
+  function bkSendPerson(p) { bkSend('person', p); }
+  async function bkFullData() {
+    const persons = await Fick.all().catch(() => []);
+    return { templates: getTpls(), persons };
+  }
+
+  // ---------- Seiten-Instanz (poppen.de): Eingänge anwenden, Postausgang kürzen ----------
+  async function bkApplyInbox() {
+    if (BK_MODE !== 'poppen') return;
+    if (!(await Lock.take('bk_page', 'inbox'))) return;
+    try {
+      const inb = G.get('bk_in', { items: [] });
+      if (!inb.items.length) return;
+      const items = inb.items.slice();
+      bkApplying = true;
+      try {
+      for (const it of items) {
+        try {
+          if (it.kind === 'template') await bkMergeTemplate(it.data);
+          else if (it.kind === 'person') await bkMergePerson(it.data);
+          else if (it.kind === 'full') await bkMergeFull(it.data);
+        } catch (e) { warn('Briefkasten anwenden', e); }
+      }
+      } finally { bkApplying = false; }
+      // verarbeitete entfernen (nur die, die wir gesehen haben; neue bleiben)
+      const rest = (G.get('bk_in', { items: [] }).items || []).filter((x) => !items.some((y) => y.seq === x.seq && y.ts === x.ts));
+      G.set('bk_in', { items: rest });
+      Bus.emit('tpl'); Bus.emit('fick');
+    } finally { Lock.release('bk_page'); }
+  }
+  function bkTrimOut() {
+    if (BK_MODE !== 'poppen') return;
+    const acked = G.get('bk_out_acked', 0) || 0;
+    const o = bkOut();
+    const before = o.items.length;
+    o.items = o.items.filter((x) => x.seq > acked);
+    if (o.items.length !== before) G.set('bk_out', o);
+  }
+
+  // ---------- Textvorlagen: Felder für den Abgleich + Drei-Wege-Merge ----------
+  function tplEnsureMeta(t) {
+    if (!t.id) t.id = uuid();
+    if (!t.updatedAt) t.updatedAt = now();
+    if (!t.updatedBy) t.updatedBy = { platform: 'poppen', account: (Me.get() || {}).nick || '' };
+    return t;
+  }
+  async function tplHash(text) { return (await sha256hex(stripSmileys(text || ''))).slice(0, 16); }
+  const bkBase = () => G.get('bk_base', {});          // { 'tpl:'+id : {hash,name,at} }
+  const bkSetBase = (b) => G.set('bk_base', b);
+  // einen eingegangenen Vorlagen-Stand R anwenden
+  async function bkMergeTemplate(R) {
+    if (!R || !R.name) return;
+    const list = getTpls().map(tplEnsureMeta);
+    const base = bkBase();
+    const bk = 'tpl:' + (R.id || '');
+    let idx = R.id ? list.findIndex((x) => x.id === R.id) : -1;
+    if (idx < 0) idx = list.findIndex((x) => tplNameKey(x.name) === tplNameKey(R.name));
+    const Rtext = translateSmileys(String(R.text || ''), 'joyclub', 'poppen').text.slice(0, TPL_LEN);
+    const Rhash = await tplHash(R.text);
+    if (idx < 0) {
+      // Grabstein ohne eigene Vorlage → ignorieren
+      if (R.deletedAt) return;
+      if (list.length >= TPL_MAX) { log('Briefkasten: Textvorlage übersprungen (Limit)'); return; }
+      const nt = tplEnsureMeta({ id: R.id || uuid(), name: R.name, text: Rtext, updatedAt: R.updatedAt || now(), updatedBy: R.updatedBy });
+      list.push(nt); setTpls(list);
+      base[bk] = { hash: Rhash, name: R.name, at: now() }; bkSetBase(base);
+      return;
+    }
+    const L = list[idx];
+    L.id = L.id || R.id || uuid();
+    const b = base['tpl:' + L.id] || base[bk];
+    const B = b ? b.hash : null;
+    const Lhash = await tplHash(L.text);
+    if (R.deletedAt) {
+      if (Lhash === B || !B) { tplTrash(L.id); }                 // unverändert → Papierkorb
+      else if (W.confirm(`„${L.name}“ wurde auf der anderen Seite gelöscht, hier aber geändert. OK = löschen, Abbrechen = behalten.`)) tplTrash(L.id);
+      base['tpl:' + L.id] = { hash: Rhash, name: R.name, at: now() }; bkSetBase(base);
+      return;
+    }
+    if (Lhash === Rhash) { base['tpl:' + L.id] = { hash: Rhash, name: R.name, at: Math.max(L.updatedAt || 0, R.updatedAt || 0) }; bkSetBase(base); applyName(L, R); setTpls(list); return; }
+    if (B && Lhash === B && Rhash !== B) { L.text = Rtext; L.updatedAt = R.updatedAt || now(); L.updatedBy = R.updatedBy; applyName(L, R); }
+    else if (B && Rhash === B && Lhash !== B) { /* eigenes behalten */ }
+    else {
+      // Notfall bzw. kein base: Mischregeln, sonst Rückfrage
+      const a = stripSmileys(L.text), rr = stripSmileys(R.text);
+      if (B == null && (rr.startsWith(a) || rr.endsWith(a)) && a) {
+        const cut = fragmentCut(R.text, a, rr.startsWith(a) ? 'start' : 'end');
+        const frag = rr.startsWith(a) ? R.text.slice(cut) : R.text.slice(0, cut);
+        const fragT = translateSmileys(frag, 'joyclub', 'poppen').text;
+        L.text = (rr.startsWith(a) ? L.text + fragT : fragT + L.text).slice(0, TPL_LEN);
+      } else {
+        const keep = W.confirm(`„${L.name}“ wurde auf beiden Seiten geändert.\nZuletzt: ${deDateTime(R.updatedAt || now())} auf ${R.updatedBy && R.updatedBy.platform === 'joyclub' ? 'JOYclub' : 'der anderen Seite'}.\n\nOK = andere übernehmen, Abbrechen = eigene behalten.`);
+        if (keep) { L.text = Rtext; L.updatedAt = R.updatedAt || now(); L.updatedBy = R.updatedBy; applyName(L, R); }
+      }
+    }
+    base['tpl:' + L.id] = { hash: await tplHash(L.text), name: L.name, at: L.updatedAt || now() }; bkSetBase(base);
+    setTpls(list);
+    function applyName(L2, R2) { if (R2.name && (R2.updatedAt || 0) >= (L2.updatedAt || 0) && tplNameKey(R2.name) !== tplNameKey(L2.name) && !list.some((x) => x !== L2 && tplNameKey(x.name) === tplNameKey(R2.name))) L2.name = R2.name; }
+  }
+  async function bkMergePerson(R) { if (R) { const local = await Fick.all(); const t = local.find((p) => p.id === R.id) || null; if (t) { mergeFick(t, R); await Fick.put(t); } else { await Fick.put({ ...R }); } } }
+  async function bkMergeFull(d) {
+    if (!d) return;
+    for (const t of d.templates || []) await bkMergeTemplate({ ...t });
+    for (const p of d.persons || []) await bkMergePerson(p);
+  }
+
+  // ---------- Papierkorb (Grabsteine, 30 Tage) ----------
+  const bkTrashStore = () => G.get('tpl_trash', []);
+  function tplTrash(id) {
+    const list = getTpls();
+    const i = list.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const [t] = list.splice(i, 1);
+    const tr = bkTrashStore(); tr.push({ ...t, deletedAt: now() }); G.set('tpl_trash', tr);
+    setTpls(list);
+    bkSend('template', { ...t, deletedAt: now() });
+  }
+  function tplRestore(id) {
+    const tr = bkTrashStore(); const i = tr.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const [t] = tr.splice(i, 1); delete t.deletedAt; G.set('tpl_trash', tr);
+    const list = getTpls(); list.push(tplEnsureMeta({ ...t, updatedAt: now() })); setTpls(list);
+    bkSendTemplate(list[list.length - 1]);
+  }
+  function tplPurgeTrash() { const tr = bkTrashStore().filter((x) => now() - (x.deletedAt || 0) < 30 * DAY); G.set('tpl_trash', tr); }
+
+  // ---------- iframe einbetten (poppen.de und joyclub.de) ----------
+  function bkEmbed() {
+    setTimeout(() => {
+      try {
+        if (document.getElementById('opa-briefkasten')) return;
+        const f = document.createElement('iframe');
+        f.id = 'opa-briefkasten';
+        f.src = BK_URL + '#host=' + location.hostname;
+        f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1;
+        f.style.cssText = 'position:fixed;width:0;height:0;border:0;left:-9999px;top:-9999px;visibility:hidden';
+        (document.documentElement || document.body).appendChild(f);
+      } catch (e) { warn('Briefkasten einbetten', e); }
+    }, Math.random() * 1500);
+  }
+
+  // ---------- Briefkasten-Instanz (läuft im iframe auf github.io) ----------
+  function bkIframeMain() {
+    const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } } };
+    const mine = PLAT === 'bk' ? bkIframeHost() : 'poppen';
+    function bkIframeHost() { const m = /host=([^&]+)/.exec(location.hash || ''); const h = m ? decodeURIComponent(m[1]) : ''; return /joyclub/.test(h) ? 'joyclub' : 'poppen'; }
+    const other = mine === 'poppen' ? 'joyclub' : 'poppen';
+    const K = { outMine: 'opa-bk:out:' + mine, outOther: 'opa-bk:out:' + other, ackMine: 'opa-bk:ack:' + mine, ackOther: 'opa-bk:ack:' + other, helloMine: 'opa-bk:hello:' + mine, helloOther: 'opa-bk:hello:' + other };
+    // Lebenszeichen + Hallo
+    const beat = () => { G.set('bk_alive', now()); LS.set(K.helloMine, JSON.stringify({ v: 1, ts: now(), script: 'poppen', version: VERSION })); G.set('bk_store_ok', LS.set('opa-bk:selftest:' + mine, String(now())) ? now() : 0); const ho = LS.get(K.helloOther); if (ho) { try { G.set('bk_hello_joy', JSON.parse(ho)); } catch {} } };
+    beat(); setInterval(beat, 15000);
+    // GM-Postausgang → localStorage
+    const pushOut = () => { const o = G.get('bk_out', { nextSeq: 1, items: [] }); LS.set(K.outMine, JSON.stringify({ v: 1, platform: mine, account: (G.get('me', {}) || {}).nick || '', ts: now(), items: o.items })); W.dispatchEvent(new CustomEvent('opa-bk')); };
+    try { GM_addValueChangeListener('vaf2_bk_out', pushOut); } catch {}
+    pushOut();
+    // localStorage des anderen → GM-Posteingang
+    const pullIn = () => {
+      const raw = LS.get(K.outOther); if (!raw) return;
+      let box; try { box = JSON.parse(raw); } catch { return; }
+      const items = (box && box.items) || [];
+      if (!items.length) return;
+      const lastIn = G.get('bk_in_last', 0) || 0;
+      const fresh = items.filter((x) => x.seq > lastIn);
+      if (fresh.length) {
+        const inb = G.get('bk_in', { items: [] }); inb.items.push(...fresh); G.set('bk_in', inb);
+        G.set('bk_in_last', Math.max(...items.map((x) => x.seq)));
+      }
+      LS.set(K.ackOther, String(Math.max(lastIn, ...items.map((x) => x.seq))));
+      // Ack des anderen für unseren Postausgang
+      const a = +(LS.get(K.ackMine) || 0); if (a) G.set('bk_out_acked', a);
+    };
+    pullIn();
+    W.addEventListener('opa-bk', pullIn);
+    W.addEventListener('storage', (e) => { if (e.key === K.outOther || e.key === K.ackMine) pullIn(); });
+    setInterval(pullIn, 5000);
+  }
+
+  // ---------- Funktionstest ----------
+  async function bkTest() {
+    if (BK_MODE !== 'poppen') return;
+    const r = { at: now(), alive: false, store: false, joy: false };
+    const t0 = now();
+    while (now() - t0 < 10000) { if (now() - (G.get('bk_alive', 0) || 0) < 12000) { r.alive = true; break; } await sleep(500); }
+    r.store = !!G.get('bk_store_ok', 0);
+    r.joy = !!G.get('bk_hello_joy', null);
+    r.msg = !r.alive ? 'Briefkasten blockiert' : !r.store ? 'Speicher gesperrt' : !r.joy ? 'JOYclub-Skript nicht gefunden' : 'bereit';
+    G.set('bk_test', r);
+    return r;
+  }
+
+  // ---------- Verdrahtung ----------
+  function bkStartPoppen() {
+    bkEmbed();
+    setInterval(bkApplyInbox, 3000);
+    setInterval(bkTrimOut, 7000);
+    try { GM_addValueChangeListener('vaf2_bk_in', () => bkApplyInbox().catch(() => {})); } catch {}
+    tplPurgeTrash();
+    // erster Kontakt / Speicher zurückgesetzt → Vollabgleich
+    setTimeout(async () => {
+      const acked = G.get('bk_out_acked', 0) || 0, nextSeq = bkOut().nextSeq;
+      if (!G.get('bk_full_sent', 0) || acked >= nextSeq) { bkSend('full', await bkFullData()); G.set('bk_full_sent', now()); }
+    }, 8000);
+    // Funktionstest beim Start und täglich
+    setTimeout(() => { if (now() - G.get('bk_test_at', 0) > DAY) { G.set('bk_test_at', now()); bkTest().catch(() => {}); } }, 12000);
+  }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
-  installPassiveHooks();
+  if (BK_MODE === 'poppen') installPassiveHooks();
 
   function ensureUi() {
     try { settingsMenu(); } catch (e) { warn('Menü', e); }
@@ -5665,6 +5934,7 @@
     initFigur();
     initGroupRequests();
     Etappe.start();
+    bkStartPoppen();
     headerButton();
     setInterval(headerButton, 1500);
     refreshPending().catch(() => {});
@@ -5713,9 +5983,17 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, seen, judge, openScanPopup, scanInteractions, scanGroups, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
-  if (/^\/view\/announcement\/page\/1236\b/.test(location.pathname) && W.top === W) { try { skipRegie(); } catch {} }
-  onReady(() => init().catch((e) => { console.error('[Opa-Schutz] Fehler beim Start:', e); }));
+  // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);
+  // im Briefkasten-iframe nur die Relais-Logik; sonst nichts.
+  if (BK_MODE === 'briefkasten') {
+    try { bkIframeMain(); } catch (e) { console.error('[Opa-Schutz] Briefkasten:', e); }
+  } else if (BK_MODE === 'joyclub') {
+    onReady(() => { try { bkEmbed(); } catch (e) { warn('Briefkasten', e); } });
+  } else if (BK_MODE === 'poppen') {
+    if (/^\/view\/announcement\/page\/1236\b/.test(location.pathname) && W.top === W) { try { skipRegie(); } catch {} }
+    onReady(() => init().catch((e) => { console.error('[Opa-Schutz] Fehler beim Start:', e); }));
+  }
 })();

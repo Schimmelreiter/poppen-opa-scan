@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.6 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.7 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -233,6 +233,19 @@ Wartung (neuer Versuch nach 15 Minuten), Werbe-Zwischenseiten (werden übersprun
 Schneidet die Abfragen der Seite an `/v2-api/` mit (nur neue Muster, je zwei Beispiele, Listen gekürzt) und exportiert sie als JSON. **E-Mail-Adressen, Passwörter, Zugangsschlüssel, Nachrichten- (auch eingebettete beim Senden) und Profiltexte, private Notizen, Wünsche, Interview-Antworten, Telefonnummern und Koordinaten werden geschwärzt; von Geburtstagen bleibt nur das Jahr.** Standardmäßig aus.
 
 ---
+
+## Abgleich mit JOYclub (Briefkasten)
+
+Fickliste und Textvorlagen gleichen sich automatisch mit dem [JOYclub-Skript](https://github.com/Schimmelreiter/joyclub-opa-scan) ab, ohne Export/Import von Hand.
+
+- Beide Skripte betten eine leere, neutrale Seite (GitHub Pages: `schimmelreiter.github.io/joyclub-opa-scan/briefkasten.html`) unsichtbar ein und tauschen über deren lokalen Speicher aus. Der Seiten-Code von poppen.de und JOYclub kommt nicht heran.
+- Auf **joyclub.de** läuft das Skript nur passiv (nur der Briefkasten, keine Oberfläche, keine Eingriffe). Volle Funktion nur auf poppen.de.
+- Geändertes wird sofort gesendet; Eingänge für die Fickliste übernimmt das Skript, sobald ein poppen.de-Tab offen ist.
+- **Abgleich je Feld** über einen gemerkten Stand (Dreiwege): gleich → nichts; nur eine Seite geändert → übernehmen; beide geändert → Mischregeln, sonst Rückfrage. Gelöschte Textvorlagen liegen 30 Tage im **Papierkorb**.
+- Smileys werden dabei zwischen den Plattformen übersetzt.
+- Status unter *Opa-Schutz → Experten-Einstellungen → „Abgleich mit JOYclub“* (zuletzt geprüft, letzter Abgleich). Blockiert eine Sicherheitsrichtlinie oder ein Werbeblocker den Briefkasten, bleiben Export/Import von Hand der Weg.
+
+**Einrichtung:** Das JOYclub-Repo braucht die Datei `briefkasten.html` (leer) und eine leere `.nojekyll`, mit eingeschalteten GitHub Pages. Ohne diese Seite findet kein automatischer Abgleich statt.
 
 ## Lizenz
 
