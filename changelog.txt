@@ -6,6 +6,12 @@ Neueste Version oben.
 - Gruppen (Whitelist): Besitzer und Moderatoren aller eigenen Gruppen kommen auf die Whitelist (vom Opa-Schutz Blockierte werden entsperrt)
 - Mitglieder verwalteter Gruppen nur noch auf der Whitelist, wenn du die Gruppe allein leitest (als Moderator nie, als Besitzer ohne weitere Moderatoren; Zweitprofile zählen nicht); sonst werden die Einträge sofort entfernt und die Mitglieder nach den Regeln geprüft
 
+2.10 (25.10.2026)
+- Experten-Einstellungen: neues Feld „Besonders böse Popsters“ (User-IDs oder Nicknames, je Zeile einer)
+- Scan „Gruppen (Whitelist)“ entfernt diese Popsters aus allen verwalteten Gruppen: vorher ein Vermerk am Mitglied („Ignorant (Gruppe) blockiert am … um …“), dann Entfernen aus der Gruppe (group/attendee/note, group/attendee/kick)
+- Verwaltete Gruppen werden über die unverschleierte Verwaltungsliste gelesen (group/attendee/manage/list) statt über die normale Mitgliederliste
+- Behebt einen Fehler aus 2.9: die Moderatorenliste wurde falsch per GET statt POST abgerufen; dadurch konnte der Scan „Gruppen (Whitelist)“ bei einer allein geführten Gruppe die Whitelist-Einträge der Mitglieder entfernen. Ein Scan nach dem Update stellt sie wieder her
+
 2.8 (25.10.2026)
 - Gruppenanfragen: die Regeln (Gruppen-Muster, Annehmen-/Ablehnen-Liste, Zusatzregel, Fotozahl) stehen nicht mehr im Quelltext, sondern nur in den eigenen gespeicherten Einstellungen (Experten-Einstellungen → Gruppenanfragen); ohne Gruppen-Muster ist die automatische Annahme/Ablehnung aus
 

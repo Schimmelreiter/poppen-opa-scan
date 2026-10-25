@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.9
+// @version      2.10
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.9';
+  const VERSION = '2.10';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -205,6 +205,7 @@
       bodyUnknownDays: 30,
       groupGraceDays: 30,
       recorder: false,
+      evil: [],                     // „Besonders böse Popsters“: User-IDs oder Nicknames, je Zeile einer
     },
   };
 
@@ -1380,7 +1381,7 @@
   // Quellen (Scans). Jede liefert Mitglieder an judge(); Fortschritt über ctx.
   //   ctx = { stop: () => bool, step(i, n, text), add(res) }
   // =====================================================================================
-  const newRes = () => ({ total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0, unblocked: 0, whitelisted: 0 });
+  const newRes = () => ({ total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0, unblocked: 0, whitelisted: 0, kicked: 0 });
   const addRes = (a, b) => { for (const k of Object.keys(b)) a[k] = (a[k] || 0) + (b[k] || 0); return a; };
 
   // ---------- Interaktionen: Likes ----------
@@ -1664,6 +1665,41 @@
     }
     return { n, meta };
   }
+  // Verwaltungsliste einer eigenen Gruppe (unverschleiert). Mit keyword = Namenssuche.
+  async function manageMembers(cms, ctx, onPage, { keyword = '', sort = 'last_joined' } = {}) {
+    let page = 1, n = 0, meta = null;
+    ctx = ctx || { stop: () => false };
+    for (let guard = 0; guard < 100000 && !ctx.stop(); guard++) {
+      const d = await apiPost('group/attendee/manage/list', { cms_id: cms, page, limit: 30, keyword, sort }, { _version: 2 });
+      const l = (d && d.users) || [];
+      if (!meta) meta = { total: d.total || 0 };
+      n += l.length;
+      await onPage(l.map(normUser).filter(Boolean), page, meta);
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+    }
+    return { n, meta };
+  }
+  // „Besonders böse Popsters“ aus den Einstellungen: User-IDs und Nicknames getrennt
+  function evilTargets(s = S()) {
+    const list = (s.expert.evil || []).map((t) => String(t).trim()).filter(Boolean);
+    return { size: list.length, uids: new Set(list.filter((t) => /^\d+$/.test(t))), nicks: new Set(list.filter((t) => !/^\d+$/.test(t)).map((t) => t.toLowerCase())) };
+  }
+  const isEvil = (u, evil) => evil.size && (evil.uids.has(String(u.uid)) || evil.nicks.has((u.nick || '').toLowerCase()));
+  // Ein Mitglied aus einer verwalteten Gruppe entfernen (mit Vermerk). Braucht den Nickname.
+  async function kickEvil(g, u, res, ctx) {
+    const when = new Date();
+    const note = `Ignorant (${g.name}) blockiert am ${deDate(when)} um ${deTime(when)}`;
+    if (dry()) { log('Testlauf – würde entfernen:', u.nick, 'aus', g.name); (ctx.notes || []).push(`${u.nick}: würde aus ${g.name} entfernt (Testlauf)`); res.kicked++; return; }
+    try { await apiPost('group/attendee/note', { cms_id: g.cms, nickname: u.nick, note }, { _version: 2 }); }
+    catch (e) { warn('Gruppennotiz', u.nick, e); }
+    try {
+      await apiPost('group/attendee/kick', { cms_id: g.cms, nickname: u.nick }, { _version: 2 });
+      res.kicked++; (ctx.notes || []).push(`${u.nick}: aus ${g.name} entfernt (besonders böse)`);
+      await Members.update(u.uid, (x) => { x.kicked = x.kicked || {}; x.kicked[g.cms] = now(); });
+    } catch (e) { warn('Entfernen', u.nick, e); (ctx.notes || []).push(`${u.nick}: Entfernen aus ${g.name} fehlgeschlagen (${e.message})`); }
+  }
+
   // ---------- Gruppen-Leitung (Besitzer + Moderatoren) ----------
   // Antwortformate sind nicht fest dokumentiert: Mitglieder-Objekte (uid + nickname) werden gesucht.
   function findUsers(d, keyRe, depth = 0, under = false) {
@@ -1682,7 +1718,7 @@
     } catch (e) { warn('Gruppen-Besitzer ' + cms, e); }
     let mods = [];
     try {
-      const d = await apiGet('group/moderator/list', { _version: 2, cms_id: cms });
+      const d = await apiPost('group/moderator/list', { cms_id: cms });
       mods = findUsers(d, null).filter((u, i, l) => l.findIndex((x) => x.uid === u.uid) === i);
       for (const u of mods) if (!lead.has(u.uid)) lead.set(u.uid, { ...u, role: 'moderator' });
     } catch (e) { warn('Gruppen-Moderatoren ' + cms, e); mods = null; }
@@ -1739,54 +1775,49 @@
     const stale = [];
     await Members.each((m) => { const l = m.auto && m.auto.lead; if (l && Object.entries(l).some(([c, ts]) => ts < t0 && ids.has(c))) stale.push(m.uid); });
     for (const uid of stale) await Members.update(uid, (x) => { for (const [c, ts] of Object.entries(x.auto.lead)) if (ts < t0 && ids.has(c)) delete x.auto.lead[c]; });
-    // 2) verwaltete Gruppen
-    const managed = groups.managed.filter((g) => s.managedWhitelist[g.cms] !== false);
-    const inv = G.get('grp_invisible', {});
+    // 2) verwaltete Gruppen: Whitelist + besonders böse Popsters entfernen (über die Verwaltungsliste, unverschleiert)
+    const managed = groups.managed;   // in allen verwalteten Gruppen kann entfernt werden
+    const evil = evilTargets(s);
     gi = 0;
     for (const g of managed) {
       if (ctx.stop()) break;
       gi++;
       ctx.outer && ctx.outer(all.length + gi - 1, all.length * 2);
-      if (!alone[g.cms]) {
-        // nicht allein: Gruppen-Whitelist sofort entfernen
+      const wlOn = s.managedWhitelist[g.cms] !== false;
+      const doWhite = wlOn && alone[g.cms];
+      if (wlOn && !alone[g.cms]) {
+        // nicht allein in der Leitung: Gruppen-Whitelist dieser Gruppe sofort entfernen
         const drop = [];
         await Members.each((m) => { if (m.auto && m.auto.grp && m.auto.grp[g.cms]) drop.push(m.uid); });
         for (const uid of drop) await Members.update(uid, (x) => { delete x.auto.grp[g.cms]; });
         if (drop.length) log(`${g.name}: nicht allein in der Leitung – ${drop.length} Whitelist-Einträge entfernt.`);
-        if (ctx.full) {
-          ctx.phase && ctx.phase(`Prüfen: ${g.name}`);
-          await groupMembers(g.cms, ctx, async (users, page, meta) => {
-            for (const u of users) await seen(u, 'Gruppen', { images: false });
-            addRes(res, await judge(users, 'Gruppen'));
-            ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: Seite ${page}`);
-          });
-        }
-        continue;
       }
-      ctx.phase && ctx.phase(`Whitelist: ${g.name}`);
-      const t1 = now();
+      const judgeHere = ctx.full && wlOn && !alone[g.cms];   // nicht allein → Mitglieder nach den Regeln prüfen
+      if (!(doWhite || judgeHere || evil.size)) continue;
+      ctx.phase && ctx.phase(`${doWhite ? 'Whitelist' : 'Prüfen'}: ${g.name}`);
       const seenIds = new Set();
-      const { meta } = await groupMembers(g.cms, ctx, async (users, page, meta) => {
+      const toKick = [];
+      const { meta } = await manageMembers(g.cms, ctx, async (users, page, meta) => {
         for (const u of users) {
+          if (String(u.uid) === me) continue;
           seenIds.add(u.uid);
-          const m = await seen(u, 'Gruppen', { images: false });
-          const was = !!(m.auto && m.auto.grp && m.auto.grp[g.cms]);
-          await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[g.cms] = now(); });
-          if (!was) res.whitelisted++;
-          await unblock(m, `weil Mitglied in ${g.name}`);
+          if (isEvil(u, evil)) toKick.push(u);
+          if (doWhite) {
+            const m = await seen(u, 'Gruppen', { images: false });
+            const was = !!(m.auto && m.auto.grp && m.auto.grp[g.cms]);
+            await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[g.cms] = now(); });
+            if (!was) res.whitelisted++;
+            await unblock(m, `weil Mitglied in ${g.name}`);
+          } else if (judgeHere) {
+            await seen(u, 'Gruppen', { images: false });
+          }
         }
-        ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: ${fmtN(seenIds.size)} Mitglieder`);
+        if (judgeHere) addRes(res, await judge(users, 'Gruppen'));
+        ctx.step(page * 30, Math.max(1, meta.total), `${g.name}: ${fmtN(seenIds.size)} Mitglieder`);
       });
+      // besonders böse Popsters entfernen, nachdem die Liste geladen ist
+      for (const u of toKick) { if (ctx.stop()) break; await kickEvil(g, u, res, ctx); }
       if (ctx.stop() || !meta) break;
-      // Verschwundene: unsichtbar geworden? Dann Schonfrist verlängern
-      const gone = [];
-      await Members.each((m) => { if (m.auto && m.auto.grp && m.auto.grp[g.cms] && m.auto.grp[g.cms] < t1 && !seenIds.has(m.uid)) gone.push(m.uid); });
-      const prev = inv[g.cms];
-      if (prev && gone.length && meta.invisible - prev >= gone.length) {
-        for (const uid of gone) await Members.update(uid, (x) => { x.auto.grp[g.cms] = now(); });
-      }
-      inv[g.cms] = meta.invisible;
-      G.set('grp_invisible', inv);
     }
     G.set('grp_alone', alone);
     if (!ctx.stop()) G.set('grp_wl_at', now());
@@ -2547,7 +2578,7 @@
     const tiles = SCANS.map((sc) => {
       let sub = sc.sub;
       if (sc.k === 'gruppen_wl' && groups) sub = `${groups.attended.length + groups.managed.length} Gruppen, ${groups.managed.length} verwaltet`;
-      if (sc.k === 'gruppen_bl' && groups) sub = `${groups.attended.length} ${groups.attended.length === 1 ? "Gruppe" : "Gruppen"}, in denen du Mitglied bist`;
+      if (sc.k === 'gruppen_bl' && groups) sub = groups.attended.length === 1 ? '1 Gruppe, in der du Mitglied bist' : `${groups.attended.length} Gruppen, in denen du Mitglied bist`;
       const chk = sc.fn ? `<label class="vaf-tsel" title="Bei „Alle Scans nacheinander“ mitnehmen"><input type="checkbox" data-sel="${sc.k}" ${sel[sc.k] ? 'checked' : ''}> bei „Alle“</label>` : '';
       return `<div class="vaf-tilew"><button type="button" class="vaf-tile" data-k="${sc.k}" ${sc.fn ? '' : 'disabled'} title="${esc(SOURCES[sc.src || sc.k].tip)}"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></button>${chk}</div>`;
     }).join('');
@@ -2578,7 +2609,8 @@
         `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
         `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
         `<span>Alter unklar (99)</span><b>${fmtN(total.unclear)}</b>` +
-        (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '');
+        (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
+        (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '');
     };
     showStats();
     m.buttons([{ label: 'Abbrechen', focus: true, fn: () => { run.stopped = true; $('cur').textContent = 'Breche ab …'; } }]);
@@ -2613,7 +2645,7 @@
     $('phase').textContent = run.stopped ? 'Abgebrochen.' : 'Fertig.';
     $('cur').innerHTML = await statusLine();
     if (run.errors.length) m.body.insertAdjacentHTML('beforeend', `<div class="vaf-err">${run.errors.map(esc).join('<br>')}</div>`);
-    if (run.notes.length) m.body.insertAdjacentHTML('beforeend', `<h3>Entsperrt (Gruppen-Whitelist)</h3><div class="vaf-list">${run.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>`);
+    if (run.notes.length) m.body.insertAdjacentHTML('beforeend', `<h3>Gruppen-Whitelist</h3><div class="vaf-list">${run.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>`);
     const q = await Queue.count();
     m.buttons([
       ...(q ? [{ label: `Jetzt abarbeiten (${fmtN(q)} auf der Warteliste)`, primary: true, fn: () => runEtappeInPopup(m) }] : []),
@@ -2992,6 +3024,16 @@
       row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
       row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
       row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
+      // ---- Besonders böse Popsters (User-ID oder Nickname, je Zeile einer) ----
+      const evil = document.createElement('textarea'); evil.className = 'vaf-in'; evil.rows = 5; evil.spellcheck = false;
+      evil.placeholder = 'User-ID oder Nickname, je Zeile einer'; evil.style.cssText = 'resize:vertical;font-family:inherit;min-width:220px';
+      evil.value = (x.evil || []).join('\n');
+      evil.addEventListener('change', () => {
+        const seenE = new Set();
+        x.evil = evil.value.split(/\r?\n/).map((t) => t.trim()).filter((t) => t && !seenE.has(t.toLowerCase()) && seenE.add(t.toLowerCase()));
+        evil.value = x.evil.join('\n'); touch();
+      });
+      row(ce, lab('Besonders böse Popsters', 'expert.evil'), 'User-IDs oder Nicknames, je Zeile einer', evil);
       // ---- Gruppenanfragen (Regeln nur hier, nicht im Quelltext) ----
       const gq = draft.groupReq;
       const chips = (arr) => {

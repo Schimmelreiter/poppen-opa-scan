@@ -236,19 +236,32 @@ Antwort: `data.users[]`, `total`, `invisible_count` (unsichtbar geschaltete Mitg
 - In fremden Gruppen können **alle** Einträge verschleiert sein (`is_blurry`, Prüfsumme, Sternchen-Name). Dann ist die Mitgliederliste nicht einsehbar.
 - Verschwindet ein Mitglied aus der Liste und steigt `invisible_count` um genau so viele, hat es sich vermutlich nur unsichtbar geschaltet.
 
-### `GET group/profile` ✅ ❔
-Gruppenprofil. Query: `_version=2`, `cms_id`. Enthält die Angaben zum **Besitzer** (Ersteller). Den genauen Ort des Besitzer-Objekts belegt keine Aufnahme; das Skript sucht unter Schlüsseln mit `creator`/`owner` nach einem Mitglieds-Objekt.
+Das Skript nutzt dies im Scan „Gruppen (Blacklist)“ für Gruppen, in denen man nur Mitglied ist. Für **verwaltete** Gruppen verwendet es stattdessen `group/attendee/manage/list` (unverschleiert).
 
-### `GET group/moderator/list` ✅ ❔
-Moderatoren einer Gruppe. Query: `_version=2`, `cms_id`. **Der Abrufende selbst fehlt in der Liste.** Als Besitzer sieht man also nur die anderen Moderatoren, als Moderator nicht sich selbst. Das Skript sucht in der Antwort fehlertolerant nach Mitglieds-Objekten.
+### `POST group/attendee/manage/list` ✅
+Verwaltungsliste der Mitglieder einer **eigenen** Gruppe (unverschleiert, auch unsichtbar geschaltete). Query: `_version=2`. Body: `{ "cms_id": "…", "page": 1, "limit": 30, "keyword": "", "sort": "last_joined" }`.
+- `keyword`: Namenssuche (leer = alle).
+- `sort`: `last_joined`, `last_visible_login` oder `has_preview`.
+
+Antwort: `data.users[]` (Mitglieds-Objekte, zusätzlich `note` = eigene Notiz zum Mitglied), `total`, `next_page`.
+
+### `GET group/profile` ✅
+Gruppenprofil. Query: `_version=2`, `cms_id`. Der **Besitzer** steht unter `data.creator` (Mitglieds-Objekt). Das Skript sucht fehlertolerant unter Schlüsseln mit `creator`/`owner`.
+
+### `POST group/moderator/list` ✅
+Moderatoren einer Gruppe. Body: `{ "cms_id": "…" }`. Antwort: `data.users[]`, `total`, `next_page`. **Der Abrufende selbst fehlt in der Liste** – als Besitzer sieht man nur die anderen Moderatoren, als Moderator nicht sich selbst. Bei einer allein geführten Gruppe ist `users` leer.
+
+### `POST group/attendee/kick` ✅
+Ein Mitglied aus einer eigenen Gruppe entfernen. Query: `_version=2`. Body: `{ "cms_id": "…", "nickname": "…" }` (über den **Nickname**, nicht die uid). Antwort: `data: null`. Das Mitglied verliert sofort den Zugriff, `total` der Gruppe sinkt um eins.
+
+### `POST group/attendee/note` ✅
+Eigene Notiz an einem Gruppenmitglied setzen. Query: `_version=2`. Body: `{ "cms_id": "…", "nickname": "…", "note": "…" }`. Antwort: `data: null`. Die gesetzte Notiz liefert `group/attendee/manage/list` im Feld `note` zurück.
 
 ### `group/attendee/specific/pending/list` 📼
-Offene Beitrittsanfragen einer Gruppe. Das Skript liest die Anfragen bislang aus der Seite `/groups/<cms_id>/requests`.
+Offene Beitrittsanfragen einer Gruppe. Query: `_version=2`, `cms_id`, `page`, `limit`. Das Skript liest die Anfragen bislang aus der Seite `/groups/<cms_id>/requests`.
 
 ### `POST group/attendee/deny` 📼
 Body: `{ "cms_id": "…", "uid": "…" }`. Lehnt eine Beitrittsanfrage ab. Das Skript nutzt stattdessen die Knöpfe „Akzeptieren“/„Ablehnen“ der Anfragenseite. Ein Endpunkt zum **Annehmen** ist nicht bekannt.
-
-**Mitglieder aus einer Gruppe entfernen:** Dafür ist kein Endpunkt bekannt.
 
 ---
 

@@ -75,7 +75,7 @@ Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von popp
 |---|---|---|
 | Interaktionen | Likes (`rates`), Sticker (`my/received/gift`), Unterhaltungen (`messenger/group/list`, ohne Nachrichtentexte) | Likes / Sticker / Nachrichten |
 | Profilbesucher | Besucherliste (unsichtbar geladen und durchgescrollt) | Besucher |
-| Gruppen (Whitelist) | Leitung aller Gruppen, Mitglieder verwalteter Gruppen (siehe Whitelist); bei „Alle Scans“ standardmäßig an | Gruppen |
+| Gruppen (Whitelist) | Leitung aller Gruppen, Mitglieder verwalteter Gruppen (`group/attendee/manage/list`, siehe Whitelist); entfernt besonders böse Popsters aus verwalteten Gruppen; bei „Alle Scans“ standardmäßig an | Gruppen |
 | Gruppen (Blacklist) | Mitglieder der Gruppen, in denen du Mitglied bist (`group/attendee/list`), nach den Regeln; bei „Alle Scans“ standardmäßig aus, Auswahl wird gemerkt | Gruppen |
 | Mitgliedersuche | ganz Deutschland, Alter für Alter ab der Grenze (`user/search`) | Suche |
 | Partygäste | gibt es auf poppen.de nicht (ausgeblendet) | – |
@@ -118,7 +118,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
 - Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen nicht auf der Seite; sie gelten intern weiter (Quelltext bzw. Datensicherung).
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
+- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Pause zwischen Sperren, Messdauer der Figur, Schonfrist, **Besonders böse Popsters** (User-IDs oder Nicknames, je Zeile einer; werden im Scan „Gruppen (Whitelist)“ aus den verwalteten Gruppen entfernt), API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
 - Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
