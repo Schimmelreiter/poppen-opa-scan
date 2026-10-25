@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.11
+// @version      2.12
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.11';
+  const VERSION = '2.12';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -1706,11 +1706,21 @@
     catch (e) { warn('Blockierer-Liste', e); return; }
     const uids = [...new Set(((d && d.list) || []).map(String).filter((u) => /^\d+$/.test(u)))];
     G.set('evil_at', now());
+    // User-IDs zu Nicknames auflösen (soweit im Gedächtnis bekannt); unbekannte bleiben als ID
+    const entries = [];
+    for (const uid of uids) {
+      const m = Members.cached().get(uid) || await Members.get(uid).catch(() => null);
+      entries.push(m && m.nick ? m.nick : uid);
+    }
+    const seenE = new Set();
+    const list = entries
+      .filter((e) => { const k = e.toLowerCase(); if (seenE.has(k)) return false; seenE.add(k); return true; })
+      .sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }));
     const s = clone(S());
-    if (same(s.expert.evil || [], uids)) return;
-    s.expert.evil = uids;
+    if (same(s.expert.evil || [], list)) return;
+    s.expert.evil = list;
     saveSettings(s);
-    log(`Besonders böse Popsters aus Blockierer-Liste ersetzt: ${uids.length} Einträge.`);
+    log(`Besonders böse Popsters aus Blockierer-Liste ersetzt: ${list.length} Einträge.`);
   }
 
   // ---------- Gruppen-Leitung (Besitzer + Moderatoren) ----------

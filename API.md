@@ -113,7 +113,7 @@ Body: `{ "uid": "123", "nickname": "Name" }`
 Notiz zu einer Sperre setzen. Body: `{ "igrid": "123", "comment": "Text" }`. **`igrid` ist die uid des Gesperrten, nicht die `ignore_id`.**
 
 ### `GET ignore/be-ignored/uid/list` ✅
-Query: `_version=2`. Liefert die IDs der Mitglieder, die einen **selbst** blockiert haben: `data.list` als Array von uid-Texten. Das Skript füllt damit alle 30 Minuten die Liste „Besonders böse Popsters“ (ersetzt deren Inhalt), siehe Abschnitt 7 (`group/attendee/kick`).
+Query: `_version=2`. Liefert die IDs der Mitglieder, die einen **selbst** blockiert haben: `data.list` als Array von uid-Texten. Das Skript füllt damit alle 30 Minuten die Liste „Besonders böse Popsters“ (ersetzt deren Inhalt; User-IDs werden, soweit im Gedächtnis bekannt, zu Nicknames aufgelöst und alphabetisch sortiert), siehe Abschnitt 7 (`group/attendee/kick`).
 
 **Sperren ohne bekannte uid:** Dafür gibt es keinen bekannten Endpunkt. Das Skript nutzt das Formular „Benutzer hinzufügen“ auf `/setting/privacy/ignore-list` in einem unsichtbaren Rahmen.
 
