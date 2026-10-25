@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.13
+// @version      2.14
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.13';
+  const VERSION = '2.14';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -2031,6 +2031,17 @@
   .vaf-also-i{display:inline-flex;align-items:center;white-space:nowrap}
   .vaf-plus{min-width:44px;height:24px;padding:0 14px;border-radius:12px;border:1px solid #6b6f76;background:transparent;color:inherit;font:bold 16px/1 system-ui,sans-serif;cursor:pointer}
   .vaf-plus:hover{border-color:#ffc21a;color:#ffc21a}
+  .vaf-blk-head h2{margin:0 0 4px}
+  .vaf-blk-sub{color:#a6a6a6;font-size:13px;margin-bottom:16px}
+  .vaf-blk-empty{color:#a6a6a6;padding:16px 0}
+  .vaf-blk-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+  .vaf-blk-item{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid rgba(255,255,255,.07)}
+  .vaf-blk-ava{width:48px;height:48px;border-radius:50%;object-fit:cover;flex:0 0 auto;background:#2a2a2a}
+  .vaf-blk-ph{display:flex;align-items:center;justify-content:center;color:#cfcfcf;font-weight:600;font-size:18px}
+  .vaf-blk-txt{display:flex;flex-direction:column;min-width:0}
+  .vaf-blk-name{font-weight:600;color:#fff;text-decoration:none}
+  a.vaf-blk-name:hover{text-decoration:underline}
+  .vaf-blk-meta{color:#a6a6a6;font-size:13px}
   `;
   function ensureStyle() {
     if (document.getElementById('vaf-style')) return;
@@ -3072,16 +3083,6 @@
       row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
       row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
       row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
-      // ---- Besonders böse Popsters (User-ID oder Nickname, je Zeile einer) ----
-      const evil = document.createElement('textarea'); evil.className = 'vaf-in'; evil.rows = 5; evil.spellcheck = false;
-      evil.placeholder = 'User-ID oder Nickname, je Zeile einer'; evil.style.cssText = 'resize:vertical;font-family:inherit;min-width:220px';
-      evil.value = (x.evil || []).join('\n');
-      evil.addEventListener('change', () => {
-        const seenE = new Set();
-        x.evil = evil.value.split(/\r?\n/).map((t) => t.trim()).filter((t) => t && !seenE.has(t.toLowerCase()) && seenE.add(t.toLowerCase()));
-        evil.value = x.evil.join('\n'); touch();
-      });
-      row(ce, lab('Besonders böse Popsters', 'expert.evil'), 'User-IDs oder Nicknames, je Zeile einer', evil);
       // ---- Gruppenanfragen (Regeln nur hier, nicht im Quelltext) ----
       const gq = draft.groupReq;
       const chips = (arr) => {
@@ -6116,6 +6117,97 @@
   }
 
   // =====================================================================================
+  // „Blockierende Popsters“ – eigene, nicht änderbare Ansicht unter /setting/privacy/home
+  //  Quelle: evil_ids / evil_names (Tampermonkey-Speicher) + Profilgedächtnis.
+  //  Aufruf über einen Anker (…/setting/privacy/home#blockierer), damit nie eine 404-Seite entsteht.
+  // =====================================================================================
+  const BLK_HASH = 'blockierer';
+  const PRIVACY_HOME = '/setting/privacy/home';
+
+  // Menüeintrag „Blockierende Popsters“ vor „Wer kann was sehen“ einhängen
+  function privacyHomeLink() {
+    const vis = document.querySelector(`a[href="${PRIVACY_HOME.replace('/home', '/visible')}"]`);
+    const li = vis && vis.closest('li');
+    if (!li || document.getElementById('vaf-blk-link')) return;
+    const mine = li.cloneNode(true);
+    mine.id = 'vaf-blk-link';
+    const a = mine.querySelector('a') || mine;
+    a.setAttribute('href', PRIVACY_HOME + '#' + BLK_HASH);
+    const t = mine.querySelector('.ant-list-item-meta-title'); if (t) t.textContent = 'Blockierende Popsters';
+    const d = mine.querySelector('.ant-list-item-meta-description'); if (d) d.textContent = 'Popsters, die mich ignorieren';
+    a.addEventListener('click', (e) => { e.preventDefault(); if (location.hash !== '#' + BLK_HASH) location.hash = BLK_HASH; else blkShow(); });
+    li.before(mine);
+  }
+
+  // eigener Bereich im Hauptinhalt (unabhängig von der Opa-Schutz-Ansicht)
+  let blkView = null;
+  function blkMain() { return document.querySelector('main.ant-layout-content') || document.querySelector('main'); }
+  function blkShow() {
+    const main = blkMain();
+    if (!main) return;
+    if (blkView && blkView.isConnected) return;
+    for (const c of main.children) if (!c.dataset.vafOwn && !c.dataset.vafBlk) { c.dataset.vafBlkHidden = '1'; c.style.display = 'none'; }
+    const el = document.createElement('div');
+    el.dataset.vafBlk = '1';
+    main.appendChild(el);
+    blkView = el;
+    fillBlockers(el).catch((e) => warn('Blockierende Popsters', e));
+  }
+  function blkHide() {
+    if (blkView) blkView.remove();
+    blkView = null;
+    for (const c of document.querySelectorAll('[data-vaf-blk-hidden]')) { c.style.display = ''; delete c.dataset.vafBlkHidden; }
+  }
+
+  const blkMeta = (m) => {
+    if (!m) return '';
+    const parts = [];
+    const g = (m.g || []).map((c) => TYPE_NAMES[c] || c).filter(Boolean).join(' & ');
+    if (g) parts.push(g);
+    const ages = (m.ages || []).filter((a) => a > 0);
+    if (ages.length) parts.push(ages.join('/') + ' Jahre');
+    if (m.city) parts.push(m.city);
+    return parts.join(' · ');
+  };
+  const blkInitial = (s) => (String(s || '?').trim()[0] || '?').toUpperCase();
+
+  async function fillBlockers(el) {
+    const ids = (G.get('evil_ids', []) || []).map(String);
+    const names = G.get('evil_names', {});
+    const rows = [];
+    for (const uid of ids) {
+      const m = Members.cached().get(uid) || await Members.get(uid).catch(() => null);
+      rows.push({ uid, nick: (m && m.nick) || names[uid] || '', m: m || null });
+    }
+    rows.sort((a, b) => (a.nick || a.uid).localeCompare(b.nick || b.uid, 'de', { sensitivity: 'base' }));
+    const at = G.get('evil_at', 0);
+    const head = `<div class="vaf-blk-head"><h2>Blockierende Popsters</h2>
+      <div class="vaf-blk-sub">Popsters, die mich ignorieren.${at ? ` Zuletzt aktualisiert: ${esc(deDateTime(at))}.` : ''}</div></div>`;
+    if (!rows.length) { el.innerHTML = head + `<div class="vaf-blk-empty">Zurzeit blockiert dich niemand – oder die Liste wurde noch nicht eingelesen.</div>`; return; }
+    const items = rows.map((r) => {
+      const nick = r.nick;
+      const name = nick || `ID ${esc(r.uid)}`;
+      const avatar = r.m && r.m.avatar && !isPlaceholderAvatar(r.m.avatar) ? r.m.avatar : '';
+      const pic = avatar
+        ? `<img class="vaf-blk-ava" src="${esc(avatar)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'vaf-blk-ava vaf-blk-ph',textContent:'${esc(blkInitial(name))}'}))">`
+        : `<div class="vaf-blk-ava vaf-blk-ph">${esc(blkInitial(name))}</div>`;
+      const meta = r.m ? blkMeta(r.m) : `ID ${esc(r.uid)}`;
+      const title = nick
+        ? `<a class="vaf-blk-name" href="${esc(pathOfName(nick))}">${esc(name)}</a>`
+        : `<span class="vaf-blk-name">${esc(name)}</span>`;
+      return `<li class="vaf-blk-item">${pic}<div class="vaf-blk-txt">${title}<span class="vaf-blk-meta">${esc(meta)}</span></div></li>`;
+    }).join('');
+    el.innerHTML = head + `<ul class="vaf-blk-list">${items}</ul>`;
+  }
+
+  function privacyBlockersUi() {
+    if (location.pathname !== PRIVACY_HOME) { if (blkView) blkHide(); return; }
+    privacyHomeLink();
+    if (location.hash.replace('#', '') === BLK_HASH) blkShow();
+    else if (blkView) blkHide();
+  }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
@@ -6128,6 +6220,7 @@
     try { profileMenu(); } catch (e) { warn('Profil-Menü', e); }
     try { messengerTerms(); } catch (e) { warn('Termine', e); }
     try { templateUi(); } catch (e) { warn('Textvorlagen', e); }
+    try { privacyBlockersUi(); } catch (e) { warn('Blockierende Popsters', e); }
     if (/^\/p\/[^/]+\/?$/.test(location.pathname)) {
       blockedProfileUi().catch((e) => warn('Geblocktes Profil', e));
       profilePage().catch((e) => warn('Profil', e));
@@ -6211,7 +6304,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

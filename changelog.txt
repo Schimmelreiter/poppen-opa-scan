@@ -6,6 +6,11 @@ Neueste Version oben.
 - Gruppen (Whitelist): Besitzer und Moderatoren aller eigenen Gruppen kommen auf die Whitelist (vom Opa-Schutz Blockierte werden entsperrt)
 - Mitglieder verwalteter Gruppen nur noch auf der Whitelist, wenn du die Gruppe allein leitest (als Moderator nie, als Besitzer ohne weitere Moderatoren; Zweitprofile zählen nicht); sonst werden die Einträge sofort entfernt und die Mitglieder nach den Regeln geprüft
 
+2.14 (25.10.2026)
+- Eigene Ansicht „Blockierende Popsters“ unter /setting/privacy/home (Aufruf über #blockierer, nicht änderbar): Liste im Stil der Gruppen-Mitgliederseite, ohne Mülleimer; bekannte Mitglieder mit Bild, Name (Link zum Profil) und „Geschlecht · Alter · Ort“, sonst Platzhalter mit der ID
+- Menüeintrag „Blockierende Popsters“ (Beschreibung „Popsters, die mich ignorieren“) auf der Datenschutz-Seite direkt über „Wer kann was sehen“
+- Das Feld „Besonders böse Popsters“ ist aus den Experten-Einstellungen entfernt; die Liste wird weiterhin automatisch aus der Blockierer-Liste befüllt
+
 2.13 (25.10.2026)
 - „Besonders böse Popsters“: die Zuordnung ID→Nickname liegt zusätzlich dauerhaft im Tampermonkey-Speicher und überlebt so das Löschen der poppen.de-Browserdaten; das Profilgedächtnis dient nur als Rückfallebene, wenn der Tampermonkey-Speicher noch keine Zuordnung hat
 - Umgekehrter Abgleich: nach jedem Scan „Gruppen (Whitelist)“ und einmal täglich werden geänderte Nicknames (gleiche ID) aus dem Gedächtnis in den Tampermonkey-Speicher nachgeführt

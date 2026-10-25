@@ -118,7 +118,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
 - Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen nicht auf der Seite; sie gelten intern weiter (Quelltext bzw. Datensicherung).
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Pause zwischen Sperren, Messdauer der Figur, Schonfrist, **Besonders böse Popsters** (User-IDs oder Nicknames, je Zeile einer; werden im Scan „Gruppen (Whitelist)“ aus den verwalteten Gruppen entfernt; die Liste wird alle 30 Minuten automatisch durch die mich blockierenden Popsters ersetzt – als Nicknames, soweit bekannt, alphabetisch sortiert; die Zuordnung ID→Nick liegt dauerhaft im Tampermonkey-Speicher und wird nach Scans bzw. täglich nachgeführt), API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
+- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
 - Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
@@ -144,6 +144,14 @@ Auf „Du hast diesen Popster blockiert“ kommen **Trotzdem öffnen** (einmalig
 Funktionen, die ein Profil aufrufen (Prüfung von Gruppenanfragen, „Trotzdem öffnen“), warnen vorher: *Unsichtbar schalten und fortfahren / Sichtbar fortfahren / Abbrechen*. Beim Unsichtbar-Schalten (`wio/state`) wartet das Skript 15 Sekunden und stellt danach den vorherigen Zustand wieder her.
 
 ---
+
+## Blockierende Popsters
+
+Alle 30 Minuten liest das Skript die Liste der Popsters, die dich blockieren (`ignore/be-ignored/uid/list`), und merkt sie sich als „besonders böse“. Diese Popsters werden beim Scan **Gruppen (Whitelist)** (und im täglichen Hintergrundlauf) aus deinen **verwalteten** Gruppen entfernt – vorher mit einem Vermerk am Mitglied („Ignorant (Gruppe) blockiert am … um …“).
+
+Die Zuordnung User-ID → Nickname liegt dauerhaft im Tampermonkey-Speicher und überlebt so das Löschen der poppen.de-Browserdaten; das Profilgedächtnis dient nur als Rückfallebene. Geänderte Nicknames (gleiche ID) werden nach jedem Whitelist-Scan und einmal täglich nachgeführt. Entfernt wird anhand der ID, nicht des Namens.
+
+Angezeigt wird die Liste unter *Datenschutzeinstellungen → **Blockierende Popsters*** (auf `/setting/privacy/home`, direkt über „Wer kann was sehen“). Die Ansicht ist **nicht änderbar**: bekannte Mitglieder mit Bild, Name (Link zum Profil) und „Geschlecht · Alter · Ort“, sonst ein Platzhalter mit der ID.
 
 ## Gruppen-Beitrittsanfragen
 
