@@ -1,6 +1,11 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.9 (25.10.2026)
+- Opa-Scan: Gruppen-Scan in zwei Scans geteilt – „Gruppen (Whitelist)“ und „Gruppen (Blacklist)“; je Scan ein Haken „bei Alle“ (Whitelist an, Blacklist aus, Auswahl wird gemerkt)
+- Gruppen (Whitelist): Besitzer und Moderatoren aller eigenen Gruppen kommen auf die Whitelist (vom Opa-Schutz Blockierte werden entsperrt)
+- Mitglieder verwalteter Gruppen nur noch auf der Whitelist, wenn du die Gruppe allein leitest (als Moderator nie, als Besitzer ohne weitere Moderatoren; Zweitprofile zählen nicht); sonst werden die Einträge sofort entfernt und die Mitglieder nach den Regeln geprüft
+
 2.8 (25.10.2026)
 - Gruppenanfragen: die Regeln (Gruppen-Muster, Annehmen-/Ablehnen-Liste, Zusatzregel, Fotozahl) stehen nicht mehr im Quelltext, sondern nur in den eigenen gespeicherten Einstellungen (Experten-Einstellungen → Gruppenanfragen); ohne Gruppen-Muster ist die automatische Annahme/Ablehnung aus
 

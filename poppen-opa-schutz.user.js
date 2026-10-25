@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.8
+// @version      2.9
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.8';
+  const VERSION = '2.9';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -1664,16 +1664,107 @@
     }
     return { n, meta };
   }
-  // Verwaltete Gruppen: alle Mitglieder auf die automatische Whitelist, Geblockte entsperren
+  // ---------- Gruppen-Leitung (Besitzer + Moderatoren) ----------
+  // Antwortformate sind nicht fest dokumentiert: Mitglieder-Objekte (uid + nickname) werden gesucht.
+  function findUsers(d, keyRe, depth = 0, under = false) {
+    const out = [];
+    if (!d || typeof d !== 'object' || depth > 6) return out;
+    if (Array.isArray(d)) { for (const x of d) out.push(...findUsers(x, keyRe, depth + 1, under)); return out; }
+    if (under && (d.uid || d.user_id) && (d.nickname || d.name)) { const u = normUser(d); if (u) out.push(u); return out; }
+    for (const [k, v] of Object.entries(d)) if (v && typeof v === 'object') out.push(...findUsers(v, keyRe, depth + 1, under || !keyRe || keyRe.test(k)));
+    return out;
+  }
+  async function groupLead(cms) {
+    const lead = new Map();
+    try {
+      const d = await apiGet('group/profile', { _version: 2, cms_id: cms });
+      for (const u of findUsers(d, /creator|owner|besitzer/i)) lead.set(u.uid, { ...u, role: 'owner' });
+    } catch (e) { warn('Gruppen-Besitzer ' + cms, e); }
+    let mods = [];
+    try {
+      const d = await apiGet('group/moderator/list', { _version: 2, cms_id: cms });
+      mods = findUsers(d, null).filter((u, i, l) => l.findIndex((x) => x.uid === u.uid) === i);
+      for (const u of mods) if (!lead.has(u.uid)) lead.set(u.uid, { ...u, role: 'moderator' });
+    } catch (e) { warn('Gruppen-Moderatoren ' + cms, e); mods = null; }
+    return { lead: [...lead.values()], mods };
+  }
+  // Allein in der Leitung: als Moderator nie (es gibt den Besitzer); als Besitzer, wenn außer mir niemand moderiert.
+  // Eigene weitere Profile zählen nicht als „ich“.
+  function aloneIn(g, info) {
+    if (g.role !== 'owner') return false;
+    if (!info || info.mods == null) return false;            // Liste nicht lesbar → vorsichtshalber nicht allein
+    const me = String(Me.uid());
+    return !info.mods.some((u) => u.uid !== me);
+  }
+
+  // ---------- Gruppen (Whitelist) ----------
+  // Leitung aller Gruppen → Whitelist (Geblockte entsperren); verwaltete Gruppen, die ich allein leite → alle Mitglieder Whitelist;
+  // leite ich nicht allein → Whitelist-Einträge dieser Gruppe sofort entfernen, Mitglieder nach den Regeln behandeln (nur im Scan).
   async function refreshManagedWhitelist(ctx, groups) {
     const res = newRes();
     const s = S();
-    const managed = (groups || (await loadGroups())).managed.filter((g) => s.managedWhitelist[g.cms] !== false);
+    groups = groups || (await loadGroups());
+    const me = String(Me.uid());
+    const all = [...groups.managed, ...groups.attended];
+    const t0 = now();
+    const alone = {};
+    const unblock = async (m, why) => {
+      if (m && m.blk && m.blk.opa && !m.unblk) {
+        const r = await unblockOne(m);
+        if (r === 'ok' || r === 'Test') { res.unblocked++; (ctx.notes || []).push(`${m.nick}: entsperrt, ${why}`); }
+      }
+    };
+    // 1) Leitung aller Gruppen
+    let gi = 0;
+    for (const g of all) {
+      if (ctx.stop()) return res;
+      gi++;
+      ctx.phase && ctx.phase(`Leitung ${gi}/${all.length}: ${g.name}`);
+      ctx.outer && ctx.outer(gi - 1, all.length * 2);
+      const info = await groupLead(g.cms);
+      if (g.subset === 'managed') alone[g.cms] = aloneIn(g, info);
+      for (const u of info.lead) {
+        if (u.uid === me) continue;
+        const m = await seen(u, 'Gruppen', { images: false });
+        if (!m) continue;
+        const was = !!(m.auto && m.auto.lead && m.auto.lead[g.cms]);
+        await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.lead = x.auto.lead || {}; x.auto.lead[g.cms] = now(); });
+        if (!was) res.whitelisted++;
+        await unblock(m, `weil ${u.role === 'owner' ? 'Besitzer' : 'Moderator'} von ${g.name}`);
+      }
+      ctx.step(gi, all.length, `${g.name}: ${info.lead.length} in der Leitung`);
+    }
+    // nicht mehr in der Leitung → Eintrag weg
+    const ids = new Set(all.map((g) => g.cms));
+    const stale = [];
+    await Members.each((m) => { const l = m.auto && m.auto.lead; if (l && Object.entries(l).some(([c, ts]) => ts < t0 && ids.has(c))) stale.push(m.uid); });
+    for (const uid of stale) await Members.update(uid, (x) => { for (const [c, ts] of Object.entries(x.auto.lead)) if (ts < t0 && ids.has(c)) delete x.auto.lead[c]; });
+    // 2) verwaltete Gruppen
+    const managed = groups.managed.filter((g) => s.managedWhitelist[g.cms] !== false);
     const inv = G.get('grp_invisible', {});
+    gi = 0;
     for (const g of managed) {
       if (ctx.stop()) break;
+      gi++;
+      ctx.outer && ctx.outer(all.length + gi - 1, all.length * 2);
+      if (!alone[g.cms]) {
+        // nicht allein: Gruppen-Whitelist sofort entfernen
+        const drop = [];
+        await Members.each((m) => { if (m.auto && m.auto.grp && m.auto.grp[g.cms]) drop.push(m.uid); });
+        for (const uid of drop) await Members.update(uid, (x) => { delete x.auto.grp[g.cms]; });
+        if (drop.length) log(`${g.name}: nicht allein in der Leitung – ${drop.length} Whitelist-Einträge entfernt.`);
+        if (ctx.full) {
+          ctx.phase && ctx.phase(`Prüfen: ${g.name}`);
+          await groupMembers(g.cms, ctx, async (users, page, meta) => {
+            for (const u of users) await seen(u, 'Gruppen', { images: false });
+            addRes(res, await judge(users, 'Gruppen'));
+            ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: Seite ${page}`);
+          });
+        }
+        continue;
+      }
       ctx.phase && ctx.phase(`Whitelist: ${g.name}`);
-      const t0 = now();
+      const t1 = now();
       const seenIds = new Set();
       const { meta } = await groupMembers(g.cms, ctx, async (users, page, meta) => {
         for (const u of users) {
@@ -1682,31 +1773,33 @@
           const was = !!(m.auto && m.auto.grp && m.auto.grp[g.cms]);
           await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[g.cms] = now(); });
           if (!was) res.whitelisted++;
-          if (m.blk && m.blk.opa && !m.unblk) {
-            const r = await unblockOne(m);
-            if (r === 'ok' || r === 'Test') { res.unblocked++; (ctx.notes || []).push(`${u.nick}: entsperrt, weil Mitglied in ${g.name}`); }
-          }
+          await unblock(m, `weil Mitglied in ${g.name}`);
         }
         ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: ${fmtN(seenIds.size)} Mitglieder`);
       });
       if (ctx.stop() || !meta) break;
       // Verschwundene: unsichtbar geworden? Dann Schonfrist verlängern
       const gone = [];
-      await Members.each((m) => { if (m.auto && m.auto.grp && m.auto.grp[g.cms] && m.auto.grp[g.cms] < t0 && !seenIds.has(m.uid)) gone.push(m.uid); });
+      await Members.each((m) => { if (m.auto && m.auto.grp && m.auto.grp[g.cms] && m.auto.grp[g.cms] < t1 && !seenIds.has(m.uid)) gone.push(m.uid); });
       const prev = inv[g.cms];
       if (prev && gone.length && meta.invisible - prev >= gone.length) {
         for (const uid of gone) await Members.update(uid, (x) => { x.auto.grp[g.cms] = now(); });
       }
       inv[g.cms] = meta.invisible;
       G.set('grp_invisible', inv);
-      G.set('grp_wl_at', now());
     }
+    G.set('grp_alone', alone);
+    if (!ctx.stop()) G.set('grp_wl_at', now());
+    ctx.outer && ctx.outer(1, 1);
     return res;
   }
-  async function scanGroups(ctx) {
+  const scanGroupsWhite = (ctx) => refreshManagedWhitelist({ ...ctx, full: true });
+
+  // ---------- Gruppen (Blacklist) ----------
+  // Mitglieder der Gruppen, in denen ich Mitglied bin, nach den Regeln prüfen (Whitelist wird in judge berücksichtigt)
+  async function scanGroupsBlack(ctx) {
     const res = newRes();
     const groups = await loadGroups();
-    addRes(res, await refreshManagedWhitelist(ctx, groups));
     const s = S();
     const list = groups.attended.filter((g) => s.groupScan[g.cms] !== false);
     let gi = 0;
@@ -1718,13 +1811,13 @@
       await groupMembers(g.cms, ctx, async (users, page, meta) => {
         for (const u of users) await seen(u, 'Gruppen', { images: false });
         addRes(res, await judge(users, 'Gruppen'));
-        res.total += 0;
         ctx.step(page * 30, Math.max(1, meta.total - meta.invisible), `${g.name}: Seite ${page}`);
       });
     }
     ctx.outer && ctx.outer(list.length, list.length);
     return res;
   }
+  async function scanGroups(ctx) { const r = await scanGroupsWhite(ctx); return addRes(r, await scanGroupsBlack(ctx)); }
 
   // ---------- Mitgliedersuche, systematisch (Alter für Alter, ganz Deutschland) ----------
   function searchBase() {
@@ -1838,6 +1931,8 @@
   .vaf-big:disabled{opacity:.45;cursor:default}
   .vaf-big.vaf-focus{outline:2px solid #fff;outline-offset:-2px}
   .vaf-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+  .vaf-tilew{display:flex;flex-direction:column;gap:4px}.vaf-tilew .vaf-tile{flex:1;width:100%}
+  .vaf-tsel{font-size:12px;color:#a6a6a6;display:flex;gap:6px;align-items:center;padding-left:4px;cursor:pointer}
   .vaf-tile{background:#2a2a2a;border:0;border-radius:12px;padding:12px;text-align:left;color:#e8e8e8;cursor:pointer}
   .vaf-tile b{display:block;color:#fff;font-size:15px}
   .vaf-tile span{color:#a6a6a6;font-size:12.5px}
@@ -2426,10 +2521,13 @@
     { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
     { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker und Nachrichten', fn: scanInteractions },
     { k: 'party', title: 'Partygäste', sub: 'gibt es auf poppen.de nicht', fn: null },
-    { k: 'gruppen', title: 'Gruppen', sub: 'Mitglieder deiner Gruppen; verwaltete Gruppen → Whitelist', fn: scanGroups },
+    { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
+    { k: 'gruppen_bl', src: 'gruppen', title: 'Gruppen (Blacklist)', sub: 'Mitglieder deiner Gruppen nach den Regeln prüfen', fn: scanGroupsBlack, def: false },
     { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
   ];
   let scanRun = null;
+  // Auswahl für „Alle Scans nacheinander“ (wird gemerkt)
+  const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : sc.def !== false; return o; };
 
   async function statusLine() {
     const q = await Queue.count().catch(() => 0);
@@ -2445,15 +2543,19 @@
     const W1 = word();
     const m = modal({ title: `${W1}-Scan`, sub: await statusLine() });
     const groups = G.get('groups', null);
+    const sel = scanSel();
     const tiles = SCANS.map((sc) => {
       let sub = sc.sub;
-      if (sc.k === 'gruppen' && groups) sub = `${groups.attended.length} Gruppen, ${groups.managed.length} verwaltet (→ Whitelist)`;
-      return `<button type="button" class="vaf-tile" data-k="${sc.k}" ${sc.fn ? '' : 'disabled'} title="${esc(SOURCES[sc.k].tip)}"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></button>`;
+      if (sc.k === 'gruppen_wl' && groups) sub = `${groups.attended.length + groups.managed.length} Gruppen, ${groups.managed.length} verwaltet`;
+      if (sc.k === 'gruppen_bl' && groups) sub = `${groups.attended.length} ${groups.attended.length === 1 ? "Gruppe" : "Gruppen"}, in denen du Mitglied bist`;
+      const chk = sc.fn ? `<label class="vaf-tsel" title="Bei „Alle Scans nacheinander“ mitnehmen"><input type="checkbox" data-sel="${sc.k}" ${sel[sc.k] ? 'checked' : ''}> bei „Alle“</label>` : '';
+      return `<div class="vaf-tilew"><button type="button" class="vaf-tile" data-k="${sc.k}" ${sc.fn ? '' : 'disabled'} title="${esc(SOURCES[sc.src || sc.k].tip)}"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></button>${chk}</div>`;
     }).join('');
     m.body.innerHTML = `<div class="vaf-grid">${tiles}</div>`;
     m.body.querySelectorAll('.vaf-tile').forEach((b) => b.addEventListener('click', () => runScans(m, [b.dataset.k])));
+    m.body.querySelectorAll('[data-sel]').forEach((c) => c.addEventListener('change', () => { const st = { ...G.get('scan_sel', {}) }; st[c.dataset.sel] = c.checked; G.set('scan_sel', st); }));
     m.buttons([
-      { label: 'Alle Scans nacheinander', primary: true, focus: true, fn: () => runScans(m, SCANS.filter((x) => x.fn).map((x) => x.k)) },
+      { label: 'Alle Scans nacheinander', primary: true, focus: true, fn: () => { const sl = scanSel(); const ks = SCANS.filter((x) => x.fn && sl[x.k]).map((x) => x.k); if (ks.length) runScans(m, ks); else toast('Kein Scan ausgewählt.'); } },
       { label: 'Jetzt abarbeiten', fn: () => runEtappeInPopup(m) },
       { label: 'Schließen', fn: () => m.close() },
     ]);
@@ -2839,7 +2941,7 @@
           l.append(s2, `${g.name} · ${g.role === 'moderator' ? 'Moderatorin' : 'Eigentümerin'} · ${fmtN(g.count)} Mitglieder`);
           mbox.appendChild(l);
         }
-        row(cg, lab('Verwaltete Gruppen', 'managedWhitelist'), `Schalter = Mitglieder whitelisten (Schonfrist ${draft.expert.groupGraceDays} Tage)`, gr.managed.length ? mbox : '<span class="vaf-mini">keine</span>');
+        row(cg, lab('Verwaltete Gruppen', 'managedWhitelist'), `Schalter = Mitglieder whitelisten, wenn du die Gruppe allein leitest (Schonfrist ${draft.expert.groupGraceDays} Tage)`, gr.managed.length ? mbox : '<span class="vaf-mini">keine</span>');
         const abox = document.createElement('div'); abox.className = 'vaf-grp';
         for (const g of gr.attended) {
           const l = document.createElement('label');
@@ -6004,7 +6106,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

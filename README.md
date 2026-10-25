@@ -55,7 +55,8 @@ Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** un
 - **Whitelist** (Namen, Präfixe, eigene Gruppen) – auf der Seite *Opa-Schutz* bearbeitbar.
 - **poppen-Mitarbeiter** (`payclass: site_admin`).
 - **Freunde und Favoriten** – die Listen (`friends/list`, `favourite/list`) werden täglich und beim Öffnen der Seiten eingelesen; zusätzlich fragt das Skript vor jeder Sperre die Profil-Kurzinfo ab (`friend_status`). Opa-Sperren von Freunden und Favoriten werden aufgehoben.
-- **Mitglieder verwalteter Gruppen** (Eigentümerin oder Moderatorin), je Gruppe abschaltbar. Wer aus allen verwalteten Gruppen verschwindet, bleibt noch **30 Tage** geschützt (er könnte sich nur unsichtbar geschaltet haben). Bereits vom Opa-Schutz Blockierte werden entsperrt. Über das Gruppenanfragen-Popup Aufgenommene sind sofort geschützt.
+- **Gruppen-Leitung:** Besitzer und Moderatoren aller eigenen Gruppen (`group/profile`, `group/moderator/list`); bereits vom Opa-Schutz Blockierte werden entsperrt.
+- **Mitglieder verwalteter Gruppen**, je Gruppe abschaltbar – aber nur, wenn du die Gruppe **allein leitest**: als Moderator nie (es gibt den Besitzer), als Besitzer nur ohne weitere Moderatoren; eigene Zweitprofile zählen nicht. Leitest du nicht allein, werden die Whitelist-Einträge dieser Gruppe sofort entfernt und die Mitglieder nach den Regeln geprüft. Wer aus allen verwalteten Gruppen verschwindet, bleibt noch **30 Tage** geschützt (er könnte sich nur unsichtbar geschaltet haben). Bereits vom Opa-Schutz Blockierte werden entsperrt. Über das Gruppenanfragen-Popup Aufgenommene sind sofort geschützt.
 
 ### Bezeichnungen und Notizen
 
@@ -74,7 +75,8 @@ Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von popp
 |---|---|---|
 | Interaktionen | Likes (`rates`), Sticker (`my/received/gift`), Unterhaltungen (`messenger/group/list`, ohne Nachrichtentexte) | Likes / Sticker / Nachrichten |
 | Profilbesucher | Besucherliste (unsichtbar geladen und durchgescrollt) | Besucher |
-| Gruppen | alle eigenen Gruppen (`group/my`, `group/attendee/list`), standardmäßig komplett | Gruppen |
+| Gruppen (Whitelist) | Leitung aller Gruppen, Mitglieder verwalteter Gruppen (siehe Whitelist); bei „Alle Scans“ standardmäßig an | Gruppen |
+| Gruppen (Blacklist) | Mitglieder der Gruppen, in denen du Mitglied bist (`group/attendee/list`), nach den Regeln; bei „Alle Scans“ standardmäßig aus, Auswahl wird gemerkt | Gruppen |
 | Mitgliedersuche | ganz Deutschland, Alter für Alter ab der Grenze (`user/search`) | Suche |
 | Partygäste | gibt es auf poppen.de nicht (ausgeblendet) | – |
 
