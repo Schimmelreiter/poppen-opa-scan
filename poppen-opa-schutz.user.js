@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.7
+// @version      2.8
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.7';
+  const VERSION = '2.8';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -184,7 +184,9 @@
     autoLogin: true,
     autoLoginPauseMin: 30,
     maintenanceMin: 15,
-    groupReq: { match: 'bbc|black|interracial', accept: ['Afroamerikanisch'], reject: ['Europäisch'], photos: 6,
+    // Regeln für die automatische Annahme/Ablehnung von Gruppenanfragen: leer = aus.
+    // Nicht im Quelltext hinterlegt; in den Experten-Einstellungen unter „Gruppenanfragen“ einzutragen.
+    groupReq: { match: '', accept: [], reject: [], noPicNoType: false, photos: 6,
       fields: ['Geschlecht', 'Sexualität', 'Typ', 'Herkunft', 'Sprachen'] },
     groupScan: {},                // cms_id → false = beim Gruppen-Scan auslassen (Standard: alle)
     managedWhitelist: {},         // cms_id → false = Mitglieder NICHT whitelisten (Standard: whitelisten)
@@ -2888,6 +2890,25 @@
       row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
       row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
       row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
+      // ---- Gruppenanfragen (Regeln nur hier, nicht im Quelltext) ----
+      const gq = draft.groupReq;
+      const chips = (arr) => {
+        const box = document.createElement('div'); box.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+        const draw = () => {
+          box.innerHTML = '';
+          arr.forEach((t, i) => { const c = document.createElement('span'); c.className = 'vaf-chip'; c.innerHTML = `${esc(t)} <b>✕</b>`; c.querySelector('b').addEventListener('click', () => { arr.splice(i, 1); draw(); touch(); }); box.appendChild(c); });
+          const add = document.createElement('button'); add.type = 'button'; add.className = 'vaf-btn'; add.textContent = '+';
+          add.addEventListener('click', () => { const v = W.prompt('Typ (wie im Profil unter „Typ“):'); if (v && v.trim()) { arr.push(v.trim()); draw(); touch(); } });
+          box.appendChild(add);
+        };
+        draw(); return box;
+      };
+      row(ce, lab('Gruppenanfragen: Gruppen', 'groupReq.match'), 'Name enthält (regulärer Ausdruck); leer = aus', txtIn(gq.match, (v) => { gq.match = v; touch(); }, 'z. B. muster1|muster2'));
+      row(ce, lab('Typ annehmen', 'groupReq.accept'), '', chips(gq.accept));
+      row(ce, lab('Typ ablehnen', 'groupReq.reject'), '', chips(gq.reject));
+      row(ce, lab('Ohne Typ/Bild & nur Deutsch ablehnen', 'groupReq.noPicNoType'), 'zusätzliche Ablehnregel', sw(!!gq.noPicNoType, (v) => { gq.noPicNoType = v; touch(); }));
+      row(ce, lab('Fotos in der Prüfung', 'groupReq.photos'), '', numIn(gq.photos, (v) => { gq.photos = v; touch(); }, 0, 20));
+
       const recSt = document.createElement('span'); recSt.className = 'vaf-mini';
       Recorder.stats().then((r) => { recSt.textContent = `${r.total} Schnittstellen erfasst, davon ${r.fresh} neu`; });
       const recEx = document.createElement('button'); recEx.type = 'button'; recEx.className = 'vaf-btn'; recEx.textContent = 'Exportieren';
@@ -3222,7 +3243,7 @@
   // Gruppen-Beitrittsanfragen (/groups/<Nummer>/requests): prüfen, annehmen/ablehnen,
   // Aufgenommene sofort auf die Gruppen-Whitelist
   // =====================================================================================
-  const groupMatch = () => { try { return new RegExp(S().groupReq.match || '.', 'i').test(groupName()); } catch { return false; } };
+  const groupMatch = () => { const m = (S().groupReq.match || '').trim(); if (!m) return false; try { return new RegExp(m, 'i').test(groupName()); } catch { return false; } };
   const reqCms = () => (/^\/groups\/(\d+)\/requests/.exec(location.pathname) || [])[1] || '';
   async function show(target, label, action = (x) => x.click()) {
     const el = typeof target === 'function' ? target() : target;
@@ -3581,8 +3602,8 @@
     const is = (list) => list.some((x) => norm(x) === norm(typ));
     if (typ && is(S().groupReq.accept)) return { verdict: 'accept', reason: `Typ: ${typ}` };
     if (typ && is(S().groupReq.reject)) return { verdict: 'reject', reason: `Typ: ${typ}` };
-    // Typ leer + kein Profilbild (nur Platzhalter und kein öffentliches Foto) + einzige Sprache Deutsch → ablehnen
-    if (!typ) {
+    // Zusatzregel (nur wenn eingeschaltet): Typ leer + kein Profilbild + einzige Sprache Deutsch → ablehnen
+    if (!typ && S().groupReq.noPicNoType) {
       const langs = String(fields['Sprachen'] || '').split(/\s*,\s*/).map(norm).filter(Boolean);
       const noPic = isPlaceholderAvatar(extra.listAvatar) && isPlaceholderAvatar(extra.avatar) && !(extra.photos || []).length;
       if (noPic && langs.length === 1 && langs[0] === 'deutsch') return { verdict: 'reject', reason: 'Typ leer, kein Profilbild, nur Deutsch' };

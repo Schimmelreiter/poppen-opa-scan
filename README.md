@@ -6,7 +6,7 @@ Ein Tampermonkey-Userscript für [poppen.de](https://www.poppen.de). Es findet M
 
 Das Gegenstück für JOYclub: [joyclub-opa-scan](https://github.com/Schimmelreiter/joyclub-opa-scan).
 
-Stand: Version 2.7 – Änderungen siehe [changelog.txt](changelog.txt)
+Stand: Version 2.8 – Änderungen siehe [changelog.txt](changelog.txt)
 
 ---
 
@@ -145,7 +145,9 @@ Funktionen, die ein Profil aufrufen (Prüfung von Gruppenanfragen, „Trotzdem �
 
 ## Gruppen-Beitrittsanfragen
 
-Auf `/groups/<Nummer>/requests` (nur Gruppen, deren Name „BBC“, „Black“ oder „interracial“ enthält) prüft **Automatische Annahme/Ablehnung** jedes Profil über die Schnittstellen (`user/info`, Galerie) statt mit einem unsichtbaren Profilaufruf; der Typ kommt als Zahl und wird über die Übersetzungen der Seite (`i18n/pull`) benannt, sonst prüft das Skript wie bisher über das Profil. Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen; Typ leer, kein Profilbild (nur Platzhalter und kein öffentliches Foto) und als einzige Sprache Deutsch → ablehnen; sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
+Auf `/groups/<Nummer>/requests` prüft **Automatische Annahme/Ablehnung** jedes Profil über die Schnittstellen (`user/info`, Galerie) statt mit einem unsichtbaren Profilaufruf; der Typ kommt als Zahl und wird über die Übersetzungen der Seite (`i18n/pull`) benannt, sonst prüft das Skript wie bisher über das Profil. Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen; sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
+
+Die **Regeln** (Gruppen-Muster, Annehmen-/Ablehnen-Liste, Zusatzregel, Fotozahl) stehen nicht im Quelltext, sondern nur in den eigenen gespeicherten Einstellungen: *Opa-Schutz → Experten-Einstellungen → Gruppenanfragen*. Ist kein Gruppen-Muster eingetragen, ist die automatische Annahme/Ablehnung aus.
 
 ---
 

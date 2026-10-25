@@ -1,6 +1,9 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.8 (25.10.2026)
+- Gruppenanfragen: die Regeln (Gruppen-Muster, Annehmen-/Ablehnen-Liste, Zusatzregel, Fotozahl) stehen nicht mehr im Quelltext, sondern nur in den eigenen gespeicherten Einstellungen (Experten-Einstellungen → Gruppenanfragen); ohne Gruppen-Muster ist die automatische Annahme/Ablehnung aus
+
 2.7 (25.10.2026)
 - Automatischer Abgleich von Fickliste und Textvorlagen mit dem JOYclub-Skript über einen unsichtbaren „Briefkasten“ (leere GitHub-Pages-Seite); auf joyclub.de läuft das Skript nur passiv
 - Dreiwege-Abgleich je Feld über einen gemerkten Stand, Papierkorb (30 Tage) für gelöschte Textvorlagen, Smiley-Übersetzung beim Abgleich; Status in den Experten-Einstellungen
