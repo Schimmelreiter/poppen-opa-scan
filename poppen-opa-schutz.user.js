@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.10
+// @version      2.11
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.10';
+  const VERSION = '2.11';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -1698,6 +1698,19 @@
       res.kicked++; (ctx.notes || []).push(`${u.nick}: aus ${g.name} entfernt (besonders böse)`);
       await Members.update(u.uid, (x) => { x.kicked = x.kicked || {}; x.kicked[g.cms] = now(); });
     } catch (e) { warn('Entfernen', u.nick, e); (ctx.notes || []).push(`${u.nick}: Entfernen aus ${g.name} fehlgeschlagen (${e.message})`); }
+  }
+  // „Besonders böse Popsters“ aus der Liste der mich blockierenden Popsters füllen (ersetzt den bisherigen Inhalt)
+  async function refreshEvilFromBlockers() {
+    let d;
+    try { d = await apiGet('ignore/be-ignored/uid/list', { _version: 2 }); }
+    catch (e) { warn('Blockierer-Liste', e); return; }
+    const uids = [...new Set(((d && d.list) || []).map(String).filter((u) => /^\d+$/.test(u)))];
+    G.set('evil_at', now());
+    const s = clone(S());
+    if (same(s.expert.evil || [], uids)) return;
+    s.expert.evil = uids;
+    saveSettings(s);
+    log(`Besonders böse Popsters aus Blockierer-Liste ersetzt: ${uids.length} Einträge.`);
   }
 
   // ---------- Gruppen-Leitung (Besitzer + Moderatoren) ----------
@@ -6139,6 +6152,15 @@
       try { await refreshManagedWhitelist({ stop: () => false, step: () => {}, notes: [] }); } catch (e) { warn('Gruppen-Whitelist', e); }
       finally { Lock.release('grpwl'); }
     }, 20000);
+    // „Besonders böse Popsters“ alle 30 Minuten aus der Blockierer-Liste auffüllen (ersetzt den Inhalt)
+    const EVIL_EVERY = 30 * 60000;
+    const evilTick = async () => {
+      if (now() - G.get('evil_at', 0) < EVIL_EVERY - 5000) return;
+      if (!(await Lock.take('evilblk'))) return;
+      try { await refreshEvilFromBlockers(); } catch (e) { warn('Blockierer-Liste', e); } finally { Lock.release('evilblk'); }
+    };
+    setTimeout(evilTick, 25000);
+    setInterval(evilTick, 5 * 60000);
     // Oberfläche aktuell halten (die Seite baut Teile laufend neu auf)
     let t = null;
     new MutationObserver(() => { clearTimeout(t); t = setTimeout(ensureUi, 250); }).observe(document.body, { childList: true, subtree: true });
@@ -6148,7 +6170,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

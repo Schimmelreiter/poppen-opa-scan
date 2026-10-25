@@ -112,8 +112,8 @@ Body: `{ "uid": "123", "nickname": "Name" }`
 ### `POST ignore/comment/add` ✅
 Notiz zu einer Sperre setzen. Body: `{ "igrid": "123", "comment": "Text" }`. **`igrid` ist die uid des Gesperrten, nicht die `ignore_id`.**
 
-### `GET ignore/be-ignored/uid/list` 📼 ❔
-Liefert die IDs der Mitglieder, die einen **selbst** blockiert haben (vermutlich `data.list` als Array von uid-Texten). Vom Skript nicht verwendet.
+### `GET ignore/be-ignored/uid/list` ✅
+Query: `_version=2`. Liefert die IDs der Mitglieder, die einen **selbst** blockiert haben: `data.list` als Array von uid-Texten. Das Skript füllt damit alle 30 Minuten die Liste „Besonders böse Popsters“ (ersetzt deren Inhalt), siehe Abschnitt 7 (`group/attendee/kick`).
 
 **Sperren ohne bekannte uid:** Dafür gibt es keinen bekannten Endpunkt. Das Skript nutzt das Formular „Benutzer hinzufügen“ auf `/setting/privacy/ignore-list` in einem unsichtbaren Rahmen.
 
@@ -298,7 +298,6 @@ Diese Endpunkte sind bekannt, das Skript ruft sie aber nicht auf.
 | Endpunkt | Abschnitt | Zweck |
 |---|---|---|
 | `messenger/backend/settings` | 2 | Chat-Verbindung (enthält Zugangsdaten, bewusst ungenutzt) |
-| `ignore/be-ignored/uid/list` | 3 | IDs der Mitglieder, die einen selbst blockiert haben |
 | `messenger/message/list` | 4 | Nachrichten einer Unterhaltung |
 | `v2/comment/list` | 6 | Kommentare |
 | `global/emojis` | 6 | Smiley-/Emoji-Liste |
