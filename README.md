@@ -254,3 +254,7 @@ Fickliste und Textvorlagen gleichen sich automatisch mit dem [JOYclub-Skript](ht
 ## Lizenz
 
 GPL-3.0, siehe [LICENSE](LICENSE).
+
+## API
+
+Eine Beschreibung der internen poppen.de-Schnittstellen, soweit bekannt, steht in [API.md](API.md).
