@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.2.6
+// @version      1.2.7
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.6';
+  const VERSION = '1.2.7';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -222,16 +222,31 @@
   function loadFrame(url) {
     return new Promise((resolve) => { const f = theFrame(); const done = () => { f.removeEventListener('load', done); resolve(); }; f.addEventListener('load', done); f.src = url; setTimeout(done, 25000); });
   }
-  // Detail-Block der Profilanzeige: <label>Figur</label><div><div>Normal</div></div>
-  // Klassennamen sind zufällig (styled-components) -> nur über den Label-Text gehen.
+  // Wert zu einem Detail-Label finden – robust gegen mehrere DOM-Formen,
+  // da Klassennamen zufällig (styled-components) sind.
+  function valueForLabel(lab) {
+    const lt = (lab.textContent || '').trim();
+    // 1) nächstes Geschwister-Element mit Text (…<label>Figur</label><div>Normal</div>)
+    for (let s = lab.nextElementSibling; s; s = s.nextElementSibling) {
+      const t = (s.textContent || '').trim(); if (t) return t;
+    }
+    // 2) Rest des Eltern-/Großeltern-Containers ohne den Label-Text
+    for (let p = lab.parentElement, i = 0; p && i < 3; p = p.parentElement, i++) {
+      const full = (p.textContent || '').trim();
+      if (full.length > lt.length && full.startsWith(lt)) {
+        const rest = full.slice(lt.length).trim();
+        if (rest && rest.length <= 60) return rest;
+      }
+    }
+    return '';
+  }
   function readDetailsFrom(doc) {
     const out = {};
     for (const lab of doc.querySelectorAll('label')) {
       const key = (lab.textContent || '').trim().toLowerCase();
       const field = FIELD_BY_LABEL[key];
-      const v = lab.nextElementSibling;
-      if (!field || !v) continue;
-      const txt = (v.textContent || '').trim();
+      if (!field) continue;
+      const txt = valueForLabel(lab);
       if (txt) out[field] = txt;
     }
     return out;
@@ -251,6 +266,16 @@
       try { const b = (d.body && d.body.innerText || '').trim(); info.bodyLen = b.length; info.bodyHead = b.slice(0, 160).replace(/\s+/g, ' '); } catch {}
       try { info.labelTexts = [...d.querySelectorAll('label')].map((l) => (l.textContent || '').trim()).filter(Boolean).slice(0, 30); } catch {}
       try { info.headings = [...d.querySelectorAll('h1,h2,h3')].map((h) => (h.textContent || '').trim()).filter(Boolean).slice(0, 20); } catch {}
+      try {
+        const ds = [];
+        for (const lab of d.querySelectorAll('label')) {
+          const key = (lab.textContent || '').trim().toLowerCase();
+          if (!FIELD_BY_LABEL[key]) continue;
+          ds.push({ label: (lab.textContent || '').trim(), wert: valueForLabel(lab), html: (lab.parentElement ? lab.parentElement.outerHTML : '').replace(/\s+/g, ' ').slice(0, 300) });
+          if (ds.length >= 3) break;
+        }
+        info.detailSample = ds;
+      } catch {}
     }
     diag.push(info);
     return info;
