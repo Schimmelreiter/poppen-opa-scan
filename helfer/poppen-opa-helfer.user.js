@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.4.0
+// @version      1.4.1
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -516,7 +516,13 @@
           // nur verwenden, wenn der Code wirklich passt (schützt vor ignoriertem Filter) und Einzelprofil
           if (isSingleTrait(tr) && String(scalarCode(tr, F)) === String(code)) {
             const pg = await readProfileDetails(u.nickname).catch(() => ({}));
-            if (pg[F] && addMap(F, code, pg[F])) paired = true;
+            // ALLE auf der Profilseite sichtbaren Felder paaren, nicht nur das Zielfeld –
+            // so werden z.B. Raucher=Nein/Brille=Nein gratis aus denselben Profilen gelernt.
+            for (const f of WANT) {
+              const c = scalarCode(tr, f);
+              if (c != null && String(c) !== '0' && pg[f]) addMap(f, String(c), pg[f]);
+            }
+            if (mapping[F] && mapping[F][String(code)]) paired = true;
             await sleep(500);
             if (paired) break;
           }
