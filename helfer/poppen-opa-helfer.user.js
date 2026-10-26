@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.2.8
+// @version      1.3.0
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.8';
+  const VERSION = '1.3.0';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -260,10 +260,13 @@
     return out;
   }
   // Diagnose, damit wir sehen, was eine Seite im iframe wirklich liefert
+  // (nur im Eigen-Profil-Debug aktiv – im vollen Lauf aus, sonst Speicher-Blowup)
+  let capture = false;
   const diag = [];
   const savedPages = [];   // komplette Seiten-HTMLs (für Debug-Download)
   function pageSlug(u) { try { return new URL(u, location.origin).pathname.replace(/^\/+|\/+$/g, '').replace(/[^a-z0-9]+/gi, '-') || 'seite'; } catch { return 'seite'; } }
   function snapFrame(tag, url) {
+    if (!capture) return;
     let d = null, accessible = true;
     try { d = theFrame().contentDocument; } catch { accessible = false; }
     try { if (d) savedPages.push({ slug: pageSlug(url), html: '<!-- ' + tag + ' ' + url + ' -->\n' + d.documentElement.outerHTML }); } catch {}
@@ -374,52 +377,6 @@
   function badgeDone(t) { ensureBadge(); badge.style.background = '#2e7d32'; badge.querySelector('span').style.animation = 'none'; if (badgeTxt) badgeTxt.textContent = t; }
 
   // =====================================================================================
-  // Export-Abfrage (Datenexport des Hauptscripts)
-  // =====================================================================================
-  function askExport() {
-    return new Promise((resolve) => {
-      const ov = document.createElement('div');
-      ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;font:14px system-ui,sans-serif';
-      ov.innerHTML = `<div style="background:#1f1f1f;color:#e8e8e8;border-radius:16px;padding:22px;width:min(640px,94vw)">
-        <h2 style="margin:0 0 6px;color:#fff;font-size:18px">Opa-Schutz Helfer</h2>
-        <div style="color:#a6a6a6;margin:0 0 12px">Füge hier den <b>Datenexport des Hauptscripts</b> ein (Opa-Schutz → „Alle Daten sichern"). Daraus nehme ich die bekannten Profile. Das Hauptscript sollte jetzt deaktiviert sein.</div>
-        <textarea data-in style="width:100%;height:180px;background:#141414;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:10px;box-sizing:border-box;font-family:monospace"></textarea>
-        <div style="color:#ff8a80;min-height:18px;margin:6px 0" data-err></div>
-        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
-          <button data-file style="background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:9px 16px;cursor:pointer">Datei wählen …</button>
-          <button data-go style="background:#ffc21a;color:#1a1a1a;border:0;border-radius:10px;padding:9px 18px;font-weight:600;cursor:pointer">Start</button>
-        </div>
-        <input data-f type="file" accept=".json,application/json" style="display:none">
-      </div>`;
-      document.body.appendChild(ov);
-      const ta = ov.querySelector('[data-in]'), err = ov.querySelector('[data-err]'), f = ov.querySelector('[data-f]');
-      ov.querySelector('[data-file]').addEventListener('click', () => f.click());
-      f.addEventListener('change', () => { const file = f.files[0]; if (!file) return; const r = new FileReader(); r.onload = () => { ta.value = r.result; }; r.readAsText(file); });
-      ov.querySelector('[data-go]').addEventListener('click', () => {
-        const nicks = extractNicks(ta.value);
-        if (!nicks.length) { err.textContent = 'Keine Profile im Export gefunden. Bitte den kompletten Export einfügen.'; return; }
-        ov.remove(); resolve(nicks);
-      });
-    });
-  }
-  function extractNicks(text) {
-    let nicks = [];
-    try {
-      const j = JSON.parse(text);
-      const walk = (o) => {
-        if (!o || typeof o !== 'object') return;
-        if (Array.isArray(o)) { o.forEach(walk); return; }
-        const n = o.nick || o.nickname; if (typeof n === 'string' && /^[^*\s]{2,}$/.test(n)) nicks.push(n);
-        for (const v of Object.values(o)) if (v && typeof v === 'object') walk(v);
-      };
-      walk(j);
-    } catch {
-      nicks = (text.match(/"nick(?:name)?"\s*:\s*"([^"*][^"]*)"/g) || []).map((s) => s.replace(/.*:"|"$/g, ''));
-    }
-    return uniq(nicks.filter((n) => n && !/\*/.test(n)));
-  }
-
-  // =====================================================================================
   // Ablauf
   // =====================================================================================
   function download(name, text) {
@@ -428,18 +385,23 @@
   }
   function stamp() { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`; }
 
+  // Suchkörper: weltweit (location:null), alle Geschlechter, keine echten Filter
+  function searchBody(age) {
+    return {
+      location: null, genders: ['m', 'w', 'ts', 'tv'], has_image: 0, online: false,
+      enable_search_gender: false, enable_fakecheck_status: false,
+      sort: ['last_riseup'], order: ['desc'], preference_conjunction: 'or', second_preference_conjunction: 'or',
+      size_min: 0, size_max: 300, weight_min: 0, weight_max: 500, age_min: age, age_max: age,
+    };
+  }
+
   async function ageNinetyNine(phase) {
     const result = { counts: {}, links: {} };
-    const geo = await myGeo();
-    result.geo = { city: geo.city || '', geo_id: geo.geo_id || null };
-    const base = { location: { ...geo, distance: 0, distance_unit: 'km' }, has_image: 0, online: false,
-      enable_search_gender: false, size_min: 130, size_max: 220, weight_min: 0, weight_max: 300, enable_fakecheck_status: false,
-      sort: ['last_riseup'], order: ['desc'], preference_conjunction: 'or', second_preference_conjunction: 'or', genders: ['m', 'w', 'ts', 'tv'] };
     for (const age of [97, 98, 99, 100, 101]) {
       phase('Alter-99-Suche: ' + age);
       let total = 0, links = [];
       try {
-        const d = await apiPost('user/search', { ...base, age_min: age, age_max: age, page: 1, limit: 20 });
+        const d = await apiPost('user/search', { ...searchBody(age), page: 1, limit: 20 });
         total = d && d.total || 0;
         links = ((d && d.users) || []).slice(0, 3).map((u) => location.origin + '/p/' + encodeURIComponent(String(u.nickname || '').toLowerCase()));
       } catch (e) { warn('Suche ' + age, e); }
@@ -473,88 +435,82 @@
     return Array.isArray(v) ? (v.find((x) => x != null && x !== 0) ?? null) : v;
   }
 
-  async function run() {
-    const nicks = await askExport();
-    ensureBadge();
-    G.set('started', now());
-    status(`Start – ${nicks.length} Profile`);
+  const mapCount = () => Object.values(mapping).reduce((a, m) => a + Object.keys(m).length, 0);
 
-    // 1) i18n + Beziehungsstatus (Labels für die meisten Felder NICHT enthalten – nur als Bonus)
-    status('Werte aus i18n ziehen …');
+  // Voller Lauf: Werte über eine Alle-Geschlechter-Suche (weltweit, keine Filter)
+  // erfassen. Alter 30, danach 31, 32 … bis nichts Neues mehr kommt.
+  async function run() {
+    ensureBadge(); G.set('started', now());
+    status('Start: Werte über Alle-Geschlechter-Suche erfassen …');
+
+    // i18n + Beziehungsstatus (meist kein Klartext, nur Bonus)
     await pullI18n(status).catch((e) => warn('i18n', e));
     await pullRelationship();
 
-    // Trait je Nick zwischenspeichern, damit Durchgang B user/info nicht erneut braucht
-    const traitByNick = new Map();
+    status('Schalte unsichtbar für offene Profilbesuche …');
+    const visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500);
 
-    // 2a) Verborgener Durchgang: user/info für alle (billig), Code-Universum vollständig erfassen
-    let gathered = 0, noNewCode = 0;
-    for (const nick of nicks) {
-      if (noNewCode >= 150) { status('Keine neuen Codes mehr – Sammeln beendet.'); break; }
-      if (gathered >= 400) { status('400 Profile gesammelt – Sammeln beendet.'); break; }
-      gathered++;
-      status(`Codes sammeln ${gathered}: ${nick} – ${seenCodeCount()} Codes bekannt`);
-      const d = await userInfo(nick);
-      const tr = d && d.user_trait;
-      if (tr) traitByNick.set(nick, tr);
-      const before = seenCodeCount();
-      noteTrait(tr);
-      if (seenCodeCount() > before) noNewCode = 0; else noNewCode++;
-      await sleep(180);
-    }
+    const STOP_STREAK = 250, HARDCAP = 2500, AGE_FROM = 30, AGE_TO = 65;
+    const seen = new Set();
+    let read = 0, noNew = 0, stop = false, lastAge = AGE_FROM;
 
-    // 2b) Offener Durchgang: Labels gibt es nur auf der Profilseite -> unsichtbar + Seite lesen
-    let visBefore = null, read = 0, noNew = 0, open = false;
-    const need0 = unresolved();
-    if (need0.length) {
-      status(`Schalte unsichtbar für offene Profilbesuche (${need0.length} Felder ohne Klartext) …`);
-      visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500); open = true;
-      for (const nick of nicks) {
-        if (unresolved().length === 0) { status('Alle gesuchten Werte erfasst.'); break; }
-        if (noNew >= 300) { status('300 Profile ohne neuen Klartext – Stopp.'); break; }
-        read++;
-        status(`Profil (offen) ${read}: ${nick} – ${unresolved().length} Felder offen`);
-        let tr = traitByNick.get(nick);
-        if (!tr) { const d = await userInfo(nick); tr = d && d.user_trait; }
-        const needLabels = unresolved();
-        let newHere = false;
-        // nur Einzelprofile zum Paaren nutzen (Paar-Arrays sind mehrdeutig)
-        if (isSingleTrait(tr) && needLabels.length) {
-          const page = await readProfileDetails(nick).catch(() => ({}));
-          for (const f of needLabels) {
-            const code = scalarCode(tr, f);
-            const label = page[f];
-            if (code != null && label) if (addMap(f, code, label)) newHere = true;
+    outer:
+    for (let age = AGE_FROM; age <= AGE_TO && !stop; age++) {
+      lastAge = age;
+      status(`Suche Alter ${age} (alle Geschlechter, weltweit) · ${mapCount()} Werte · ${noNew} ohne Neues`);
+      let page = 1;
+      for (let guard = 0; guard < 500; guard++) {
+        let d; try { d = await apiPost('user/search', { ...searchBody(age), page, limit: 30 }); } catch (e) { warn('Suche', e); break; }
+        const users = (d && d.users) || [];
+        if (!users.length) break;
+        for (const u of users) {
+          const nick = u.nickname; if (!nick) continue;
+          const lc = String(nick).toLowerCase(); if (seen.has(lc)) continue;
+          seen.add(lc);
+          read++;
+          if (read > HARDCAP) { stop = true; status('Obergrenze erreicht – Stopp.'); break outer; }
+          status(`Alter ${age} · Profil ${read} · ${nick} · ${mapCount()} Werte · ${noNew} ohne Neues`);
+          const info = await userInfo(nick); const tr = info && info.user_trait;
+          noteTrait(tr);
+          let newHere = false;
+          // nur Einzelprofile zum Paaren (Paar-Arrays sind mehrdeutig); Codes zählen trotzdem
+          if (isSingleTrait(tr)) {
+            const need = unresolved();
+            if (need.length) {
+              const pg = await readProfileDetails(nick).catch(() => ({}));
+              for (const f of need) { const code = scalarCode(tr, f); const label = pg[f]; if (code != null && label) if (addMap(f, code, label)) newHere = true; }
+            }
           }
+          if (newHere) noNew = 0; else noNew++;
+          if (noNew >= STOP_STREAK) { stop = true; status(`${STOP_STREAK} Profile ohne neuen Wert – Stopp.`); break outer; }
+          await sleep(isSingleTrait(tr) ? 600 : 200);
         }
-        if (newHere) noNew = 0; else noNew++;
-        await sleep(800);
+        if (!d.next_page || d.next_page === page) break;
+        page = d.next_page;
       }
-      if (visBefore === 'visible') { status('Stelle Sichtbarkeit wieder her …'); await setVisible('visible'); }
     }
 
-    // 3) Alter 99
+    if (visBefore === 'visible') { status('Stelle Sichtbarkeit wieder her …'); await setVisible('visible'); }
+
     status('Untersuche Alter 99 …');
     const age99 = await ageNinetyNine(status).catch((e) => { warn('Alter99', e); return null; });
 
-    // 4) Export
-    const fertig = { version: VERSION, at: new Date().toISOString(), profile_gesammelt: gathered, profile_offen_gelesen: read,
+    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', profile_gelesen: read, bis_alter: lastAge,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-      offene_felder: unresolved(), alter_99: age99 };
+      offene_felder: unresolved(), alter_99: age99, fehler: errors };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
 
-    const u = unresolved();
-    badgeDone(u.length ? `Fertig – ${u.length} Felder noch offen (im 2. Profil wiederholen)` : 'Fertig – alle Werte erfasst');
-    status('Fertig. Zwei Dateien wurden heruntergeladen (Roh-Aufnahme + fertige Zuordnung).');
+    badgeDone(`Fertig – ${mapCount()} Werte aus ${read} Profilen`);
+    status('Fertig. Roh-Aufnahme + Zuordnung heruntergeladen.');
     log('ALTER 99:', age99);
     log('ZUORDNUNG:', mapping);
-    if (u.length) log('Noch offen:', u, '– bitte den Helfer auch im anderen Profil laufen lassen.');
   }
 
   // Nur das eigene Profil auswerten (keine fremden Besuche, keine Unsichtbarkeit nötig)
   async function runOwn() {
     ensureBadge(); G.set('started', now());
+    capture = true;   // Debug: Seiten-HTML + Diagnose nur im Eigen-Lauf sammeln
     status('Eigenes Profil – Werte holen …');
     await pullI18n(status).catch((e) => warn('i18n', e));
     await pullRelationship();
@@ -603,7 +559,7 @@
         <div style="color:#a6a6a6;margin:0 0 16px">Was soll der Helfer tun? Das Hauptscript sollte jetzt deaktiviert sein.</div>
         <div style="display:flex;flex-direction:column;gap:10px">
           <button data-full style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
-            <b style="color:#ffc21a">Voller Lauf</b><br><span style="color:#a6a6a6">Datenexport des Hauptscripts einlesen und fremde Profile besuchen (unsichtbar), bis alle Werte erfasst sind. Außerdem Alter-99-Prüfung.</span></button>
+            <b style="color:#ffc21a">Voller Lauf</b><br><span style="color:#a6a6a6">Kein Import nötig. Sucht weltweit über alle Geschlechter (Alter 30, dann 31, 32 …) und besucht die Profile unsichtbar, bis keine neuen Werte mehr kommen. Außerdem Alter-99-Prüfung.</span></button>
           <button data-self style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
             <b style="color:#ffc21a">Nur eigenes Profil</b><br><span style="color:#a6a6a6">Nur die Werte des eigenen Profils holen – keine fremden Besuche, keine Unsichtbarkeit. Gedacht als Ergänzung zum vollen Lauf im anderen Profil.</span></button>
         </div>
