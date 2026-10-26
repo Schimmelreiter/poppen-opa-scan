@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.2.3
+// @version      1.2.4
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.3';
+  const VERSION = '1.2.4';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -236,8 +236,8 @@
     }
     return out;
   }
-  async function readProfileDetails(nick) {
-    await loadFrame(location.origin + '/p/' + encodeURIComponent(String(nick).toLowerCase()));
+  async function readDisplayUrl(url) {
+    await loadFrame(url);
     const t0 = now();
     let doc = null;
     while (now() - t0 < 20000) {
@@ -255,6 +255,39 @@
       await sleep(600);
     }
     return readDetailsFrom(doc);
+  }
+  const readProfileDetails = (nick) => readDisplayUrl(location.origin + '/p/' + encodeURIComponent(String(nick).toLowerCase()));
+
+  // Eigenes Profil: Bearbeiten-Seite /setting/profile/personals.
+  // Dort ist das <label for="figure_name"> direkt der trait-Schlüssel und der
+  // gewählte Wert steht in .ant-select-selection-item (antd-Klassen sind stabil).
+  async function readOwnEditSelections() {
+    await loadFrame(location.origin + '/setting/profile/personals');
+    const t0 = now();
+    let doc = null;
+    const known = new Set(WANT.concat(['origin']));
+    const selText = (lab) => {
+      const item = lab.closest('.ant-form-item') || lab.parentElement;
+      const s = item && item.querySelector('.ant-select-selection-item');
+      return s ? (s.getAttribute('title') || s.textContent || '').trim() : '';
+    };
+    while (now() - t0 < 22000) {
+      try { doc = theFrame().contentDocument; } catch { doc = null; }
+      if (doc) {
+        const labs = [...doc.querySelectorAll('label[for]')].filter((l) => known.has(l.getAttribute('for')));
+        if (labs.length && labs.some((l) => selText(l))) break;   // Werte sind hydriert
+      }
+      await sleep(400);
+    }
+    const out = {};
+    if (!doc) return out;
+    for (const lab of doc.querySelectorAll('label[for]')) {
+      const f = lab.getAttribute('for');
+      if (!WANT.includes(f)) continue;
+      const t = selText(lab);
+      if (t) out[f] = t;
+    }
+    return out;
   }
 
   // Sichtbarkeit (wio/state) für die offenen Profilbesuche
@@ -488,12 +521,17 @@
     noteTrait(tr);
     let paired = 0;
     if (tr) {
-      status('Eigene Profilseite lesen …');
-      const page = await readProfileDetails(me).catch(() => ({}));
+      status('Eigene Profilanzeige lesen (/setting/profile) …');
+      const dispOwner = await readDisplayUrl(location.origin + '/setting/profile').catch(() => ({}));
+      status('Eigene Bearbeiten-Seite lesen (/setting/profile/personals) …');
+      const edit = await readOwnEditSelections().catch(() => ({}));
+      let page = { ...edit, ...dispOwner };   // Anzeige-Labels bevorzugt
+      if (!Object.keys(page).length) { status('Fallback: öffentliches eigenes Profil lesen …'); page = await readProfileDetails(me).catch(() => ({})); }
       for (const f of WANT) {
         const code = scalarCode(tr, f); const label = page[f];
         if (code != null && label) if (addMap(f, code, label)) paired++;
       }
+      log('eigene Seiten-Labels:', page);
     }
     const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'eigenes Profil', neu_gepaart: paired,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
