@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.18
+// @version      2.19
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.18';
+  const VERSION = '2.19';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -158,7 +158,7 @@
   };
   // Quelle in der Notiz → Spalte der Altersgrenzen
   const NOTE_SOURCES = {
-    Likes: 'interaktionen', Sticker: 'interaktionen', Nachrichten: 'interaktionen', Interaktionen: 'interaktionen',
+    Likes: 'interaktionen', Sticker: 'interaktionen', Nachrichten: 'interaktionen', Benachrichtigungen: 'interaktionen', Interaktionen: 'interaktionen',
     Besucher: 'besucher', Profilbesucher: 'besucher', Gruppen: 'gruppen', Suche: 'suche', Mitgliedersuche: 'suche',
     Vorgemerkt: 'suche', Sync: 'sync', Profil: 'besucher', Warteliste: 'suche',
   };
@@ -619,7 +619,7 @@
   const KNOWN_API = ['v2/ignore/list', 'ignore/uid/list', 'ignore/add', 'ignore/delete', 'ignore/comment/add', 'user/search', 'rates',
     'my/received/gift', 'group/my', 'group/attendee/list', 'messenger/group/list', 'messenger/p2p/profile/display', 'user/session/info',
     'wio/state', 'messenger/message/list', 'messenger/backend/settings', 'v2/comment/list', 'friends/list', 'favourite/list', 'group/moderator/list',
-    'group/profile', 'group/attendee/manage/list', 'group/attendee/kick', 'group/attendee/note', 'profile/visitors', 'group/attendee/specific/pending/list', 'group/attendee/deny', 'v3/profile/gallery', 'ignore/be-ignored/uid/list', 'global/emojis', 'i18n/pull'];
+    'group/profile', 'group/attendee/manage/list', 'group/attendee/kick', 'group/attendee/note', 'profile/visitors', 'group/attendee/specific/pending/list', 'group/attendee/deny', 'v3/profile/gallery', 'ignore/be-ignored/uid/list', 'global/emojis', 'i18n/pull', 'notification/msg/list', 'user/list/relationship'];
   const API_HINTS = [
     [/^\/connection\/visitors/, '#1 Profilbesucher'], [/^\/groups\/\d+\/requests/, '#2/#3 Gruppenanfragen'],
     [/^\/p\//, '#4/#8/#11 Profil'], [/^\/search\/member/, '#10 Suchseite'],
@@ -916,7 +916,7 @@
   // =====================================================================================
   // Mitglieder-Wissen: aus jeder Quelle nebenbei merken
   // =====================================================================================
-  const IMG_SOURCES = new Set(['Likes', 'Sticker', 'Nachrichten', 'Besucher', 'Profil', 'Gruppenanfrage']);
+  const IMG_SOURCES = new Set(['Likes', 'Sticker', 'Nachrichten', 'Benachrichtigungen', 'Besucher', 'Profil', 'Gruppenanfrage']);
 
   // Ein Benutzerobjekt der Schnittstelle vereinheitlichen
   function normUser(u) {
@@ -1510,9 +1510,42 @@
     return res;
   }
 
+  // ---------- Interaktionen: Benachrichtigungs-Feed (alle actor-Typen außer Gruppen-Beitrittsanfragen) ----------
+  async function scanNotifications(ctx) {
+    const res = newRes();
+    const st = G.get('scan_notif', { newest: 0, complete: false });
+    const firstMax = S().expert.firstScanMax;
+    const seenU = new Set();
+    let body = null, read = 0, newest = st.newest, stopOld = false;
+    for (let guard = 0; guard < 5000 && !ctx.stop(); guard++) {
+      const d = await apiPost('notification/msg/list', body);
+      const l = (d && d.msg_list) || [];
+      const users = [];
+      for (const it of l) {
+        read++;
+        const ts = +it.msg_time || 0;
+        if (ts > newest) newest = ts;
+        if (st.complete && ts && ts <= st.newest) { stopOld = true; break; }
+        if (it.msg_type === 'cms_private_request_group') continue;   // Gruppen-Beitrittsanfragen auslassen
+        const a = it.actor;
+        if (!a || typeof a !== 'object' || !a.uid) continue;
+        const u = normUser(a);
+        if (u && !seenU.has(u.uid)) { seenU.add(u.uid); users.push(u); }
+      }
+      await seenMany(users, 'Benachrichtigungen');
+      addRes(res, await judge(users, 'Benachrichtigungen'));
+      ctx.step(read, null, `Benachrichtigungen: ${fmtN(read)} gelesen, ${fmtN(seenU.size)} Mitglieder`);
+      if (stopOld || !l.length || !d.next) break;
+      if (!st.complete && read >= firstMax) break;
+      body = { next: d.next, exid: d.exid };
+    }
+    if (!ctx.stop()) G.set('scan_notif', { newest, complete: true, at: now() });
+    return res;
+  }
+
   async function scanInteractions(ctx) {
     const res = newRes();
-    for (const [name, fn] of [['Likes', scanLikes], ['Sticker', scanStickers], ['Nachrichten', scanMessages]]) {
+    for (const [name, fn] of [['Likes', scanLikes], ['Sticker', scanStickers], ['Nachrichten', scanMessages], ['Benachrichtigungen', scanNotifications]]) {
       if (ctx.stop()) break;
       ctx.phase && ctx.phase(name);
       try { addRes(res, await fn(ctx)); } catch (e) { ctx.error && ctx.error(name, e); }
@@ -2647,7 +2680,7 @@
   // Opa-/Oma-Scan: Auswahl-Popup, Hintergrundlauf und Fortschrittsanzeige
   // =====================================================================================
   const SCANS = [
-    { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker und Nachrichten', fn: scanInteractions },
+    { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker, Nachrichten und Benachrichtigungen', fn: scanInteractions },
     { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
     { k: 'party', title: 'Partygäste', sub: 'gibt es auf poppen.de nicht', fn: null },
     { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
@@ -3993,7 +4026,8 @@
         res.photos = pr.photos || []; if (pr.avatar) res.avatar = pr.avatar;
         if (!pr.trait) { res.reason = pr.error || 'keine Angaben'; }
         else {
-          const ctx = { trait: pr.trait, verified: pr.verified, photos: pr.photos, hasphoto: pr.hasphoto };
+          await grEnrich(cms, pr).catch(() => {});
+          const ctx = pr;
           res.meta = await grMetaLine(cms, ctx).catch(() => '');
           const d = grDecide(cms, ctx);
           res.verdict = d.verdict; res.reason = d.reason;
@@ -5428,8 +5462,16 @@
     }
     for (const k of GM_listValues()) if (k.startsWith('vaf2_') && !k.startsWith('vaf2_lock_')) GM_deleteValue(k);
     for (const [k, v] of Object.entries(d.gm || {})) GM_setValue(k, v);
-    for (const st of ['members', 'queue', 'kv', 'images', 'archive']) { await DB.clear(st); await DB.putMany(st, d.stores[st] || []); }
+    // kleine Stores sofort, große gechunkt mit Yield (kein Einfrieren bei vielen Mitgliedern)
+    const tt2 = toast('Stelle Daten wieder her …', 0);
+    for (const st of ['kv', 'queue']) { await DB.clear(st); await DB.putMany(st, d.stores[st] || []); }
     if (fick) { await DB.clear('fick'); await DB.putMany('fick', fick); }
+    for (const st of ['members', 'images', 'archive']) {
+      await DB.clear(st);
+      const arr = d.stores[st] || [];
+      for (let i = 0; i < arr.length; i += 2000) { await DB.putMany(st, arr.slice(i, i + 2000)); tt2.textContent = `Stelle wieder her: ${st} ${fmtN(Math.min(i + 2000, arr.length))}/${fmtN(arr.length)}`; await new Promise((r) => setTimeout(r, 0)); }
+    }
+    tt2.remove();
     Members.cached().clear();
     loadSettings();
     toast(`Wiederhergestellt${fick ? '' : ' (ohne Fickliste)'}. Seite wird neu geladen …`);
@@ -5448,36 +5490,63 @@
     tt.innerHTML = `${fmtN(list.length)} Mitglieder exportiert${withImages ? ` (${fmtN(out.images.length)} Bilder)` : ''}.`;
     setTimeout(() => tt.remove(), 6000);
   }
+  // Import mischt das Gedächtnis gechunkt im Hintergrund, damit der Browser auch bei
+  // 100 000+ Mitgliedern nicht einfriert. Regel: der NEUERE Datensatz gewinnt als Ganzes
+  // (weggefallene Wissens-Felder verschwinden, kein feldweises Mergen). Lokale Felder wie der
+  // Blockstatus gehören nicht zum geteilten Wissen und bleiben immer erhalten.
+  const pickMem = (x) => { const o = {}; for (const f of MEM_FIELDS) if (x[f] !== undefined) o[f] = x[f]; return o; };
   async function importMemory() {
     const text = await pickFile();
     if (!text) return;
     let d;
     try { d = JSON.parse(text); } catch { toast('Datei nicht lesbar.'); return; }
     if (d.format !== 'opa-schutz-gedaechtnis') { toast('Das ist kein Gedächtnis-Export.'); return; }
-    const tt = toast('Mische Gedächtnis …', 0);
-    let neu = 0, erg = 0, eig = 0, i = 0;
-    for (const x of d.members || []) {
-      if (!x.uid) continue;
-      if (++i % 500 === 0) tt.textContent = `Mische Gedächtnis … ${fmtN(i)}`;
-      const m = await Members.get(x.uid);
-      if (!m) { Members.put({ ...x, nl: norm(x.nick) }); neu++; continue; }
-      const before = JSON.stringify(m);
-      if ((x.last || 0) > (m.last || 0) && x.nick && x.nick !== m.nick) { m.nicks = uniq([...(m.nicks || []), m.nick]); m.nick = x.nick; m.nl = norm(x.nick); }
-      m.nicks = uniq([...(m.nicks || []), ...(x.nicks || [])]).filter((n) => n !== m.nick);
-      if (x.birth && x.birth.length) m.birth = m.birth && m.birth.length === x.birth.length ? m.birth.map((b, k) => intersect(b, x.birth[k]) || b) : (m.birth && m.birth.length ? m.birth : x.birth);
-      for (const f of ['zod', 'by', 'g', 'pay', 'city', 'fig']) if (m[f] === undefined && x[f] !== undefined) m[f] = x[f];
-      if (x.body && (!m.body || (x.body[0].at || 0) > (m.body[0].at || 0))) m.body = x.body;
-      if ((x.lastLogin || 0) > (m.lastLogin || 0)) m.lastLogin = x.lastLogin;
-      if ((x.ageAt || '') > (m.ageAt || '')) { m.ages = x.ages; m.ageAt = x.ageAt; }
-      if (x.del && !m.del) m.del = x.del;
-      if (JSON.stringify(m) !== before) { Members.put(m); erg++; } else eig++;
-    }
-    for (const im of d.images || []) {
-      const cur = await DB.get('images', im.uid);
-      if (!cur || (im.at || 0) > (cur.at || 0)) await DB.put('images', im);
-    }
+    const members = (d.members || []).filter((x) => x && x.uid);
+    const total = members.length;
+    const tt = toast('Lese vorhandenes Gedächtnis …', 0);
     await Members.flush();
-    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> eigene behalten.`;
+    // Ein Cursor-Durchlauf: leichter Index uid→last; lokale Felder (Blockstatus …) nur dort,
+    // wo es welche gibt – statt 100 000 Einzelabfragen während des Imports.
+    const idxLast = new Map(), idxLocal = new Map();
+    await DB.each('members', (m) => {
+      const uid = String(m.uid); idxLast.set(uid, m.last || 0);
+      let loc = null;
+      for (const k of Object.keys(m)) if (k !== 'uid' && !MEM_FIELDS.includes(k)) { (loc = loc || {})[k] = m[k]; }
+      if (loc) idxLocal.set(uid, loc);
+    });
+    let neu = 0, erg = 0, eig = 0, done = 0;
+    const batch = [];
+    const flush = async () => { if (batch.length) await DB.putMany('members', batch.splice(0)); };
+    for (const x of members) {
+      done++;
+      const uid = String(x.uid);
+      const prev = idxLast.get(uid);
+      if (prev !== undefined && (x.last || 0) <= prev) { eig++; }     // vorhandener Datensatz ist neuer/gleich → behalten
+      else {
+        const loc = idxLocal.get(uid);
+        const merged = loc ? { ...loc, ...pickMem(x) } : pickMem(x);
+        merged.uid = uid; merged.nl = norm(x.nick);
+        batch.push(merged);
+        if (prev === undefined) neu++; else erg++;
+      }
+      if (batch.length >= 2000) { tt.textContent = `Mische Gedächtnis … ${fmtN(done)}/${fmtN(total)}`; await flush(); await new Promise((r) => setTimeout(r, 0)); }
+    }
+    await flush();
+    // Bilder ebenfalls gechunkt, neuer gewinnt
+    if (d.images && d.images.length) {
+      const imgAt = new Map();
+      await DB.each('images', (im) => imgAt.set(String(im.uid), im.at || 0));
+      const ibatch = [];
+      for (const im of d.images) {
+        if (!im || !im.uid) continue;
+        const p = imgAt.get(String(im.uid));
+        if (p === undefined || (im.at || 0) > p) ibatch.push(im);
+        if (ibatch.length >= 200) { await DB.putMany('images', ibatch.splice(0)); await new Promise((r) => setTimeout(r, 0)); }
+      }
+      if (ibatch.length) await DB.putMany('images', ibatch.splice(0));
+    }
+    Members.cached().clear();
+    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> aktualisiert, <b>${fmtN(eig)}</b> vorhandene (neuer) behalten.`;
     setTimeout(() => tt.remove(), 10000);
   }
   // ---------- Umstellung von Version 1.x ----------
@@ -6481,6 +6550,13 @@
     { key: 'spoken_language', label: 'Sprachen', type: 'lang', trait: 'spoken_language' },
     { key: 'verified', label: 'Verifiziert', type: 'bool', derived: 'verified' },
     { key: 'hasphoto', label: 'Hat Fotos', type: 'bool', derived: 'hasphoto' },
+    // Beziehung / eigene Listen – alle auf den Kandidaten bezogen
+    { key: 'relationship', label: 'Beziehungsstatus', type: 'enum', ctxKey: 'relCats', relDyn: true },
+    { key: 'single', label: 'Single', type: 'bool', derived: 'single' },
+    { key: 'fickliste', label: 'Fickliste-Status', type: 'enum', ctxKey: 'fickArr', vals: [['1', 'Will ich'], ['2', 'Gefickt'], ['3', 'Nein, danke!'], ['4', 'Nie wieder!']] },
+    { key: 'ignoriert', label: 'Von mir ignoriert', type: 'bool', derived: 'ign' },
+    { key: 'ignoriert_mich', label: 'Ignoriert mich', type: 'bool', derived: 'ignByHim' },
+    { key: 'whitelist', label: 'Auf meiner Whitelist', type: 'bool', derived: 'white' },
   ];
   const grField = (k) => GR_FIELDS.find((f) => f.key === k);
   // in einem Block für Geschlecht g verfügbare Felder
@@ -6507,6 +6583,12 @@
   async function grOptions(field) {
     if (field.type === 'bool') return [[true, 'Ja'], [false, 'Nein']];
     if (field.type === 'num') return null;
+    if (field.vals) return field.vals;   // statische Liste (z. B. Fickliste-Status)
+    if (field.relDyn) {                   // Beziehungsstatus-Kategorien aus user/list/relationship
+      if (GR_OPTS_CACHE.rel) return GR_OPTS_CACHE.rel;
+      try { const d = await apiPost('user/list/relationship', null); const list = ((d && d.category) || []).map((c) => [String(c.title), c.title]).filter((x) => x[0]); if (list.length) return (GR_OPTS_CACHE.rel = list); } catch {}
+      return null;
+    }
     if (field.key === 'ethnicity') { const m = await ethnicityMap().catch(() => null); return m ? Object.entries(m).map(([c, n]) => [c, n]) : null; }
     if (field.type === 'lang') return Object.entries(LANG_DE).map(([c, n]) => [c, n]);
     if (field.type === 'country') {
@@ -6514,6 +6596,9 @@
       try { const d = await apiGet('geo/country/all', { _version: 2 }); const list = ((d && (d.list || d.countries || d)) || []).map((c) => [String(c.iso || c.code || c.country_iso || c.id), c.name || c.country_name || c.iso]).filter((x) => x[0]); if (list.length) return (GR_OPTS_CACHE.country = list); } catch {}
       return [['DE', 'Deutschland'], ['AT', 'Österreich'], ['CH', 'Schweiz']];
     }
+    // vom Helfer importierte Zuordnung (Code→Klartext), falls vorhanden – füllt die Enum-Dropdowns
+    const vmap = (G.get('gr_valuemap', {}) || {})[field.trait];
+    if (vmap && typeof vmap === 'object' && Object.keys(vmap).length) return Object.entries(vmap).map(([c, n]) => [c, n]);
     // sonstige enum: aus i18n ziehen, Schlüssel <trait>.<code>
     if (GR_OPTS_CACHE[field.key]) return GR_OPTS_CACHE[field.key];
     const alt = { figure_name: 'figure', eyes_name: 'eyes', sex_type: 'sex_type', hair_length: 'hair_length', body_hair: 'body_hair', intimately_hair: 'intimately_hair' };
@@ -6572,13 +6657,24 @@
   function grLeaf(leaf, ctx) {
     const f = grField(leaf.field); if (!f) return false;
     if (f.type === 'bool') {
-      const actual = f.derived === 'verified' ? !!ctx.verified : f.derived === 'hasphoto' ? (ctx.hasphoto != null ? !!ctx.hasphoto : (ctx.photos || []).length > 0) : false;
+      const d = f.derived;
+      const actual = d === 'verified' ? !!ctx.verified
+        : d === 'hasphoto' ? (ctx.hasphoto != null ? !!ctx.hasphoto : (ctx.photos || []).length > 0)
+        : !!ctx[d];   // single, ign, ignByHim, white
       const want = leaf.value === true || leaf.value === 'true' || leaf.value === 1 || leaf.value === '1';
       return leaf.op === 'isnot' ? actual !== want : actual === want;
     }
     if (f.derived === 'photos') return numMatch(leaf.op, leaf.value, [(ctx.photos || []).length]);
     if (f.type === 'num') return numMatch(leaf.op, leaf.value, grTraitVals(f, ctx.trait).map(Number));
     if (f.type === 'lang') return langMatch(leaf.op, leaf.value, (ctx.trait && ctx.trait.spoken_language) || []);
+    // Beziehungsstatus: toleranter Textvergleich (Kategorie-Namen weichen leicht ab)
+    if (f.key === 'relationship') {
+      const have = (ctx.relCats || []).map((x) => norm(String(x)));
+      const want = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map((x) => norm(String(x))).filter(Boolean);
+      const hit = want.some((w) => have.some((h) => h.includes(w) || w.includes(h)));
+      return leaf.op === 'isnot' ? (have.length ? !hit : false) : hit;
+    }
+    if (f.ctxKey) return enumMatch(leaf.op, leaf.value, ctx[f.ctxKey] || []);
     return enumMatch(leaf.op, leaf.value, grTraitVals(f, ctx.trait));
   }
   function grEval(node, ctx) {
@@ -6871,12 +6967,57 @@
   }
 
   // Profil-Fakten für die Regeln (roh, ohne Profilbesuch)
+  // Beziehungsstatus-Kategorien (Textnamen) aus dem user/info-relationship-Objekt
+  function grRelCats(rel) {
+    if (!rel || typeof rel !== 'object') return [];
+    const out = [];
+    for (const arr of [rel.list, rel.unjoined_list]) for (const e of (arr || [])) { const t = e && (e.category_name || e.title); if (t) out.push(String(t)); }
+    return [...new Set(out)];
+  }
+  // Partner (nicks/uids) aus dem relationship-Objekt – fürs Gedächtnis
+  function grRelPartners(rel) {
+    const out = [];
+    if (rel && typeof rel === 'object') for (const arr of [rel.list, rel.unjoined_list]) for (const e of (arr || [])) for (const u of (e && e.users) || []) { if (u && u.uid) out.push({ uid: String(u.uid), nick: u.nickname || '' }); }
+    return out;
+  }
+  // Lazy-Cache für listenbasierte Kriterien (nur laden, wenn eine Regel sie nutzt)
+  const grLists = { ign: null, ignT: 0, byHim: null, byHimT: 0 };
+  const GR_LIST_TTL = 5 * 60000;
+  async function grMyIgnore() {
+    if (grLists.ign && now() - grLists.ignT < GR_LIST_TTL) return grLists.ign;
+    const s = new Set();
+    try { for (const u of await BL.uids()) s.add(String(u)); } catch {}
+    try { for (const it of await Queue.list()) if (/^\d+$/.test(String(it.uid))) s.add(String(it.uid)); } catch {}   // Block-/Radierer-Warteliste zählt als ignoriert
+    grLists.ign = s; grLists.ignT = now(); return s;
+  }
+  async function grByHim() {
+    if (grLists.byHim && now() - grLists.byHimT < GR_LIST_TTL) return grLists.byHim;
+    const s = new Set();
+    try { const d = await apiGet('ignore/be-ignored/uid/list', { _version: 2 }); for (const u of (d && d.list) || []) if (/^\d+$/.test(String(u))) s.add(String(u)); } catch {}
+    grLists.byHim = s; grLists.byHimT = now(); return s;
+  }
+  // ctx um die listenbasierten Felder ergänzen – nur die, die eine Regel tatsächlich verwendet
+  async function grEnrich(cms, pr, rules) {
+    if (!pr || !pr.trait) return pr;
+    const g = genderCode(pr.trait.gender);
+    const used = new Set(grUsedFields(cms, g, rules));
+    const uid = String(pr.uid || '');
+    if (used.has('single')) pr.single = (pr.relCats || []).length === 0;
+    if (used.has('fickliste') && uid) { const p = await Fick.get(Fick.idOf(uid)).catch(() => null); pr.fickArr = [p && p.status != null ? String(p.status) : '0']; }
+    if (used.has('whitelist')) { const m = uid ? await Members.get(uid) : null; pr.white = !!whiteReason(m, pr.nick); }
+    if (used.has('ignoriert') && uid) pr.ign = (await grMyIgnore()).has(uid);
+    if (used.has('ignoriert_mich') && uid) pr.ignByHim = (await grByHim()).has(uid);
+    return pr;
+  }
+
   async function grProbe(name) {
-    const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '' };
+    const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '', nick: String(name), uid: '', rel: null, relCats: [] };
     let d;
     try { d = await apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 }); } catch (e) { out.error = e.message; return out; }
     if (!d || !d.userInfo) { out.error = 'keine Angaben'; return out; }
     const ui = d.userInfo; out.trait = d.user_trait || {};
+    out.uid = String(ui.uid || (d.user_trait && d.user_trait.uid) || '');
+    out.rel = d.relationship || null; out.relCats = grRelCats(out.rel);
     out.verified = /done|verifi|ok|true/i.test(String(ui.fakecheck || '')) || ui.fakecheck === true;
     out.avatar = ui.avatar || '';
     try {
@@ -6897,7 +7038,8 @@
     for (const u of pending) {
       const nick = u.nickname || u.name; if (!nick) continue;
       const pr = await grProbe(nick).catch(() => null);
-      const ctx = pr && pr.trait ? { trait: pr.trait, verified: pr.verified, photos: pr.photos, hasphoto: pr.hasphoto } : null;
+      if (pr && pr.trait) await grEnrich(cms, pr, rules).catch(() => {});
+      const ctx = pr && pr.trait ? pr : null;
       const d = ctx ? grDecide(cms, ctx, rules) : { verdict: 'manual', reason: 'keine Angaben' };
       list.push({ nick, verdict: d.verdict, meta: ctx ? await grMetaLine(cms, ctx, rules) : (pr && pr.error) || '' });
     }
@@ -6927,8 +7069,10 @@
     const parts = [];
     for (const fk of used) {
       const f = grField(fk); if (!f) continue;
-      if (f.type === 'bool') parts.push(`${f.label}: ${(f.derived === 'verified' ? ctx.verified : ctx.hasphoto) ? 'ja' : 'nein'}`);
+      if (f.type === 'bool') { const d = f.derived; const val = d === 'verified' ? ctx.verified : d === 'hasphoto' ? ctx.hasphoto : ctx[d]; parts.push(`${f.label}: ${val ? 'ja' : 'nein'}`); }
       else if (f.derived === 'photos') parts.push(`Fotos: ${(ctx.photos || []).length}`);
+      else if (f.key === 'relationship') { if ((ctx.relCats || []).length) parts.push(`Beziehung: ${ctx.relCats.join(', ')}`); }
+      else if (f.ctxKey) { const v = (ctx[f.ctxKey] || []).filter((c) => String(c) !== '0'); if (v.length) parts.push(`${f.label}: ${(await Promise.all(v.map((c) => grValueName(f, c)))).join('/')}`); }
       else if (f.type === 'num') { const v = grTraitVals(f, ctx.trait); if (v.length) parts.push(`${f.label}: ${v.join('/')}${f.unit || ''}`); }
       else if (f.type === 'lang') { const ls = (ctx.trait.spoken_language || []).map((a) => (a || []).map((c) => LANG_DE[c] || c).join('+')).filter(Boolean); if (ls.length) parts.push(`Sprachen: ${ls.join(', ')}`); }
       else { const v = grTraitVals(f, ctx.trait); if (v.length) parts.push(`${f.label}: ${(await Promise.all(v.map((c) => grValueName(f, c)))).join('/')}`); }
@@ -6945,8 +7089,8 @@
       const nick = it.name; if (!nick) continue;
       const line = grEl('div', 'vaf-gr-meta', '…'); it.descEl.after(line);
       let pr = grMetaCache.get(nick);
-      if (!pr) { pr = await grProbe(nick).catch(() => null); grMetaCache.set(nick, pr); }
-      const ctx = pr && pr.trait ? { trait: pr.trait, verified: pr.verified, photos: pr.photos, hasphoto: pr.hasphoto } : null;
+      if (!pr) { pr = await grProbe(nick).catch(() => null); if (pr && pr.trait) await grEnrich(cms, pr).catch(() => {}); grMetaCache.set(nick, pr); }
+      const ctx = pr && pr.trait ? pr : null;
       line.textContent = ctx ? (await grMetaLine(cms, ctx)) : '';
       if (!line.textContent) line.remove();
     }
