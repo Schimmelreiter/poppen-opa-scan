@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.15
+// @version      2.16
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.15';
+  const VERSION = '2.16';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -617,7 +617,7 @@
   const KNOWN_API = ['v2/ignore/list', 'ignore/uid/list', 'ignore/add', 'ignore/delete', 'ignore/comment/add', 'user/search', 'rates',
     'my/received/gift', 'group/my', 'group/attendee/list', 'messenger/group/list', 'messenger/p2p/profile/display', 'user/session/info',
     'wio/state', 'messenger/message/list', 'messenger/backend/settings', 'v2/comment/list', 'friends/list', 'favourite/list', 'group/moderator/list',
-    'group/profile', 'group/attendee/specific/pending/list', 'group/attendee/deny', 'v3/profile/gallery', 'ignore/be-ignored/uid/list', 'global/emojis', 'i18n/pull'];
+    'group/profile', 'group/attendee/manage/list', 'group/attendee/kick', 'group/attendee/note', 'profile/visitors', 'group/attendee/specific/pending/list', 'group/attendee/deny', 'v3/profile/gallery', 'ignore/be-ignored/uid/list', 'global/emojis', 'i18n/pull'];
   const API_HINTS = [
     [/^\/connection\/visitors/, '#1 Profilbesucher'], [/^\/groups\/\d+\/requests/, '#2/#3 Gruppenanfragen'],
     [/^\/p\//, '#4/#8/#11 Profil'], [/^\/search\/member/, '#10 Suchseite'],
@@ -1534,31 +1534,33 @@
     }
     return all;
   }
+  // Profilbesucher über die Schnittstelle profile/visitors (kein Durchscrollen einer Seite mehr → hintergrundtauglich)
   async function scanVisitors(ctx) {
     const res = newRes();
-    const st = G.get('scan_vis', { complete: false, at: 0 });
-    const onPage = location.pathname.startsWith('/connection/visitors');
-    const doc = onPage ? document : await Frame.load('/connection/visitors', (d) => visitorItems(d).length || d.querySelector('main .ant-empty'), 30000);
-    if (!doc) throw new Error('Besucherliste nicht ladbar');
-    let knownRun = 0;
-    const all = await collectList(doc, visitorItems, ctx, {
-      max: st.complete ? 100000 : S().expert.firstScanMax, label: 'Profilbesucher',
-      // Folgescans: aufhören, sobald 30 Mitglieder hintereinander schon beim letzten Scan gesehen wurden
-      stopWhen: (map) => {
-        if (!st.complete) return false;
-        knownRun = 0;
-        for (const x of [...map.values()].slice(-30)) { const m = x.uid && Members.cached().get(x.uid); if (m && m.seen && m.seen.Besucher && m.seen.Besucher < st.at) knownRun++; }
-        return knownRun >= 30;
-      },
-    });
-    const list = [...all.values()].map(({ item, ...x }) => x);
-    for (const x of list) {
-      if (!x.uid) { const m = await Members.byNick(x.nick); if (m) x.uid = m.uid; }
-      if (x.uid) await seen(x, 'Besucher');
+    const st = G.get('scan_vis', { newest: 0, complete: false });
+    const firstMax = S().expert.firstScanMax;
+    const seenU = new Set();
+    let page = 1, read = 0, newest = st.newest, stopOld = false;
+    for (let guard = 0; guard < 5000 && !ctx.stop(); guard++) {
+      const d = await apiGet('profile/visitors', { _version: 2, sort_by: 0, page, limit: 20 });
+      const l = (d && d.users) || [];
+      const users = [];
+      for (const r of l) {
+        read++;
+        const ts = r.timestamp || (r.histories && r.histories[0]) || 0;
+        if (ts > newest) newest = ts;
+        if (st.complete && ts && ts <= st.newest) { stopOld = true; break; }
+        const u = normUser(r);
+        if (u && !seenU.has(u.uid)) { seenU.add(u.uid); users.push(u); }
+      }
+      for (const u of users) await seen(u, 'Besucher', { images: false });
+      addRes(res, await judge(users, 'Besucher'));
+      ctx.step(read, d.total || null, `Profilbesucher: ${fmtN(read)} gelesen, ${fmtN(seenU.size)} Mitglieder`);
+      if (stopOld || !l.length || !d.next_page || d.next_page === page) break;
+      if (!st.complete && read >= firstMax) break;
+      page = d.next_page;
     }
-    addRes(res, await judge(list, 'Besucher'));
-    if (!onPage) Frame.remove();
-    if (!ctx.stop()) G.set('scan_vis', { complete: true, at: now() });
+    if (!ctx.stop()) G.set('scan_vis', { newest, complete: true, at: now() });
     return res;
   }
 
@@ -2031,6 +2033,15 @@
   .vaf-also-i{display:inline-flex;align-items:center;white-space:nowrap}
   .vaf-plus{min-width:44px;height:24px;padding:0 14px;border-radius:12px;border:1px solid #6b6f76;background:transparent;color:inherit;font:bold 16px/1 system-ui,sans-serif;cursor:pointer}
   .vaf-plus:hover{border-color:#ffc21a;color:#ffc21a}
+  .vaf-scanlist{display:flex;flex-direction:column;gap:8px;margin:6px 0 4px}
+  .vaf-scanrow{display:flex;align-items:flex-start;gap:12px;background:#2a2a2a;border-radius:12px;padding:12px 14px;cursor:pointer}
+  .vaf-scanrow input{margin-top:3px;width:18px;height:18px;flex:none;accent-color:#e53935}
+  .vaf-scanrow-tx{display:flex;flex-direction:column}
+  .vaf-scanrow-tx b{color:#fff;font-size:15px}
+  .vaf-scanrow-tx span{color:#a6a6a6;font-size:12.5px}
+  .vaf-scanrow-off{opacity:.5;cursor:default}
+  .vaf-hdr-act{position:absolute;right:-3px;bottom:-2px;width:15px;height:15px;border-radius:50%;background:#e53935;color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;box-shadow:0 0 0 2px #1f1f1f}
+  .vaf-hdr-act svg{width:10px;height:10px}
   .vaf-blk-head h2{margin:0 0 4px}
   .vaf-blk-sub{color:#a6a6a6;font-size:13px;margin-bottom:16px}
   .vaf-blk-empty{color:#a6a6a6;padding:16px 0}
@@ -2605,116 +2616,172 @@
   });
 
   // =====================================================================================
-  // Opa-Scan: Popup mit allen Scans
+  // Opa-/Oma-Scan: Auswahl-Popup, Hintergrundlauf und Fortschrittsanzeige
   // =====================================================================================
   const SCANS = [
-    { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
     { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker und Nachrichten', fn: scanInteractions },
+    { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
     { k: 'party', title: 'Partygäste', sub: 'gibt es auf poppen.de nicht', fn: null },
     { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
     { k: 'gruppen_bl', src: 'gruppen', title: 'Gruppen (Blacklist)', sub: 'Mitglieder deiner Gruppen nach den Regeln prüfen', fn: scanGroupsBlack, def: false },
     { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
   ];
-  let scanRun = null;
-  // Auswahl für „Alle Scans nacheinander“ (wird gemerkt)
   const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : sc.def !== false; return o; };
+  const scanActive = () => { const s = G.get('scan_state', null); return !!(s && s.running); };
+
+  function statsHtml(total) {
+    return `<span>Mitglieder gelesen</span><b>${fmtN(total.total)}</b><span>Über der Grenze</span><b>${fmtN(total.hits)}</b>` +
+      `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
+      `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
+      `<span>Alter unklar (99)</span><b>${fmtN(total.unclear)}</b>` +
+      (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
+      (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '');
+  }
 
   async function statusLine() {
     const q = await Queue.count().catch(() => 0);
     const w = Object.keys(await KV.get('watch', {})).length;
     const b = G.get('blocked_count', null);
     return `Blockiert: <b style="color:#fff">${b == null ? '?' : fmtN(b)}</b> · Warteliste: <b style="color:#fff">${fmtN(q)}</b> · Vorgemerkt: <b style="color:#fff">${fmtN(w)}</b>` +
-      (dry() ? ' · <span style="color:#ffb300">Testlauf</span>' : '') + (isOn() ? '' : ' · <span style="color:#ff8a80">Automatik aus</span>') +
-      (() => { const bs = (G.get('blk_state', null) || {}).st; return bs === 'blockiert' ? ' · blockiert gerade' : bs === 'pause' ? ' · Blockieren pausiert' : bs === 'pause-fehler' ? ' · Pause nach Fehlern' : q ? ' · wartet' : ''; })();
+      (dry() ? ' · <span style="color:#ffb300">Testlauf</span>' : '') + (isOn() ? '' : ' · <span style="color:#ff8a80">Automatik aus</span>');
   }
 
+  // ---------- Hintergrund-Scan (ein Tab führt, andere zeigen nur an; Übernahme bei Tab-Schließung) ----------
+  const Scan = {
+    running: false, stopFlag: false,
+    live() { return G.get('scan_state', null); },
+    patch(p) { const s = { ...(this.live() || {}), ...p, ts: now(), tab: TAB_ID }; G.set('scan_state', s); Bus.emit('scan', s); return s; },
+    async start(keys) {
+      if (this.running || scanActive()) { toast('Es läuft bereits ein Scan.'); return; }
+      G.set('scan_state', { running: true, tab: TAB_ID, at: now(), ts: now(), keys, si: 0, phase: '', b1: 0, b2: 0, cur: '', stats: newRes(), notes: [], errors: [], stopped: false, done: false });
+      Bus.emit('scan', this.live());
+      this.run().catch((e) => warn('Scan', e));
+    },
+    stop() { this.stopFlag = true; const s = this.live(); if (s) { s.stopped = true; G.set('scan_state', s); Bus.emit('scan', s); } },
+    async run() {
+      if (this.running) return;
+      if (!(await Lock.take('scan', 'bg'))) return;
+      this.running = true; this.stopFlag = false;
+      let s = this.live();
+      if (!s || !s.running) { Lock.release('scan'); this.running = false; return; }
+      const total = { ...newRes(), ...(s.stats || {}) };
+      const keys = s.keys || [];
+      const notes = s.notes || [], errors = s.errors || [];
+      const beat = setInterval(() => { const x = this.live(); if (x && x.running) { x.ts = now(); x.tab = TAB_ID; G.set('scan_state', x); } }, 5000);
+      const handingOver = () => { const ho = G.get('scan_handover', null); return ho && ho.tab !== TAB_ID && now() - ho.at < 60000; };
+      try {
+        for (let si = s.si || 0; si < keys.length; si++) {
+          if (this.stopFlag || (this.live() || {}).stopped || handingOver()) break;
+          const sc = SCANS.find((x) => x.k === keys[si]); if (!sc || !sc.fn) continue;
+          this.patch({ si, title: sc.title, phase: sc.title, b2: 0, cur: '', b1: Math.round(si / keys.length * 100) });
+          const ctx = {
+            stop: () => this.stopFlag || !!(this.live() || {}).stopped || handingOver(),
+            phase: (t) => this.patch({ phase: `${sc.title} – ${t}` }),
+            step: (i, n, t) => this.patch({ cur: t || '', b2: n ? Math.min(100, Math.round(i / n * 100)) : (i % 50) * 2 }),
+            outer: (i, n) => this.patch({ b1: Math.round(((si + (n ? i / n : 0)) / keys.length) * 100) }),
+            error: (what, e) => { errors.push(`${what}: ${e.message}`); this.patch({ errors }); },
+            notes,
+          };
+          try { const r = await sc.fn(ctx); addRes(total, r); } catch (e) { errors.push(`${sc.title}: ${e.message}`); warn(sc.title, e); }
+          this.patch({ stats: total, notes, errors });
+          G.set('scan_last_' + keys[si], now());
+        }
+      } finally {
+        clearInterval(beat);
+        this.running = false;
+        if (handingOver()) { Lock.release('scan'); return; }   // anderer Tab übernimmt → Zustand bleibt „running“
+        const stopped = this.stopFlag || !!(this.live() || {}).stopped;
+        this.patch({ running: false, done: true, stopped, b1: stopped ? (this.live() || {}).b1 : 100 });
+        Lock.release('scan');
+        Queue.changed();
+      }
+    },
+    // Zeitgeber: einen vom geschlossenen Tab hinterlassenen Scan übernehmen
+    startTimer() {
+      setInterval(() => {
+        if (this.running) return;
+        const s = this.live();
+        if (!s || !s.running || s.done) return;
+        if (now() - TAB_SINCE < 60000) return;      // frischer Tab wartet eine Minute
+        if (Lock.other('scan')) return;             // ein Tab arbeitet noch
+        if (now() - (s.ts || 0) < 90000) return;    // Heartbeat noch frisch
+        this.run().catch((e) => warn('Scan-Übernahme', e));
+      }, 15000);
+    },
+  };
+
+  // ---------- Auswahl-Popup ----------
   async function openScanPopup() {
-    if (scanRun && scanRun.m && scanRun.m.ov) { if (!scanRun.m.ov.isConnected) document.body.appendChild(scanRun.m.ov); return; }
+    if (scanActive()) { openScanProgress(); return; }
     const W1 = word();
-    const m = modal({ title: `${W1}-Scan`, sub: await statusLine() });
+    const m = modal({ title: `${W1}-Scan`, sub: '' });
     const groups = G.get('groups', null);
     const sel = scanSel();
-    const tiles = SCANS.map((sc) => {
+    const rows = SCANS.map((sc) => {
       let sub = sc.sub;
       if (sc.k === 'gruppen_wl' && groups) sub = `${groups.attended.length + groups.managed.length} Gruppen, ${groups.managed.length} verwaltet`;
       if (sc.k === 'gruppen_bl' && groups) sub = groups.attended.length === 1 ? '1 Gruppe, in der du Mitglied bist' : `${groups.attended.length} Gruppen, in denen du Mitglied bist`;
-      const chk = sc.fn ? `<label class="vaf-tsel" title="Bei „Alle Scans nacheinander“ mitnehmen"><input type="checkbox" data-sel="${sc.k}" ${sel[sc.k] ? 'checked' : ''}> bei „Alle“</label>` : '';
-      return `<div class="vaf-tilew"><button type="button" class="vaf-tile" data-k="${sc.k}" ${sc.fn ? '' : 'disabled'} title="${esc(SOURCES[sc.src || sc.k].tip)}"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></button>${chk}</div>`;
+      const on = sc.fn && sel[sc.k];
+      return `<label class="vaf-scanrow${sc.fn ? '' : ' vaf-scanrow-off'}">
+        <input type="checkbox" data-sel="${sc.k}" ${on ? 'checked' : ''} ${sc.fn ? '' : 'disabled'}>
+        <span class="vaf-scanrow-tx"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></span></label>`;
     }).join('');
-    m.body.innerHTML = `<div class="vaf-grid">${tiles}</div>`;
-    m.body.querySelectorAll('.vaf-tile').forEach((b) => b.addEventListener('click', () => runScans(m, [b.dataset.k])));
+    m.body.innerHTML = `<p class="vaf-sub">${await statusLine()}</p><div class="vaf-scanlist">${rows}</div>`;
     m.body.querySelectorAll('[data-sel]').forEach((c) => c.addEventListener('change', () => { const st = { ...G.get('scan_sel', {}) }; st[c.dataset.sel] = c.checked; G.set('scan_sel', st); }));
-    m.buttons([
-      { label: 'Alle Scans nacheinander', primary: true, focus: true, fn: () => { const sl = scanSel(); const ks = SCANS.filter((x) => x.fn && sl[x.k]).map((x) => x.k); if (ks.length) runScans(m, ks); else toast('Kein Scan ausgewählt.'); } },
-      { label: 'Jetzt abarbeiten', fn: () => runEtappeInPopup(m) },
-      { label: 'Schließen', fn: () => m.close() },
-    ]);
-  }
-
-  async function runScans(m, keys) {
-    if (!(await Lock.take('scan', keys.join(',')))) { toast('Ein anderer Tab scannt gerade.'); return; }
-    const run = scanRun = { m, stopped: false, notes: [], errors: [] };
-    m.closable = false;
-    const guard = (e) => { e.preventDefault(); e.returnValue = ''; };
-    W.addEventListener('beforeunload', guard);
-    const total = newRes();
-    m.body.innerHTML = `<div class="vaf-warn">Bitte diese Seite nicht verlassen, solange der Scan läuft.</div>
-      <div class="vaf-cur" data-r="phase"></div>
-      <div class="vaf-bar"><div data-r="b1"></div></div><div class="vaf-bar"><div data-r="b2"></div></div>
-      <div class="vaf-cur" data-r="cur"></div><div class="vaf-stats" data-r="stats"></div>`;
-    const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
-    const showStats = () => {
-      $('stats').innerHTML = `<span>Mitglieder gelesen</span><b>${fmtN(total.total)}</b><span>Über der Grenze</span><b>${fmtN(total.hits)}</b>` +
-        `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
-        `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
-        `<span>Alter unklar (99)</span><b>${fmtN(total.unclear)}</b>` +
-        (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
-        (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '');
+    const start = () => {
+      const sl = scanSel();
+      const ks = SCANS.filter((x) => x.fn && sl[x.k]).map((x) => x.k);
+      if (!ks.length) { toast('Kein Scan ausgewählt.'); return; }
+      Scan.start(ks);
+      openScanProgress(m);
     };
-    showStats();
-    m.buttons([{ label: 'Abbrechen', focus: true, fn: () => { run.stopped = true; $('cur').textContent = 'Breche ab …'; } }]);
-    let si = 0;
-    for (const k of keys) {
-      if (run.stopped) break;
-      const sc = SCANS.find((x) => x.k === k);
-      const ctx = {
-        stop: () => run.stopped,
-        phase: (t) => { $('phase').textContent = `${sc.title} – ${t}`; },
-        step: (i, n, t) => { $('cur').textContent = t || ''; $('b2').style.width = n ? `${Math.min(100, Math.round(i / n * 100))}%` : `${(i % 50) * 2}%`; },
-        outer: (i, n) => { $('b1').style.width = `${Math.round(((si + (n ? i / n : 0)) / keys.length) * 100)}%`; },
-        error: (what, e) => { run.errors.push(`${what}: ${e.message}`); },
-        notes: run.notes,
-      };
-      $('phase').textContent = sc.title;
-      ctx.outer(0, 1);
-      try {
-        const r = await sc.fn(ctx);
-        addRes(total, r);
-      } catch (e) { run.errors.push(`${sc.title}: ${e.message}`); warn(sc.title, e); }
-      si++;
-      $('b1').style.width = `${Math.round(si / keys.length * 100)}%`;
-      showStats();
-      G.set('scan_last_' + k, now());
-    }
-    W.removeEventListener('beforeunload', guard);
-    Lock.release('scan');
-    scanRun = null;
-    m.closable = true;
-    const warnEl = m.body.querySelector('.vaf-warn'); if (warnEl) warnEl.remove();
-    $('phase').textContent = run.stopped ? 'Abgebrochen.' : 'Fertig.';
-    $('cur').innerHTML = await statusLine();
-    if (run.errors.length) m.body.insertAdjacentHTML('beforeend', `<div class="vaf-err">${run.errors.map(esc).join('<br>')}</div>`);
-    if (run.notes.length) m.body.insertAdjacentHTML('beforeend', `<h3>Gruppen-Whitelist</h3><div class="vaf-list">${run.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>`);
-    const q = await Queue.count();
+    const q = await Queue.count().catch(() => 0);
     m.buttons([
-      ...(q ? [{ label: `Jetzt abarbeiten (${fmtN(q)} auf der Warteliste)`, primary: true, fn: () => runEtappeInPopup(m) }] : []),
-      { label: 'Schließen', focus: true, fn: () => m.close() },
+      { label: `${W1}-Scan starten`, primary: true, focus: true, fn: start },
+      ...(q ? [{ label: `Warteliste abarbeiten (${fmtN(q)})`, fn: () => openBlockProgress(m) }] : []),
+      { label: 'Abbrechen', fn: () => m.close() },
     ]);
   }
 
-  async function runEtappeInPopup(m) {
-    m.closable = false;
-    m.body.innerHTML = `<div class="vaf-cur" data-r="cur">Starte Etappe …</div><div class="vaf-bar"><div data-r="b"></div></div><div class="vaf-list" data-r="list"></div>`;
+  // ---------- Fortschrittsanzeige Scan (liest den gemeinsamen Zustand, läuft im Hintergrund weiter) ----------
+  function openScanProgress(m) {
+    m = m || modal({ title: `${word()}-Scan läuft`, sub: '' });
+    m.body.innerHTML = `<div class="vaf-cur" data-r="phase"></div>
+      <div class="vaf-bar"><div data-r="b1"></div></div><div class="vaf-bar"><div data-r="b2"></div></div>
+      <div class="vaf-cur" data-r="cur"></div><div class="vaf-stats" data-r="stats"></div><div data-r="extra"></div>`;
+    const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
+    let timer = null, lastDone = false;
+    const render = () => {
+      const s = Scan.live(); if (!s) { m.close(); return; }
+      $('phase').textContent = s.done ? (s.stopped ? 'Abgebrochen.' : 'Fertig.') : (s.phase || s.title || 'Scan …');
+      $('b1').style.width = (s.b1 || 0) + '%';
+      $('b2').style.width = (s.b2 || 0) + '%';
+      $('cur').textContent = s.cur || '';
+      $('stats').innerHTML = statsHtml({ ...newRes(), ...(s.stats || {}) });
+      if (s.done && !lastDone) {
+        lastDone = true;
+        clearInterval(timer);
+        const ex = $('extra');
+        ex.innerHTML = (s.errors && s.errors.length ? `<div class="vaf-err">${s.errors.map(esc).join('<br>')}</div>` : '') +
+          (s.notes && s.notes.length ? `<h3>Gruppen-Whitelist</h3><div class="vaf-list">${s.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</div>` : '');
+        Queue.count().then((q) => m.buttons([
+          ...(q ? [{ label: `Warteliste abarbeiten (${fmtN(q)})`, primary: true, fn: () => openBlockProgress(m) }] : []),
+          { label: 'Schließen', focus: true, fn: () => m.close() },
+        ]));
+      }
+    };
+    m.buttons([{ label: 'Im Hintergrund weiterlaufen', fn: () => m.close() }, { label: 'Scan abbrechen', fn: () => { Scan.stop(); } }]);
+    render();
+    timer = setInterval(render, 600);
+    const off = Bus.on('scan', render);
+    const origClose = m.close;
+    m.close = () => { clearInterval(timer); if (off) off(); origClose.call(m); };
+  }
+
+  // ---------- Fortschrittsanzeige Warteliste (Blockieren) ----------
+  async function openBlockProgress(m) {
+    m = m || modal({ title: 'Warteliste', sub: '' });
+    m.body.innerHTML = `<div class="vaf-cur" data-r="cur">Starte …</div><div class="vaf-bar"><div data-r="b"></div></div><div class="vaf-list" data-r="list"></div>`;
     const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
     m.buttons([{ label: 'Anhalten', focus: true, fn: () => Etappe.stop() }]);
     G.set('blk_handover', { tab: TAB_ID, at: now() });
@@ -2725,7 +2792,6 @@
       $('b').style.width = `${Math.round(i / n * 100)}%`;
     }, { manual: true });
     G.del('blk_handover');
-    m.closable = true;
     if (!st) { $('cur').textContent = 'Das Blockieren läuft gerade in einem anderen Tab.'; }
     else {
       $('cur').innerHTML = `Fertig: ${st.ok} blockiert, ${st.fail} Fehler, ${st.dropped} übersprungen${st.test ? `, ${st.test} Testlauf` : ''}${st.limit ? ' – Höchstzahl erreicht' : ''}.<br>` + await statusLine();
@@ -2733,6 +2799,15 @@
       $('list').innerHTML = st.items.map((x) => `<div>${esc(x.nick)}: ${esc(x.res)}</div>`).join('') || '<div>Nichts zu tun.</div>';
     }
     m.buttons([{ label: 'Schließen', focus: true, primary: true, fn: () => m.close() }]);
+  }
+
+  // Dynamischer Einstieg über den Kopf-Badge
+  function openScanOrProgress() {
+    if (scanActive()) { openScanProgress(); return; }
+    const q = G.get('qcount', 0) || 0;
+    const bs = (G.get('blk_state', null) || {}).st;
+    if (q > 0 || Etappe.running || bs === 'blockiert') { openBlockProgress(); return; }
+    openScanPopup();
   }
 
   // =====================================================================================
@@ -3376,22 +3451,24 @@
   // =====================================================================================
   // Opa-Symbol in der Kopfleiste (→ Einstellungen) mit Zähler und gelbem Punkt für Gruppenanfragen
   // =====================================================================================
+  const MAGNIFIER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="10" cy="10" r="6"/><line x1="15" y1="15" x2="21" y2="21" stroke-linecap="round"/></svg>';
+  const ERASER_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.4 3.6a2 2 0 0 0-2.8 0L3.6 12.6a2 2 0 0 0 0 2.8l3 3a2 2 0 0 0 1.4.6H21v-2h-7l6.4-6.4a2 2 0 0 0 0-2.8zm-6.5 13-3-3L10 9.1l3 3z"/></svg>';
   function headerButton() {
     try {
       const inbox = document.querySelector('header a[href="/inbox"]');
       if (!inbox) return;
       const anchor = inbox.closest('.ant-badge') || inbox;
       let wrap = document.getElementById('vaf-header-btn');
-      if (!wrap || !wrap.isConnected || wrap.nextElementSibling !== anchor || !wrap.querySelector('.vaf-hdr-dot')) {
+      if (!wrap || !wrap.isConnected || wrap.nextElementSibling !== anchor || !wrap.querySelector('.vaf-hdr-dot') || !wrap.querySelector('.vaf-hdr-act')) {
         if (wrap) wrap.remove();
         wrap = document.createElement('span');
         wrap.id = 'vaf-header-btn';
         wrap.className = 'ant-badge ant-theme';
         wrap.style.position = 'relative';
-        wrap.innerHTML = `<a href="/setting/profile#opa-schutz" class="ant-btn ant-theme ant-btn-circle ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-icon-only" tabindex="0"><span class="ant-btn-icon">${oldManSvg()}</span></a>` +
-          '<sup data-show="true" class="ant-scroll-number ant-badge-count"><bdi></bdi></sup><span class="vaf-hdr-dot" style="display:none"></span>';
+        wrap.innerHTML = `<a href="#" class="ant-btn ant-theme ant-btn-circle ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-icon-only" tabindex="0"><span class="ant-btn-icon">${oldManSvg()}</span></a>` +
+          '<sup data-show="true" class="ant-scroll-number ant-badge-count"><bdi></bdi></sup><span class="vaf-hdr-dot" style="display:none"></span><span class="vaf-hdr-act" style="display:none"></span>';
         anchor.parentElement.insertBefore(wrap, anchor);
-        wrap.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); goHash('opa-schutz'); });
+        wrap.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); try { openScanOrProgress(); } catch (err) { warn('Scan-Einstieg', err); } });
         wrap.querySelector('.vaf-hdr-dot').addEventListener('click', (e) => {
           e.preventDefault(); e.stopPropagation();
           const p = G.get('pending', null);
@@ -3406,7 +3483,21 @@
       sup.style.display = txt ? '' : 'none';
       if (sup.querySelector('bdi').textContent !== txt) { sup.querySelector('bdi').textContent = txt; sup.classList.toggle('ant-badge-multiple-words', txt.length > 1); }
       const bs = (G.get('blk_state', null) || {}).st; const et = Etappe.running || bs === 'blockiert' ? ' · blockiert gerade' : bs === 'pause' ? ' · Blockieren pausiert' : bs === 'pause-fehler' ? ' · Blockieren pausiert (Fehler)' : '';
-      const tip = `${word()}-Schutz${isOn() ? '' : ' (Automatik aus)'}${dry() ? ' – Testlauf' : ''}: ${n == null ? '?' : fmtN(n)} geblockt, ${fmtN(q)} in der Warteschlange${et} – Einstellungen öffnen`;
+      // Aktivitäts-Badge: Lupe (Scan, Vorrang) oder Radierer (Warteliste wird abgearbeitet)
+      const ss = G.get('scan_state', null);
+      const scanning = !!(ss && ss.running && !ss.done);
+      const blocking = Etappe.running || bs === 'blockiert';
+      const act = wrap.querySelector('.vaf-hdr-act');
+      let actTip = '';
+      if (scanning) {
+        act.style.display = ''; act.innerHTML = MAGNIFIER_SVG;
+        actTip = `Scan läuft${ss.phase ? ': ' + ss.phase : ''}${ss.cur ? ' – ' + ss.cur : ''}`;
+      } else if (blocking) {
+        act.style.display = ''; act.innerHTML = ERASER_SVG;
+        actTip = `Warteliste wird abgearbeitet${bs === 'blockiert' ? '' : bs === 'pause' ? ' (pausiert)' : ''} – ${fmtN(q)} offen`;
+      } else act.style.display = 'none';
+      const tip = actTip ? `${actTip} · Klick öffnet die Anzeige`
+        : `${word()}-Schutz${isOn() ? '' : ' (Automatik aus)'}${dry() ? ' – Testlauf' : ''}: ${n == null ? '?' : fmtN(n)} geblockt, ${fmtN(q)} in der Warteschlange${et} – ${word()}-Scan öffnen`;
       const a = wrap.querySelector('a');
       if (a.title !== tip) { a.title = tip; a.setAttribute('aria-label', tip); }
       a.style.opacity = isOn() ? '' : '.5';
@@ -6322,6 +6413,7 @@
     initFigur();
     initGroupRequests();
     Etappe.start();
+    Scan.startTimer();
     bkStartPoppen();
     headerButton();
     setInterval(headerButton, 1500);
@@ -6386,7 +6478,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);
