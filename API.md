@@ -153,8 +153,8 @@ Antwort: `age`, `city`, `friend_status` (`friend`/`none` …) und `note` (eigene
 ### `messenger/message/list` 📼
 Nachrichten einer Unterhaltung. Vom Skript nicht verwendet; der Rekorder schwärzt Inhalte.
 
-### Profilbesucher
-Dafür hat sich **kein** Endpunkt finden lassen. Das Skript lädt `/connection/visitors` unsichtbar und liest die Karten aus. Die uid kommt dabei aus der Avatar-URL, Alter und Profiltyp aus dem Kartentext.
+### `GET profile/visitors` ✅
+Profilbesucher. Query: `_version=2`, `sort_by`, `page`, `limit`, optional `gender[]`. Antwort: `data.users[]` mit `uid`, `nickname`, `avatar`, `gender`, `age`, `birthday`, `timestamp`, `distance`, `count`, `can_see`, `histories`; dazu `next_page`, `total`. Das Skript liest darüber die Profilbesucher (früher durch Durchscrollen der Seite).
 
 ---
 
@@ -257,8 +257,11 @@ Ein Mitglied aus einer eigenen Gruppe entfernen. Query: `_version=2`. Body: `{ "
 ### `POST group/attendee/note` ✅
 Eigene Notiz an einem Gruppenmitglied setzen. Query: `_version=2`. Body: `{ "cms_id": "…", "nickname": "…", "note": "…" }`. Antwort: `data: null`. Die gesetzte Notiz liefert `group/attendee/manage/list` im Feld `note` zurück.
 
-### `group/attendee/specific/pending/list` 📼
-Offene Beitrittsanfragen einer Gruppe. Query: `_version=2`, `cms_id`, `page`, `limit`. Das Skript liest die Anfragen bislang aus der Seite `/groups/<cms_id>/requests`.
+### `GET group/attendee/specific/pending/list` ✅
+Offene Beitrittsanfragen einer Gruppe. Query: `_version=2`, `cms_id`, `page`, `limit`, `sort`. Antwort: `data.users[]` (Mitglieds-Objekte inkl. `note`), `total`. Das Skript nutzt dies für die Anwenden-Vorschau der Regeln.
+
+### `POST group/update` 📼
+Setzt u. a. die poppen.de-eigenen Automatik-Regeln. Body: `{ cms_id, auto_approve_genders:[…], auto_approve_has_fakecheck, auto_approve_has_preview }`. Vom Skript nicht verwendet (die skript-eigenen Regeln arbeiten unabhängig davon).
 
 ### `POST group/attendee/deny` 📼
 Body: `{ "cms_id": "…", "uid": "…" }`. Lehnt eine Beitrittsanfrage ab. Das Skript nutzt stattdessen die Knöpfe „Akzeptieren“/„Ablehnen“ der Anfragenseite. Ein Endpunkt zum **Annehmen** ist nicht bekannt.

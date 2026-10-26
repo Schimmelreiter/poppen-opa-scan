@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.16
+// @version      2.17
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.16';
+  const VERSION = '2.17';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -2783,7 +2783,7 @@
     m = m || modal({ title: 'Warteliste', sub: '' });
     m.body.innerHTML = `<div class="vaf-cur" data-r="cur">Starte …</div><div class="vaf-bar"><div data-r="b"></div></div><div class="vaf-list" data-r="list"></div>`;
     const $ = (r) => m.body.querySelector(`[data-r=${r}]`);
-    m.buttons([{ label: 'Anhalten', focus: true, fn: () => Etappe.stop() }]);
+    m.buttons([{ label: 'Im Hintergrund weiterlaufen', focus: true, fn: () => m.close() }]);
     G.set('blk_handover', { tab: TAB_ID, at: now() });
     if (Etappe.running) Etappe.stop();
     for (let t = 0; (Etappe.running || Lock.other('etappe')) && t < 120; t++) await sleep(500);
@@ -3633,7 +3633,7 @@
       const img = root.querySelector('img');
       const btns = [...root.querySelectorAll('button')];
       out.push({
-        root, name, nameEl,
+        root, name, nameEl, descEl,
         desc: descEl ? descEl.textContent.trim() : '',
         avatar: img ? img.getAttribute('src') : '',
         online: (root.querySelector('.ant-badge-status-dot') || {}).className || '',
@@ -3907,8 +3907,8 @@
     if (!m.ov.isConnected) return;
     m.md.querySelector('.vaf-sub').innerHTML =
       `<b style="color:#fff">${reqs.length}</b> offene Anfrage${reqs.length === 1 ? '' : 'n'} in „${esc(groupName())}“.<br>` +
-      `Jedes Profil wird unsichtbar geöffnet. Typ ${S().groupReq.accept.join(' / ')} → annehmen, ` +
-      `Typ ${S().groupReq.reject.join(' / ')} → ablehnen, alles andere → manuell prüfen.` +
+      `Jede Anfrage wird über die gespeicherten Regeln dieser Gruppe geprüft (ohne Profilbesuch). ` +
+      `Treffer werden angenommen oder abgelehnt, alles andere bleibt zur manuellen Prüfung.` +
       (dry() ? '<br><span style="color:#ffb300">Testmodus: Es wird nichts angeklickt.</span>' : '');
     m.buttons([
       { label: 'Jetzt prüfen …', primary: true, focus: true, disabled: !reqs.length, fn: async () => { const vis = await Vis.guard('Die Prüfung der Beitrittsanfragen'); if (vis) runGroupCheck(m, reqs, vis); } },
@@ -3940,15 +3940,16 @@
       i++;
       bar.style.width = `${Math.round((i - 1) / reqs.length * 100)}%`;
       cur.textContent = `${i}/${reqs.length}: ${r.name} – Profil wird geprüft …`;
-      const res = { ...r, fields: {}, photos: [], verdict: 'fail', reason: '' };
+      const res = { ...r, meta: '', photos: [], verdict: 'manual', reason: '' };
       try {
-        const pr = (await apiProbe(r.name).catch(() => null)) || await probeProfile(r.name);
-        res.fields = pr.fields; res.photos = pr.photos;
-        applyFacts({ nick: r.name, avatar: r.avatar }, pr.fields).catch(() => {});
-        if (pr.loggedOut) { res.reason = pr.error; run.results.push(res); cnt.fail++; showStats(); run.stop = true; cur.textContent = `Abgebrochen: ${pr.error}`; break; }
-        if (pr.error && !Object.keys(pr.fields).length) { res.reason = pr.error; }
+        const cms = reqCms();
+        const pr = await grProbe(r.name).catch(() => ({ error: 'nicht lesbar' }));
+        res.photos = pr.photos || []; if (pr.avatar) res.avatar = pr.avatar;
+        if (!pr.trait) { res.reason = pr.error || 'keine Angaben'; }
         else {
-          const d = decide(pr.fields, { listAvatar: r.avatar, avatar: pr.avatar, photos: pr.photos });
+          const ctx = { trait: pr.trait, verified: pr.verified, photos: pr.photos, hasphoto: pr.hasphoto };
+          res.meta = await grMetaLine(cms, ctx).catch(() => '');
+          const d = grDecide(cms, ctx);
           res.verdict = d.verdict; res.reason = d.reason;
           if (d.verdict === 'accept' || d.verdict === 'reject') {
             cur.textContent = `${i}/${reqs.length}: ${r.name} – ${d.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`;
@@ -3996,10 +3997,7 @@
       const el = document.createElement('div');
       el.className = 'vaf-item';
       const dot = /success/.test(r.online) ? '#52c41a' : /error/.test(r.online) ? '#e53935' : '';
-      const chips = S().groupReq.fields.map((f) => {
-        const v = r.fields[f];
-        return `<span class="vaf-chip"><i>${esc(f)}:</i> ${v ? esc(v) : '<span class="vaf-na">–</span>'}</span>`;
-      }).join('');
+      const chips = r.meta ? `<span class="vaf-chip">${esc(r.meta)}</span>` : '';
       el.innerHTML = `
         <div class="vaf-top">
           <img class="vaf-av" alt="" src="${esc(r.avatar || '')}">
@@ -4008,7 +4006,7 @@
           <div><button type="button" class="vaf-sb vaf-acc">Akzeptieren</button><button type="button" class="vaf-sb vaf-rej">Ablehnen</button></div>
         </div>
         <div class="vaf-reason${r.verdict === 'fail' ? ' vaf-fail' : ''}">${r.verdict === 'fail' ? 'Fehlschlag' : 'Manuelle Prüfung'}: ${esc(r.reason || '')}</div>
-        ${Object.keys(r.fields).length ? `<div class="vaf-det">${chips}</div>` : ''}
+        ${r.meta ? `<div class="vaf-det">${chips}</div>` : ''}
         ${r.photos.length ? `<div class="vaf-th">${r.photos.map((p) => `<img alt="" src="${esc(thumbUrl(p))}" data-big="${esc(p)}">`).join('')}</div>` : ''}
         <input class="vaf-note" type="text" placeholder="Notiz für dich hinzufügen (optional)">`;
       // Profilbild-Klick öffnet ebenfalls das Profil
@@ -4046,7 +4044,7 @@
 
   // ---------- Knopf im Kasten "Mehrere Anfragen verwalten" ----------
   function ensureGroupButton() {
-    if (!isGroupRequestsPage() || !groupMatch()) return;
+    if (!isGroupRequestsPage() || !grRules()[reqCms()]) return;
     if (document.getElementById('vaf-group-btn')) return;
     const h = [...document.querySelectorAll('main h3, main h2')].find((x) => /Mehrere Anfragen verwalten/i.test(x.textContent));
     if (!h) return;
@@ -6380,6 +6378,553 @@
   }
 
   // =====================================================================================
+  // Gruppenanfrage-Regeln je Gruppe (Regel-Baukasten)
+  //  Datenmodell:  grRules = { [cms]: { [gender]: { accept: <baum>, reject: <baum> } } }
+  //  Baum:  { op:'and'|'or', kids:[baum|blatt] }   Blatt: { field, op, value }
+  //  Ausgewertet wird gegen user_trait (aus user/info) + abgeleitete Werte (verifiziert, Fotos).
+  // =====================================================================================
+  const GR_GENDERS = [['m', 'Mann'], ['w', 'Frau'], ['p', 'Paar'], ['ts', 'Trans'], ['tv', 'Nicht-binär']];
+  const grGenderName = (g) => (GR_GENDERS.find((x) => x[0] === g) || [, g])[1];
+
+  // Feldkatalog. sex: Feld gilt nur für diese Person im Paar (m=Mann, w=Frau). type: num|enum|country|lang|bool.
+  const GR_FIELDS = [
+    { key: 'age', label: 'Alter', type: 'num', trait: 'age', min: 18, max: 99 },
+    { key: 'size', label: 'Größe', type: 'num', trait: 'size', min: 130, max: 220, unit: 'cm' },
+    { key: 'weight', label: 'Gewicht', type: 'num', trait: 'weight', min: 0, max: 300, unit: 'kg' },
+    { key: 'dick_length', label: 'Penislänge', type: 'num', trait: 'dick_length', min: 0, max: 40, unit: 'cm', sex: 'm' },
+    { key: 'dick_width', label: 'Penisdicke', type: 'num', trait: 'dick_width', min: 0, max: 20, unit: 'cm', sex: 'm' },
+    { key: 'photos', label: 'Fotos (Anzahl)', type: 'num', derived: 'photos', min: 0, max: 50 },
+    { key: 'ethnicity', label: 'Typ', type: 'enum', trait: 'ethnicity' },
+    { key: 'figure_name', label: 'Figur', type: 'enum', trait: 'figure_name' },
+    { key: 'sex_type', label: 'Sexualität', type: 'enum', trait: 'sex_type' },
+    { key: 'hair', label: 'Haarfarbe', type: 'enum', trait: 'hair' },
+    { key: 'hair_length', label: 'Haarlänge', type: 'enum', trait: 'hair_length' },
+    { key: 'eyes_name', label: 'Augenfarbe', type: 'enum', trait: 'eyes_name' },
+    { key: 'beard', label: 'Bart', type: 'enum', trait: 'beard', sex: 'm' },
+    { key: 'body_hair', label: 'Körperbehaarung', type: 'enum', trait: 'body_hair' },
+    { key: 'intimately_hair', label: 'Intimbehaarung', type: 'enum', trait: 'intimately_hair' },
+    { key: 'tits', label: 'Körbchengröße', type: 'enum', trait: 'tits', sex: 'w' },
+    { key: 'circumcised', label: 'Beschnitten', type: 'enum', trait: 'circumcised', sex: 'm' },
+    { key: 'glass', label: 'Brille', type: 'enum', trait: 'glass' },
+    { key: 'smoker', label: 'Raucher', type: 'enum', trait: 'smoker' },
+    { key: 'tattoo', label: 'Tätowierungen', type: 'enum', trait: 'tattoo' },
+    { key: 'piercing', label: 'Piercings', type: 'enum', trait: 'piercing' },
+    { key: 'zodiac', label: 'Sternzeichen', type: 'enum', trait: 'zodiac' },
+    { key: 'origin', label: 'Herkunft', type: 'country', trait: 'origin' },
+    { key: 'spoken_language', label: 'Sprachen', type: 'lang', trait: 'spoken_language' },
+    { key: 'verified', label: 'Verifiziert', type: 'bool', derived: 'verified' },
+    { key: 'hasphoto', label: 'Hat Fotos', type: 'bool', derived: 'hasphoto' },
+  ];
+  const grField = (k) => GR_FIELDS.find((f) => f.key === k);
+  // in einem Block für Geschlecht g verfügbare Felder
+  function grFieldsFor(g) {
+    const has = (sex) => !sex || g === 'p' || g === sex || (g !== 'm' && g !== 'w');   // ts/tv: alles anbieten
+    return GR_FIELDS.filter((f) => has(f.sex));
+  }
+  const GR_OPS = {
+    num: [['eq', '='], ['ne', '≠'], ['lt', 'ist kleiner als'], ['gt', 'ist größer als'], ['between', 'zwischen']],
+    enum: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'ist eine von']],
+    country: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'ist eine von']],
+    lang: [['contains', 'enthält'], ['only', 'nur'], ['isexactly', 'ist genau']],
+    bool: [['is', 'ist'], ['isnot', 'ist nicht']],
+  };
+  const grOpName = (type, op) => ((GR_OPS[type] || []).find((x) => x[0] === op) || [, op])[1];
+
+  const grRules = () => G.get('grRules', {});
+  const grSetRules = (r) => { G.set('grRules', r); Bus.emit('grRules', r); };
+  const grBlock = (cms, g, rules) => (((rules || grRules())[cms] || {})[g]) || null;
+  const grHasRules = (t) => !!(t && ((t.kids && t.kids.length) || t.field));
+
+  // ---------- Wertelisten (Codes → Klartext) über i18n ----------
+  const GR_OPTS_CACHE = {};
+  async function grOptions(field) {
+    if (field.type === 'bool') return [[true, 'Ja'], [false, 'Nein']];
+    if (field.type === 'num') return null;
+    if (field.key === 'ethnicity') { const m = await ethnicityMap().catch(() => null); return m ? Object.entries(m).map(([c, n]) => [c, n]) : null; }
+    if (field.type === 'lang') return Object.entries(LANG_DE).map(([c, n]) => [c, n]);
+    if (field.type === 'country') {
+      if (GR_OPTS_CACHE.country) return GR_OPTS_CACHE.country;
+      try { const d = await apiGet('geo/country/all', { _version: 2 }); const list = ((d && (d.list || d.countries || d)) || []).map((c) => [String(c.iso || c.code || c.country_iso || c.id), c.name || c.country_name || c.iso]).filter((x) => x[0]); if (list.length) return (GR_OPTS_CACHE.country = list); } catch {}
+      return [['DE', 'Deutschland'], ['AT', 'Österreich'], ['CH', 'Schweiz']];
+    }
+    // sonstige enum: aus i18n ziehen, Schlüssel <trait>.<code>
+    if (GR_OPTS_CACHE[field.key]) return GR_OPTS_CACHE[field.key];
+    const alt = { figure_name: 'figure', eyes_name: 'eyes', sex_type: 'sex_type', hair_length: 'hair_length', body_hair: 'body_hair', intimately_hair: 'intimately_hair' };
+    const keys = [field.trait, alt[field.key]].filter(Boolean);
+    const map = {};
+    for (const module of ['profile', 'user', 'personal-detail', 'search', 'setting', 'common']) {
+      let d = null; try { d = await apiPost('i18n/pull', { locale: 'de-DE', module }); } catch { continue; }
+      if (!d || typeof d !== 'object') continue;
+      for (const [k, v] of Object.entries(d)) { const mm = new RegExp('^(' + keys.join('|') + ')[._-](\\d+)$', 'i').exec(k); if (mm && typeof v === 'string') map[mm[2]] = v; }
+      if (Object.keys(map).length) break;
+    }
+    const list = Object.entries(map).map(([c, n]) => [c, n]);
+    return list.length ? (GR_OPTS_CACHE[field.key] = list) : null;
+  }
+  async function grValueName(field, code) {
+    const opts = await grOptions(field).catch(() => null);
+    if (!opts) return String(code);
+    const hit = opts.find((o) => String(o[0]) === String(code));
+    return hit ? hit[1] : String(code);
+  }
+
+  // ---------- Auswertung ----------
+  const genderCode = (g) => { const a = Array.isArray(g) ? g.filter(Boolean) : [g]; if (a.length >= 2) return 'p'; return a[0] || ''; };
+  function grTraitVals(field, trait) {
+    let v = trait ? trait[field.trait] : null;
+    if (v == null) return [];
+    if (!Array.isArray(v)) v = [v];
+    return v.filter((x) => x !== null && x !== undefined && x !== '');
+  }
+  function numMatch(op, value, nums) {
+    const v = Array.isArray(value) ? value.map(Number) : [Number(value)];
+    return nums.some((n) => {
+      n = Number(n); if (!isFinite(n)) return false;
+      switch (op) { case 'eq': return n === v[0]; case 'ne': return n !== v[0]; case 'lt': return n < v[0]; case 'gt': return n > v[0]; case 'between': return n >= Math.min(v[0], v[1]) && n <= Math.max(v[0], v[1]); }
+      return false;
+    });
+  }
+  function enumMatch(op, value, codes) {
+    const want = (Array.isArray(value) ? value : [value]).map(String);
+    const has = codes.map(String);
+    if (op === 'is') return has.includes(want[0]);
+    if (op === 'isnot') return has.length ? !has.includes(want[0]) : false;
+    if (op === 'isoneof') return has.some((c) => want.includes(c));
+    return false;
+  }
+  function langMatch(op, value, personsLangs) {
+    const want = (Array.isArray(value) ? value : [value]).map(String);
+    return personsLangs.some((langs) => {
+      const have = (langs || []).map(String);
+      if (op === 'contains') return want.every((w) => have.includes(w));
+      if (op === 'only') return have.length > 0 && have.every((h) => want.includes(h));
+      if (op === 'isexactly') return have.length === want.length && want.every((w) => have.includes(w));
+      return false;
+    });
+  }
+  function grLeaf(leaf, ctx) {
+    const f = grField(leaf.field); if (!f) return false;
+    if (f.type === 'bool') {
+      const actual = f.derived === 'verified' ? !!ctx.verified : f.derived === 'hasphoto' ? (ctx.hasphoto != null ? !!ctx.hasphoto : (ctx.photos || []).length > 0) : false;
+      const want = leaf.value === true || leaf.value === 'true' || leaf.value === 1 || leaf.value === '1';
+      return leaf.op === 'isnot' ? actual !== want : actual === want;
+    }
+    if (f.derived === 'photos') return numMatch(leaf.op, leaf.value, [(ctx.photos || []).length]);
+    if (f.type === 'num') return numMatch(leaf.op, leaf.value, grTraitVals(f, ctx.trait).map(Number));
+    if (f.type === 'lang') return langMatch(leaf.op, leaf.value, (ctx.trait && ctx.trait.spoken_language) || []);
+    return enumMatch(leaf.op, leaf.value, grTraitVals(f, ctx.trait));
+  }
+  function grEval(node, ctx) {
+    if (!node) return false;
+    if (node.op === 'and') return (node.kids || []).every((k) => grEval(k, ctx));
+    if (node.op === 'or') return (node.kids || []).some((k) => grEval(k, ctx));
+    return grLeaf(node, ctx);
+  }
+  // Entscheidung für einen Bewerber (ctx: { trait, verified, photos })
+  function grDecide(cms, ctx, rules) {
+    const g = genderCode(ctx.trait && ctx.trait.gender);
+    const block = grBlock(cms, g, rules);
+    if (!block) return { verdict: 'manual', reason: `keine Regel für ${grGenderName(g) || 'dieses Geschlecht'}` };
+    const rej = grHasRules(block.reject) && grEval(block.reject, ctx);
+    if (rej) return { verdict: 'reject', reason: 'Regel: ablehnen' };
+    const acc = grHasRules(block.accept) && grEval(block.accept, ctx);
+    if (acc) return { verdict: 'accept', reason: 'Regel: annehmen' };
+    return { verdict: 'manual', reason: 'keine Regel trifft zu' };
+  }
+  // welche Felder kommen in den Regeln eines Geschlechts vor (für die Zusatzzeile)
+  function grUsedFields(cms, g, rules) {
+    const block = grBlock(cms, g, rules); if (!block) return [];
+    const out = new Set();
+    const walk = (n) => { if (!n) return; if (n.field) out.add(n.field); (n.kids || []).forEach(walk); };
+    walk(block.accept); walk(block.reject);
+    return [...out];
+  }
+
+  // ---------- Konfliktprüfung (DNF + Feld-Machbarkeit) ----------
+  function grDNF(node) {
+    if (!node) return [[]];
+    if (node.field) return [[node]];
+    if (node.op === 'and') { let acc = [[]]; for (const k of (node.kids || [])) { const d = grDNF(k); const nx = []; for (const a of acc) for (const b of d) nx.push(a.concat(b)); acc = nx; } return acc.length ? acc : [[]]; }
+    if (node.op === 'or') { let out = []; for (const k of (node.kids || [])) out = out.concat(grDNF(k)); return out.length ? out : [[]]; }
+    return [[]];
+  }
+  // Machbarkeit einer Konjunktion je Feld; gibt pro Feld ein Beispiel-Wert zurück oder null (unmöglich)
+  function grFeasible(leaves, optsByField) {
+    const byField = {};
+    for (const l of leaves) (byField[l.field] = byField[l.field] || []).push(l);
+    const example = {};
+    for (const [fk, ls] of Object.entries(byField)) {
+      const f = grField(fk); if (!f) continue;
+      if (f.type === 'num' || f.derived === 'photos') {
+        let lo = f.min != null ? f.min : -1e9, hi = f.max != null ? f.max : 1e9; const ne = new Set();
+        for (const l of ls) { const v = Array.isArray(l.value) ? l.value.map(Number) : [Number(l.value)];
+          if (l.op === 'eq') { lo = Math.max(lo, v[0]); hi = Math.min(hi, v[0]); }
+          else if (l.op === 'lt') hi = Math.min(hi, v[0] - 1);
+          else if (l.op === 'gt') lo = Math.max(lo, v[0] + 1);
+          else if (l.op === 'between') { lo = Math.max(lo, Math.min(v[0], v[1])); hi = Math.min(hi, Math.max(v[0], v[1])); }
+          else if (l.op === 'ne') ne.add(v[0]); }
+        let pick = null; for (let x = lo; x <= hi; x++) if (!ne.has(x)) { pick = x; break; }
+        if (pick == null) return null; example[fk] = pick;
+      } else if (f.type === 'bool') {
+        let want = null;
+        for (const l of ls) { const w = l.value === true || l.value === 'true' || l.value === 1 || l.value === '1'; const eff = l.op === 'isnot' ? !w : w; if (want === null) want = eff; else if (want !== eff) return null; }
+        example[fk] = want;
+      } else if (f.type === 'lang') {
+        // vereinfachte Prüfung: contains fügt hinzu, only/isexactly beschränken
+        let must = new Set(), restrict = null;
+        for (const l of ls) { const vs = (Array.isArray(l.value) ? l.value : [l.value]).map(String);
+          if (l.op === 'contains') vs.forEach((v) => must.add(v));
+          else { const s = new Set(vs); restrict = restrict ? new Set([...restrict].filter((x) => s.has(x))) : s; } }
+        if (restrict) { for (const m of must) if (!restrict.has(m)) return null; if (![...(must.size ? must : restrict)].length) return null; }
+        example[fk] = [...(must.size ? must : (restrict || new Set()))];
+      } else {
+        // enum/country: Universe = bekannte Optionen ∪ genannte Werte
+        const uni = new Set((optsByField[fk] || []).map(String));
+        for (const l of ls) (Array.isArray(l.value) ? l.value : [l.value]).forEach((v) => uni.add(String(v)));
+        let allowed = new Set(uni);
+        for (const l of ls) { const vs = (Array.isArray(l.value) ? l.value : [l.value]).map(String);
+          if (l.op === 'is') allowed = new Set([...allowed].filter((c) => c === vs[0]));
+          else if (l.op === 'isoneof') allowed = new Set([...allowed].filter((c) => vs.includes(c)));
+          else if (l.op === 'isnot') allowed = new Set([...allowed].filter((c) => c !== vs[0])); }
+        if (!allowed.size) return null; example[fk] = [...allowed][0];
+      }
+    }
+    return example;
+  }
+  // Prüft, ob accept und reject gleichzeitig erfüllbar sind. Gibt Konfliktinfo oder null zurück.
+  function grConflict(block, optsByField) {
+    if (!grHasRules(block.accept) || !grHasRules(block.reject)) return null;
+    const A = grDNF(block.accept), R = grDNF(block.reject);
+    for (const a of A) for (const r of R) {
+      const ex = grFeasible(a.concat(r), optsByField || {});
+      if (ex) {
+        const fa = new Set(a.map((l) => l.field)), fr = new Set(r.map((l) => l.field));
+        const overlap = [...fa].filter((x) => fr.has(x));
+        return { example: ex, overlap, aLeaves: a, rLeaves: r };
+      }
+    }
+    return null;
+  }
+
+  // =====================================================================================
+  // Regel-Editor auf /groups/<cms>/requests  (Abschnitt „Nach Regeln akzeptierte Geschlechter“)
+  // =====================================================================================
+  const grReqCms = () => (/^\/groups\/(\d+)\/requests/.exec(location.pathname) || [])[1] || '';
+  const newTree = () => ({ op: 'and', kids: [] });
+  const newLeaf = (g) => { const f = grFieldsFor(g)[0]; return { field: f.key, op: GR_OPS[f.type][0][0], value: f.type === 'num' ? (f.min || 0) : f.type === 'bool' ? true : '' }; };
+
+  function grEl(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+
+  // einen Baum (node) rekursiv rendern; onChange nach jeder Änderung; g = Geschlecht des Blocks
+  function grRenderNode(node, g, onChange, depth) {
+    const box = grEl('div', 'vaf-gr-group');
+    (node.kids || []).forEach((kid, idx) => {
+      if (idx > 0) {
+        const conj = grEl('div', 'vaf-gr-conj');
+        const sel = grEl('select', 'vaf-gr-op');
+        sel.innerHTML = '<option value="and">UND</option><option value="or">ODER</option>';
+        sel.value = node.op;
+        sel.addEventListener('change', () => { node.op = sel.value; onChange(); });
+        conj.appendChild(sel);
+        box.appendChild(conj);
+      }
+      if (kid.field) box.appendChild(grRenderLeaf(kid, node, g, onChange));
+      else box.appendChild(grRenderNode(kid, g, onChange, depth + 1));
+    });
+    const add = grEl('div', 'vaf-gr-add');
+    const bCond = grEl('button', 'vaf-gr-addbtn', '+ Bedingung');
+    bCond.addEventListener('click', () => { node.kids.push(newLeaf(g)); onChange(); });
+    const bGrp = grEl('button', 'vaf-gr-addbtn', '+ Gruppe');
+    bGrp.addEventListener('click', () => { node.kids.push({ op: 'and', kids: [newLeaf(g)] }); onChange(); });
+    add.appendChild(bCond); add.appendChild(bGrp);
+    if (depth > 0) { const rm = grEl('button', 'vaf-gr-rm', '✕ Gruppe'); rm.addEventListener('click', () => { node.__remove = true; onChange(); }); add.appendChild(rm); }
+    box.appendChild(add);
+    return box;
+  }
+
+  function grRenderLeaf(leaf, parent, g, onChange) {
+    const row = grEl('div', 'vaf-gr-cond');
+    const fields = grFieldsFor(g);
+    const fs = grEl('select', 'vaf-gr-field');
+    fs.innerHTML = fields.map((f) => `<option value="${f.key}">${esc(f.label)}</option>`).join('');
+    fs.value = leaf.field;
+    fs.addEventListener('change', () => { leaf.field = fs.value; const f = grField(leaf.field); leaf.op = GR_OPS[f.type][0][0]; leaf.value = f.type === 'num' ? (f.min || 0) : f.type === 'bool' ? true : ''; onChange(); });
+    row.appendChild(fs);
+    const f = grField(leaf.field);
+    const os = grEl('select', 'vaf-gr-op');
+    os.innerHTML = GR_OPS[f.type].map(([o, n]) => `<option value="${o}">${esc(n)}</option>`).join('');
+    os.value = leaf.op;
+    os.addEventListener('change', () => { leaf.op = os.value; if (leaf.op === 'between' && !Array.isArray(leaf.value)) leaf.value = [Number(leaf.value) || f.min || 0, f.max || 0]; onChange(); });
+    row.appendChild(os);
+    row.appendChild(grRenderValue(leaf, f, onChange));
+    const rm = grEl('button', 'vaf-gr-rm', '✕');
+    rm.addEventListener('click', () => { leaf.__remove = true; onChange(); });
+    row.appendChild(rm);
+    return row;
+  }
+
+  function grRenderValue(leaf, f, onChange) {
+    const wrap = grEl('span', 'vaf-gr-val');
+    if (f.type === 'num' || f.derived === 'photos') {
+      const mk = (val, set) => { const i = grEl('input', 'vaf-gr-num'); i.type = 'number'; if (f.min != null) i.min = f.min; if (f.max != null) i.max = f.max; i.value = val; i.addEventListener('change', () => { set(Number(i.value)); onChange(); }); return i; };
+      if (leaf.op === 'between') {
+        if (!Array.isArray(leaf.value)) leaf.value = [Number(leaf.value) || f.min || 0, f.max || 0];
+        wrap.appendChild(mk(leaf.value[0], (v) => leaf.value[0] = v)); wrap.appendChild(grEl('span', '', ' – ')); wrap.appendChild(mk(leaf.value[1], (v) => leaf.value[1] = v));
+      } else { if (Array.isArray(leaf.value)) leaf.value = leaf.value[0]; wrap.appendChild(mk(leaf.value, (v) => leaf.value = v)); }
+      if (f.unit) wrap.appendChild(grEl('span', 'vaf-gr-unit', ' ' + f.unit));
+      return wrap;
+    }
+    const multi = (f.type === 'lang') || leaf.op === 'isoneof';
+    const sel = grEl('select', 'vaf-gr-vsel'); if (multi) sel.multiple = true;
+    sel.innerHTML = '<option value="">…</option>';
+    const setVal = () => { if (multi) { leaf.value = [...sel.selectedOptions].map((o) => o.value).filter(Boolean); } else leaf.value = sel.value; onChange(); };
+    sel.addEventListener('change', setVal);
+    wrap.appendChild(sel);
+    grOptions(f).then((opts) => {
+      if (!opts) { sel.innerHTML = ''; const i = grEl('input', 'vaf-gr-num'); i.type = 'text'; i.value = Array.isArray(leaf.value) ? leaf.value.join(',') : (leaf.value || ''); i.addEventListener('change', () => { leaf.value = multi ? i.value.split(',').map((s) => s.trim()).filter(Boolean) : i.value.trim(); onChange(); }); wrap.replaceChild(i, sel); return; }
+      sel.innerHTML = (multi ? '' : '<option value="">…</option>') + opts.map(([c, n]) => `<option value="${esc(String(c))}">${esc(n)}</option>`).join('');
+      const cur = Array.isArray(leaf.value) ? leaf.value.map(String) : [String(leaf.value)];
+      for (const o of sel.options) o.selected = cur.includes(o.value);
+    }).catch(() => {});
+    return wrap;
+  }
+
+  // Block (ein Geschlecht) rendern
+  function grRenderBlock(cms, g, draft, renderAll) {
+    const block = draft[g];
+    const el = grEl('div', 'vaf-gr-block');
+    const head = grEl('div', 'vaf-gr-bhead');
+    head.appendChild(grEl('span', 'vaf-gr-chip on', esc(grGenderName(g))));
+    const x = grEl('button', 'vaf-gr-x', '✕'); x.title = 'Regelblock entfernen';
+    x.addEventListener('click', () => { delete draft[g]; renderAll(); });
+    head.appendChild(x);
+    el.appendChild(head);
+    const prune = (n) => { if (!n || !n.kids) return; n.kids = n.kids.filter((k) => !k.__remove); n.kids.forEach(prune); };
+    for (const [key, title, cls] of [['accept', 'Automatisch annehmen, wenn', 'acc'], ['reject', 'Automatisch ablehnen, wenn', 'rej']]) {
+      el.appendChild(grEl('div', 'vaf-gr-tt ' + cls, esc(title)));
+      block[key] = block[key] || newTree();
+      const onChange = () => { prune(block[key]); renderAll(); };
+      el.appendChild(grRenderNode(block[key], g, onChange, 0));
+    }
+    return el;
+  }
+
+  // optsByField für die Konfliktprüfung sammeln (bekannte Codes je enum-Feld)
+  async function grOptsByField() {
+    const out = {};
+    for (const f of GR_FIELDS) if (f.type === 'enum' || f.type === 'country') { const o = await grOptions(f).catch(() => null); if (o) out[f.key] = o.map((x) => String(x[0])); }
+    return out;
+  }
+  async function grExample(ex, g) {
+    const parts = [grGenderName(g)];
+    for (const [fk, v] of Object.entries(ex)) {
+      const f = grField(fk); if (!f) continue;
+      if (f.type === 'num' || f.derived === 'photos') parts.push(`${f.label} ${v}${f.unit ? f.unit : ''}`);
+      else if (f.type === 'bool') parts.push(f.label + ': ' + (v ? 'ja' : 'nein'));
+      else if (f.type === 'lang') parts.push(`${f.label}: ${(Array.isArray(v) ? v : [v]).map((c) => LANG_DE[c] || c).join(', ')}`);
+      else parts.push(`${f.label}: ${await grValueName(f, Array.isArray(v) ? v[0] : v)}`);
+    }
+    return parts.join(', ');
+  }
+
+  let grEditorDraft = null;
+  function grEditorUi() {
+    const cms = grReqCms();
+    if (!cms) { grEditorDraft = null; return; }
+    if (document.getElementById('vaf-gr-editor')) return;
+    // Anker: nach der poppen-eigenen „Automatische Genehmigungsregeln festlegen“
+    const h = [...document.querySelectorAll('main h2, main h3')].find((x) => /Automatische Genehmigungsregeln/i.test(x.textContent));
+    if (!h) return;
+    let sec = h; const main = document.querySelector('main');
+    while (sec.parentElement && sec.parentElement !== main && !sec.parentElement.matches('.Hg9Kid, main')) sec = sec.parentElement;
+    ensureGrStyle();
+    const wrap = grEl('div', 'vaf-gr-editor'); wrap.id = 'vaf-gr-editor';
+    sec.after(wrap);
+    grEditorDraft = clone(grRules()[cms] || {});
+    renderGrEditor(wrap, cms);
+  }
+
+  function renderGrEditor(wrap, cms) {
+    const draft = grEditorDraft;
+    wrap.innerHTML = '<h3 class="vaf-gr-h">Nach Regeln akzeptierte Geschlechter</h3><div class="vaf-gr-note">Eigene Annahme-/Ablehnregeln, je Geschlecht ein Block.</div>';
+    const body = grEl('div'); wrap.appendChild(body);
+    const renderAll = () => renderGrEditor(wrap, cms);
+    const configured = Object.keys(draft).filter((g) => draft[g]);
+    for (const g of GR_GENDERS.map((x) => x[0])) if (draft[g]) body.appendChild(grRenderBlock(cms, g, draft, renderAll));
+    // kaskadierende Chips: noch nicht belegte Geschlechter
+    const avail = GR_GENDERS.filter(([g]) => !draft[g]);
+    if (avail.length) {
+      const chips = grEl('div', 'vaf-gr-chips');
+      chips.appendChild(grEl('span', 'vaf-gr-lbl', 'Geschlecht hinzufügen:'));
+      for (const [g, name] of avail) { const c = grEl('span', 'vaf-gr-chip', esc(name)); c.addEventListener('click', () => { draft[g] = { accept: newTree(), reject: newTree() }; renderAll(); }); chips.appendChild(c); }
+      body.appendChild(chips);
+    }
+    // Fußzeile: übernehmen aus Gruppe + Übernehmen + Status
+    const foot = grEl('div', 'vaf-gr-foot');
+    const other = Object.keys(grRules()).filter((c) => c !== cms && Object.keys(grRules()[c] || {}).length);
+    if (other.length) {
+      const names = G.get('groupnames', {});
+      const sel = grEl('select', 'vaf-gr-vsel'); sel.innerHTML = '<option value="">Regeln übernehmen aus …</option>' + other.map((c) => `<option value="${c}">${esc(names[c] || 'Gruppe ' + c)}</option>`).join('');
+      const bCopy = grEl('button', 'vaf-gr-btn', 'Übernehmen');
+      bCopy.addEventListener('click', () => { if (sel.value) { grEditorDraft = clone(grRules()[sel.value] || {}); renderAll(); toast('Regeln übernommen – noch nicht gespeichert.'); } });
+      foot.appendChild(sel); foot.appendChild(bCopy);
+    }
+    const status = grEl('span', 'vaf-gr-status');
+    const bSave = grEl('button', 'vaf-gr-btn vaf-gr-pri', 'Übernehmen');
+    bSave.addEventListener('click', () => grApply(cms, wrap));
+    foot.appendChild(bSave); foot.appendChild(status);
+    wrap.appendChild(foot);
+    // Konflikt-Status live
+    grCheckAll(cms, draft).then((confs) => {
+      if (!confs.length) { status.textContent = 'Konfliktfrei'; status.className = 'vaf-gr-status ok'; }
+      else { status.textContent = `${confs.length} möglicher Konflikt`; status.className = 'vaf-gr-status bad'; bSave.disabled = true;
+        const box = grEl('div', 'vaf-gr-confbox');
+        Promise.all(confs.map(async (c) => `<div class="vaf-gr-conf"><b>${esc(c.overlap.map((k) => grField(k).label).join(', ') || 'Bedingungen')} in beiden Bäumen möglich</b><br><span>${esc(await grExample(c.example, c.g))} würde zugleich angenommen und abgelehnt.</span></div>`)).then((h) => { box.innerHTML = h.join(''); wrap.appendChild(box); });
+      }
+    });
+  }
+
+  async function grCheckAll(cms, draft) {
+    const opts = await grOptsByField();
+    const out = [];
+    for (const g of Object.keys(draft)) { if (!draft[g]) continue; const c = grConflict(draft[g], opts); if (c) out.push({ ...c, g }); }
+    return out;
+  }
+
+  async function grApply(cms, wrap) {
+    const draft = grEditorDraft;
+    const confs = await grCheckAll(cms, draft);
+    if (confs.length) { toast('Es gibt mögliche Konflikte – bitte erst auflösen.'); return; }
+    // offene Anfragen?
+    let pending = [];
+    try { const d = await apiGet('group/attendee/specific/pending/list', { _version: 2, cms_id: cms, page: 1, limit: 100, sort: 'last_joined' }); pending = (d && d.users) || []; } catch (e) { warn('Offene Anfragen', e); }
+    const save = () => { const r = grRules(); if (Object.keys(draft).length) r[cms] = clone(draft); else delete r[cms]; grSetRules(r); toast('Regeln gespeichert.'); };
+    if (!pending.length) { save(); return; }
+    grApplyPreview(cms, pending, save, draft);
+  }
+
+  // Profil-Fakten für die Regeln (roh, ohne Profilbesuch)
+  async function grProbe(name) {
+    const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '' };
+    let d;
+    try { d = await apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 }); } catch (e) { out.error = e.message; return out; }
+    if (!d || !d.userInfo) { out.error = 'keine Angaben'; return out; }
+    const ui = d.userInfo; out.trait = d.user_trait || {};
+    out.verified = /done|verifi|ok|true/i.test(String(ui.fakecheck || '')) || ui.fakecheck === true;
+    out.avatar = ui.avatar || '';
+    try {
+      const g = await apiGet('v3/profile/gallery', { _version: 2, nickname: String(name).toLowerCase(), page: 1, limit: 12 });
+      for (const it of (g && g.items) || []) { const md = it.media_data || {}; const src = md.source_url || md.preview_url || ''; if (it.media_type === 'image' && !it.is_private && realPhoto(src) && !out.photos.includes(src)) out.photos.push(src); }
+    } catch {}
+    out.hasphoto = out.photos.length > 0 || realPhoto(out.avatar);
+    ingestUserInfo(d).catch(() => {});
+    return out;
+  }
+
+  // Anwenden-Vorschau: zeigt, was die Regeln mit den offenen Anfragen täten
+  async function grApplyPreview(cms, pending, save, draft) {
+    const rules = { [cms]: draft };
+    const m = modal({ title: 'Regeln auf offene Anfragen anwenden?', sub: `${pending.length} offene Anfrage${pending.length === 1 ? '' : 'n'} – so würden die neuen Regeln entscheiden:` });
+    m.body.innerHTML = '<div class="vaf-gr-prev">Prüfe …</div>';
+    const list = [];
+    for (const u of pending) {
+      const nick = u.nickname || u.name; if (!nick) continue;
+      const pr = await grProbe(nick).catch(() => null);
+      const ctx = pr && pr.trait ? { trait: pr.trait, verified: pr.verified, photos: pr.photos, hasphoto: pr.hasphoto } : null;
+      const d = ctx ? grDecide(cms, ctx, rules) : { verdict: 'manual', reason: 'keine Angaben' };
+      list.push({ nick, verdict: d.verdict, meta: ctx ? await grMetaLine(cms, ctx, rules) : (pr && pr.error) || '' });
+    }
+    const vn = { accept: ['annehmen', 'v-acc'], reject: ['ablehnen', 'v-rej'], manual: ['liegen lassen', 'v-man'] };
+    m.body.querySelector('.vaf-gr-prev').innerHTML = list.map((r) => `<div class="vaf-gr-req"><div class="vaf-gr-reqtx"><b>${esc(r.nick)}</b><span>${esc(r.meta)}</span></div><span class="vaf-gr-verdict ${vn[r.verdict][1]}">${vn[r.verdict][0]}</span></div>`).join('') || '<div>Keine prüfbaren Anfragen.</div>';
+    m.buttons([
+      { label: 'Übernehmen und anwenden', primary: true, focus: true, fn: async () => {
+        save();
+        m.closable = false;
+        const cur = grEl('div', 'vaf-cur', 'Wende an …'); m.body.appendChild(cur);
+        const vis = await Vis.guard('Das Anwenden der Regeln'); if (!vis) { m.closable = true; return; }
+        let done = 0;
+        for (const r of list) { if (r.verdict === 'accept' || r.verdict === 'reject') { cur.textContent = `${r.nick}: ${r.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`; try { await decideRequest(r.nick, r.verdict === 'accept'); done++; } catch (e) { warn('Anwenden', e); } await sleep(rand(1200, 2500)); } }
+        Vis.restore(vis);
+        cur.textContent = `Fertig – ${done} Anfrage${done === 1 ? '' : 'n'} bearbeitet.`;
+        m.closable = true; m.buttons([{ label: 'Schließen', focus: true, primary: true, fn: () => m.close() }]);
+      } },
+      { label: 'Abbrechen', fn: () => m.close() },
+    ]);
+  }
+
+  // Zusatzzeile: Werte der in den Regeln benutzten Felder
+  async function grMetaLine(cms, ctx, rules) {
+    const g = genderCode(ctx.trait && ctx.trait.gender);
+    const used = grUsedFields(cms, g, rules);
+    if (!used.length) return '';
+    const parts = [];
+    for (const fk of used) {
+      const f = grField(fk); if (!f) continue;
+      if (f.type === 'bool') parts.push(`${f.label}: ${(f.derived === 'verified' ? ctx.verified : ctx.hasphoto) ? 'ja' : 'nein'}`);
+      else if (f.derived === 'photos') parts.push(`Fotos: ${(ctx.photos || []).length}`);
+      else if (f.type === 'num') { const v = grTraitVals(f, ctx.trait); if (v.length) parts.push(`${f.label}: ${v.join('/')}${f.unit || ''}`); }
+      else if (f.type === 'lang') { const ls = (ctx.trait.spoken_language || []).map((a) => (a || []).map((c) => LANG_DE[c] || c).join('+')).filter(Boolean); if (ls.length) parts.push(`Sprachen: ${ls.join(', ')}`); }
+      else { const v = grTraitVals(f, ctx.trait); if (v.length) parts.push(`${f.label}: ${(await Promise.all(v.map((c) => grValueName(f, c)))).join('/')}`); }
+    }
+    return parts.join(' · ');
+  }
+
+  // Zusatzzeile in die Einzel-Anfragen einbauen
+  const grMetaCache = new Map();
+  async function grReqExtraLine() {
+    const cms = grReqCms(); if (!cms || !grRules()[cms]) return;
+    for (const it of findRequestItems()) {
+      if (!it.descEl || it.descEl.nextElementSibling && it.descEl.nextElementSibling.classList && it.descEl.nextElementSibling.classList.contains('vaf-gr-meta')) continue;
+      const nick = it.name; if (!nick) continue;
+      const line = grEl('div', 'vaf-gr-meta', '…'); it.descEl.after(line);
+      let pr = grMetaCache.get(nick);
+      if (!pr) { pr = await grProbe(nick).catch(() => null); grMetaCache.set(nick, pr); }
+      const ctx = pr && pr.trait ? { trait: pr.trait, verified: pr.verified, photos: pr.photos, hasphoto: pr.hasphoto } : null;
+      line.textContent = ctx ? (await grMetaLine(cms, ctx)) : '';
+      if (!line.textContent) line.remove();
+    }
+  }
+
+  function ensureGrStyle() {
+    if (document.getElementById('vaf-gr-style')) return;
+    const st = document.createElement('style'); st.id = 'vaf-gr-style';
+    st.textContent = `
+    .vaf-gr-editor{background:#1f1f1f;border-radius:16px;padding:18px;margin:16px 0;color:#e8e8e8;font-size:14px}
+    .vaf-gr-h{margin:0 0 4px;color:#fff;font-size:17px}
+    .vaf-gr-note{color:#a6a6a6;font-size:13px;margin-bottom:12px}
+    .vaf-gr-block{border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px;margin:12px 0;background:#191919}
+    .vaf-gr-bhead{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+    .vaf-gr-x{margin-left:auto;background:none;border:0;color:#a6a6a6;cursor:pointer;font-size:15px}
+    .vaf-gr-chip{border:1.5px solid #3a3a3a;background:#2a2a2a;color:#e8e8e8;border-radius:999px;padding:6px 14px;cursor:pointer;font-size:13.5px}
+    .vaf-gr-chip.on{border-color:#ffc21a;color:#ffc21a;font-weight:600;cursor:default}
+    .vaf-gr-chips{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+    .vaf-gr-lbl{color:#a6a6a6;font-size:13px}
+    .vaf-gr-tt{font-weight:600;color:#fff;margin:12px 0 6px;display:flex;align-items:center;gap:7px}
+    .vaf-gr-tt.acc::before{content:"✓";color:#49d17a}.vaf-gr-tt.rej::before{content:"✕";color:#ff8a80}
+    .vaf-gr-group{border-left:2px solid #3a3a3a;margin:4px 0 4px 2px;padding:2px 0 2px 12px}
+    .vaf-gr-cond{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:6px 0}
+    .vaf-gr-cond select,.vaf-gr-num,.vaf-gr-vsel{background:#2a2a2a;border:1px solid #3a3a3a;border-radius:8px;padding:5px 8px;color:#e8e8e8;font-size:13px;font-family:inherit}
+    .vaf-gr-field{font-weight:600;color:#fff}.vaf-gr-val .vaf-gr-vsel{color:#ffc21a}.vaf-gr-num{width:70px;color:#ffc21a}
+    .vaf-gr-unit{color:#a6a6a6;font-size:12px}
+    .vaf-gr-conj{margin:3px 0}.vaf-gr-conj .vaf-gr-op{background:none;border:0;color:#a6a6a6;font-weight:700;font-size:12px}
+    .vaf-gr-rm{background:none;border:0;color:#a6a6a6;cursor:pointer;font-size:13px}
+    .vaf-gr-add{margin:6px 0}.vaf-gr-addbtn{background:none;border:1px dashed #3a3a3a;border-radius:8px;padding:4px 10px;color:#a6a6a6;font-size:12.5px;cursor:pointer;margin-right:6px}
+    .vaf-gr-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)}
+    .vaf-gr-btn{border:1px solid #3a3a3a;background:#2a2a2a;color:#e8e8e8;border-radius:9px;padding:8px 16px;font-weight:600;cursor:pointer}
+    .vaf-gr-btn.vaf-gr-pri{background:#ffc21a;color:#1a1a1a;border:0}.vaf-gr-btn:disabled{opacity:.5;cursor:default}
+    .vaf-gr-status{margin-left:auto;font-weight:600;font-size:13px}.vaf-gr-status.ok{color:#49d17a}.vaf-gr-status.bad{color:#ff8a80}
+    .vaf-gr-confbox{margin-top:10px}.vaf-gr-conf{background:rgba(255,138,128,.1);border-radius:10px;padding:8px 12px;margin-top:8px;font-size:13px}
+    .vaf-gr-conf b{color:#ff8a80}.vaf-gr-conf span{color:#cfcfcf}
+    .vaf-gr-meta{color:#ffc21a;font-size:12.5px;margin-top:2px}
+    .vaf-gr-prev .vaf-gr-req{display:flex;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid rgba(255,255,255,.07)}
+    .vaf-gr-reqtx{display:flex;flex-direction:column}.vaf-gr-reqtx b{color:#fff}.vaf-gr-reqtx span{color:#a6a6a6;font-size:12.5px}
+    .vaf-gr-verdict{margin-left:auto;font-weight:600;font-size:13px;padding:3px 10px;border-radius:999px}
+    .v-acc{color:#49d17a;background:rgba(73,209,122,.12)}.v-rej{color:#ff8a80;background:rgba(255,138,128,.12)}.v-man{color:#a6a6a6;background:rgba(255,255,255,.06)}
+    `;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
@@ -6393,6 +6938,8 @@
     try { messengerTerms(); } catch (e) { warn('Termine', e); }
     try { templateUi(); } catch (e) { warn('Textvorlagen', e); }
     try { privacyBlockersUi(); } catch (e) { warn('Blockierende Popsters', e); }
+    try { grEditorUi(); } catch (e) { warn('Regel-Editor', e); }
+    grReqExtraLine().catch((e) => warn('Regel-Zusatzzeile', e));
     friendsUi();
     if (/^\/p\/[^/]+\/?$/.test(location.pathname)) {
       blockedProfileUi().catch((e) => warn('Geblocktes Profil', e));
@@ -6478,7 +7025,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

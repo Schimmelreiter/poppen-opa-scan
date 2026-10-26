@@ -6,6 +6,14 @@ Neueste Version oben.
 - Gruppen (Whitelist): Besitzer und Moderatoren aller eigenen Gruppen kommen auf die Whitelist (vom Opa-Schutz Blockierte werden entsperrt)
 - Mitglieder verwalteter Gruppen nur noch auf der Whitelist, wenn du die Gruppe allein leitest (als Moderator nie, als Besitzer ohne weitere Moderatoren; Zweitprofile zählen nicht); sonst werden die Einträge sofort entfernt und die Mitglieder nach den Regeln geprüft
 
+2.17 (26.10.2026)
+- Gruppenanfragen: Regel-Baukasten je Gruppe auf /groups/<id>/requests („Nach Regeln akzeptierte Geschlechter“, unter der poppen-eigenen Automatik). Je Geschlecht ein Block (kaskadierende Chips), darin zwei UND/ODER-Bäume „annehmen, wenn …“ und „ablehnen, wenn …“ (ein Baum darf leer bleiben)
+- Bedingungen aus den Profilangaben (user/info): Alter, Größe, Gewicht, Penislänge/-dicke, Typ, Figur, Sexualität, Haar-/Augenfarbe, Bart, Körper-/Intimbehaarung, Körbchengröße, Beschnitten, Brille, Raucher, Tätowierungen, Piercings, Sternzeichen, Herkunft, Sprachen – dazu „verifiziert“ und „hat Fotos“; Klartext über i18n. Bei Paaren zählt eine Bedingung, wenn sie auf eine Person zutrifft
+- „Übernehmen“ prüft auf Konflikte (lässt sich jemand denken, der beide Bäume erfüllt): dann gesperrt, Anzeige der überlappenden Bedingung und eines konkreten Beispiels. Gibt es offene Anfragen, erscheint vorher eine Vorschau („Übernehmen und anwenden“ / „Abbrechen“)
+- „Regeln übernehmen aus …“ füllt die Editoren mit dem Regelsatz einer anderen Gruppe
+- Auf der Einzel-Prüfseite steht unter jeder Anfrage eine Zeile mit den tatsächlichen Werten der in den Regeln benutzten Felder
+- Warteliste-Anzeige: Knopf „Im Hintergrund weiterlaufen“ statt „Anhalten“ (das Blockieren läuft ohnehin im Hintergrund weiter)
+
 2.16 (26.10.2026)
 - Opa-/Oma-Scan: Start-Popup einspaltig (Teilscans untereinander mit Häkchen, wie im JOYclub-Skript); nach „Scan starten“ läuft der Scan im Hintergrund weiter, das Popup lässt sich schließen
 - Kopf-Symbol zeigt ein Aktivitäts-Abzeichen: Lupe (Scan läuft, Vorrang) bzw. Radierer (Warteliste wird abgearbeitet), Kurzstatus im Maus-Over; Klick öffnet dynamisch die Scan-Anzeige, die Blockier-Anzeige oder den Scan-Dialog (Einstellungen weiterhin über das Profil-Menü)
