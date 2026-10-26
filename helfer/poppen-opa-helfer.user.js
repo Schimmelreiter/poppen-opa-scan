@@ -2,7 +2,7 @@
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
 // @version      1.0
-// @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
+// @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.0';
+  const VERSION = '1.2';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -169,6 +169,7 @@
     mapping[field][code] = label; G.set('mapping', mapping); return true;
   }
   const unresolved = () => WANT.filter((f) => (seenCodes[f] && [...seenCodes[f]].some((c) => c !== '0' && !(mapping[f] && mapping[f][c]))));
+  const seenCodeCount = () => Object.values(seenCodes).reduce((a, s) => a + s.size, 0);
 
   // =====================================================================================
   // Quellen: i18n (Labels), user/list/relationship, user/info (Codes), Profilseite (Klartext)
@@ -244,9 +245,25 @@
     return out;
   }
 
-  // Sichtbarkeit (wio/state) für den offenen Fallback
+  // Sichtbarkeit (wio/state) für die offenen Profilbesuche
   async function setVisible(v) { try { await apiPost('wio/state', { value: v }); } catch (e) { warn('Sichtbarkeit', e); } }
   async function getVisible() { try { const d = await apiGet('wio/state'); const x = d && (d.value || d.state || d); return x === 'visible' ? 'visible' : x === 'invisible' ? 'invisible' : null; } catch { return null; } }
+
+  // Eigenes Geo-Objekt (mit geo_id) für eine funktionierende Suche – nur geo_location, niemals E-Mail o.ä.
+  async function myGeo() {
+    const cached = G.get('mygeo', null);
+    if (cached && cached.geo_id) return cached;
+    try {
+      const s = await apiGet('user/session/info');
+      const loc = s && s.geo_location;
+      if (loc && loc.geo_id) { const { distance, distance_unit, ...geo } = loc; G.set('mygeo', geo); return geo; }
+    } catch (e) { warn('Geo', e); }
+    return { country_iso: 'DE', country_name: 'Germany' };
+  }
+  // Eigener Nickname (aus session/info – nur der Nick, niemals E-Mail o.ä.)
+  async function mySelf() {
+    try { const s = await apiGet('user/session/info'); return (s && (s.nickname || s.nick || s.name)) || null; } catch (e) { warn('Eigener Nick', e); return null; }
+  }
 
   // =====================================================================================
   // Badge oben + Status
@@ -323,7 +340,9 @@
 
   async function ageNinetyNine(phase) {
     const result = { counts: {}, links: {} };
-    const base = { location: { country_iso: 'DE', country_name: 'Germany', distance: 0, distance_unit: 'km' }, has_image: 0, online: false,
+    const geo = await myGeo();
+    result.geo = { city: geo.city || '', geo_id: geo.geo_id || null };
+    const base = { location: { ...geo, distance: 0, distance_unit: 'km' }, has_image: 0, online: false,
       enable_search_gender: false, size_min: 130, size_max: 220, weight_min: 0, weight_max: 300, enable_fakecheck_status: false,
       sort: ['last_riseup'], order: ['desc'], preference_conjunction: 'or', second_preference_conjunction: 'or', genders: ['m', 'w', 'ts', 'tv'] };
     for (const age of [97, 98, 99, 100, 101]) {
@@ -338,8 +357,11 @@
       await sleep(400);
     }
     const c = result.counts;
+    const sum = [97, 98, 99, 100, 101].reduce((a, k) => a + (c[k] || 0), 0);
     let verdict = 'unklar';
-    if (c[99] != null) {
+    if (sum === 0) {
+      verdict = 'Suche lieferte keine Treffer (alle 0) – Ergebnis nicht verwertbar, Geo/Suche prüfen';
+    } else if (c[99] != null) {
       const neighbours = [c[97], c[98]].filter((x) => x != null);
       const avgN = neighbours.length ? neighbours.reduce((a, b) => a + b, 0) / neighbours.length : 0;
       if ((c[100] || 0) === 0 && (c[101] || 0) === 0 && c[99] > avgN * 3 && c[99] > 20) verdict = '99 ist das Sammelalter „99+" (viele 99er, keine 100er/101er)';
@@ -349,59 +371,84 @@
     return result;
   }
 
+  // trait nur dann zum Paaren brauchbar, wenn Einzelprofil (keine Paar-Arrays)
+  function isSingleTrait(tr) {
+    if (!tr) return false;
+    if (Array.isArray(tr.age)) return false;
+    return WANT.some((f) => tr[f] != null && !Array.isArray(tr[f]));
+  }
+  function scalarCode(tr, f) {
+    if (!tr || tr[f] == null) return null;
+    const v = tr[f];
+    return Array.isArray(v) ? (v.find((x) => x != null && x !== 0) ?? null) : v;
+  }
+
   async function run() {
     const nicks = await askExport();
     ensureBadge();
     G.set('started', now());
     status(`Start – ${nicks.length} Profile`);
 
-    // 1) i18n + Beziehungsstatus
+    // 1) i18n + Beziehungsstatus (Labels für die meisten Felder NICHT enthalten – nur als Bonus)
     status('Werte aus i18n ziehen …');
     await pullI18n(status).catch((e) => warn('i18n', e));
     await pullRelationship();
 
-    // 2) Profile: user/info (Codes), bei Bedarf offene Profilseite (Klartext)
-    let open = false, visBefore = null, emptyStreak = 0, noNew = 0, done = 0;
-    const total = nicks.length;
+    // Trait je Nick zwischenspeichern, damit Durchgang B user/info nicht erneut braucht
+    const traitByNick = new Map();
+
+    // 2a) Verborgener Durchgang: user/info für alle (billig), Code-Universum vollständig erfassen
+    let gathered = 0, noNewCode = 0;
     for (const nick of nicks) {
-      if (unresolved().length === 0 && done > 5) { status('Alle gesuchten Werte erfasst.'); break; }
-      if (noNew >= 1000) { status('1000 Profile ohne neue Werte – Stopp.'); break; }
-      done++;
-      status(`Profil ${done}/${total}: ${nick}${open ? ' (offen)' : ''} – ${unresolved().length} Felder offen`);
+      if (noNewCode >= 150) { status('Keine neuen Codes mehr – Sammeln beendet.'); break; }
+      if (gathered >= 400) { status('400 Profile gesammelt – Sammeln beendet.'); break; }
+      gathered++;
+      status(`Codes sammeln ${gathered}: ${nick} – ${seenCodeCount()} Codes bekannt`);
       const d = await userInfo(nick);
       const tr = d && d.user_trait;
-      const got = noteTrait(tr);
-      if (!got) emptyStreak++; else emptyStreak = 0;
-      let newHere = false;
-      // Klartext aus i18n bereits vorhanden?  -> prüfen, was noch fehlt
-      const needLabels = unresolved();
-      // Offener Fallback aktivieren, wenn 200 verborgene Abrufe nichts brachten und noch Felder offen sind
-      if (!open && emptyStreak >= 200 && needLabels.length) {
-        open = true; status('Wechsle zu offenen Profilbesuchen – schalte unsichtbar …');
-        visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500);
-      }
-      // Wenn Felder offen sind und wir Codes dieses Profils haben, Profilseite lesen und paaren
-      if (open && tr && needLabels.length) {
-        const page = await readProfileDetails(nick).catch(() => ({}));
-        for (const f of needLabels) {
-          const code = tr[f] != null ? (Array.isArray(tr[f]) ? tr[f].find((x) => x != null && x !== 0) : tr[f]) : null;
-          const label = page[f];
-          if (code != null && label) if (addMap(f, code, label)) newHere = true;
-        }
-      }
-      if (newHere) noNew = 0; else noNew++;
-      await sleep(open ? 800 : 200);
+      if (tr) traitByNick.set(nick, tr);
+      const before = seenCodeCount();
+      noteTrait(tr);
+      if (seenCodeCount() > before) noNewCode = 0; else noNewCode++;
+      await sleep(180);
     }
 
-    // Sichtbarkeit zurückstellen
-    if (open && visBefore === 'visible') await setVisible('visible');
+    // 2b) Offener Durchgang: Labels gibt es nur auf der Profilseite -> unsichtbar + Seite lesen
+    let visBefore = null, read = 0, noNew = 0, open = false;
+    const need0 = unresolved();
+    if (need0.length) {
+      status(`Schalte unsichtbar für offene Profilbesuche (${need0.length} Felder ohne Klartext) …`);
+      visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500); open = true;
+      for (const nick of nicks) {
+        if (unresolved().length === 0) { status('Alle gesuchten Werte erfasst.'); break; }
+        if (noNew >= 300) { status('300 Profile ohne neuen Klartext – Stopp.'); break; }
+        read++;
+        status(`Profil (offen) ${read}: ${nick} – ${unresolved().length} Felder offen`);
+        let tr = traitByNick.get(nick);
+        if (!tr) { const d = await userInfo(nick); tr = d && d.user_trait; }
+        const needLabels = unresolved();
+        let newHere = false;
+        // nur Einzelprofile zum Paaren nutzen (Paar-Arrays sind mehrdeutig)
+        if (isSingleTrait(tr) && needLabels.length) {
+          const page = await readProfileDetails(nick).catch(() => ({}));
+          for (const f of needLabels) {
+            const code = scalarCode(tr, f);
+            const label = page[f];
+            if (code != null && label) if (addMap(f, code, label)) newHere = true;
+          }
+        }
+        if (newHere) noNew = 0; else noNew++;
+        await sleep(800);
+      }
+      if (visBefore === 'visible') { status('Stelle Sichtbarkeit wieder her …'); await setVisible('visible'); }
+    }
 
     // 3) Alter 99
     status('Untersuche Alter 99 …');
     const age99 = await ageNinetyNine(status).catch((e) => { warn('Alter99', e); return null; });
 
     // 4) Export
-    const fertig = { version: VERSION, at: new Date().toISOString(), profile_gelesen: done,
+    const fertig = { version: VERSION, at: new Date().toISOString(), profile_gesammelt: gathered, profile_offen_gelesen: read,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
       offene_felder: unresolved(), alter_99: age99 };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
@@ -415,10 +462,63 @@
     if (u.length) log('Noch offen:', u, '– bitte den Helfer auch im anderen Profil laufen lassen.');
   }
 
-  function start() {
+  // Nur das eigene Profil auswerten (keine fremden Besuche, keine Unsichtbarkeit nötig)
+  async function runOwn() {
+    ensureBadge(); G.set('started', now());
+    status('Eigenes Profil – Werte holen …');
+    await pullI18n(status).catch((e) => warn('i18n', e));
+    await pullRelationship();
+    const me = await mySelf();
+    if (!me) { badgeDone('Eigenen Nick nicht gefunden'); status('Eigenen Nickname nicht gefunden – bist du eingeloggt?'); return; }
+    status('Eigenes user/info …');
+    const d = await userInfo(me);
+    const tr = d && d.user_trait;
+    noteTrait(tr);
+    let paired = 0;
+    if (tr) {
+      status('Eigene Profilseite lesen …');
+      const page = await readProfileDetails(me).catch(() => ({}));
+      for (const f of WANT) {
+        const code = scalarCode(tr, f); const label = page[f];
+        if (code != null && label) if (addMap(f, code, label)) paired++;
+      }
+    }
+    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'eigenes Profil', neu_gepaart: paired,
+      werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
+      offene_felder: unresolved() };
+    download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
+    download(`poppen-helfer-eigenes-${stamp()}.json`, JSON.stringify(fertig, null, 2));
+    badgeDone(`Eigenes Profil fertig – ${paired} Werte gepaart`);
+    status('Fertig. Zuordnung aus dem eigenen Profil wurde heruntergeladen.');
+    log('ZUORDNUNG (eigenes Profil):', mapping);
+  }
+
+  // Start-Auswahl: voller Lauf (Export fremder Profile) oder nur eigenes Profil
+  function chooseMode() {
+    return new Promise((resolve) => {
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;font:14px system-ui,sans-serif';
+      ov.innerHTML = `<div style="background:#1f1f1f;color:#e8e8e8;border-radius:16px;padding:22px;width:min(560px,94vw)">
+        <h2 style="margin:0 0 6px;color:#fff;font-size:18px">Opa-Schutz Helfer</h2>
+        <div style="color:#a6a6a6;margin:0 0 16px">Was soll der Helfer tun? Das Hauptscript sollte jetzt deaktiviert sein.</div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <button data-full style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
+            <b style="color:#ffc21a">Voller Lauf</b><br><span style="color:#a6a6a6">Datenexport des Hauptscripts einlesen und fremde Profile besuchen (unsichtbar), bis alle Werte erfasst sind. Außerdem Alter-99-Prüfung.</span></button>
+          <button data-self style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
+            <b style="color:#ffc21a">Nur eigenes Profil</b><br><span style="color:#a6a6a6">Nur die Werte des eigenen Profils holen – keine fremden Besuche, keine Unsichtbarkeit. Gedacht als Ergänzung zum vollen Lauf im anderen Profil.</span></button>
+        </div>
+      </div>`;
+      document.body.appendChild(ov);
+      ov.querySelector('[data-full]').addEventListener('click', () => { ov.remove(); resolve('full'); });
+      ov.querySelector('[data-self]').addEventListener('click', () => { ov.remove(); resolve('self'); });
+    });
+  }
+
+  async function start() {
     ensureBadge();
-    // kleines Overlay-Startknopf, damit nichts ungefragt losläuft
-    run().catch((e) => { warn('Lauf', e); status('Fehler: ' + (e.message || e)); });
+    const mode = await chooseMode();
+    if (mode === 'self') await runOwn();
+    else await run();
   }
   function onReady(fn) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn, { once: true }); else fn(); }
   onReady(() => { try { start(); } catch (e) { console.error('[Opa-Helfer]', e); } });
