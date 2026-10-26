@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.17
+// @version      2.18
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -17,6 +17,8 @@
 // @grant        GM_listValues
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
 // @grant        unsafeWindow
 // @connect      poppen.de
 // @connect      img-z.poppen.de
@@ -27,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.17';
+  const VERSION = '2.18';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -635,8 +637,9 @@
     if (key && /^(geo_location|location)$/i.test(key) && v && typeof v === 'object' && !Array.isArray(v)) return { city: v.city || '' };
     if (key && /^(lat|lon|latitude|longitude|zipcode)$/i.test(key)) return '«entfernt»';
     if (Array.isArray(v)) {
-      const head = v.slice(0, 2).map((x) => redact(x, '', depth + 1));
-      if (v.length > 2) head.push(`… ${v.length - 2} weitere`);
+      const cap = 50;   // volle (kurze) Arrays behalten – nötig fürs Wert-Mapping (searching, genders …)
+      const head = v.slice(0, cap).map((x) => redact(x, '', depth + 1));
+      if (v.length > cap) head.push(`… ${v.length - cap} weitere`);
       return head;
     }
     if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = redact(x, k, depth + 1); return o; }
@@ -648,6 +651,36 @@
     return v;
   }
   const shapeOf = (o) => (o && typeof o === 'object' && !Array.isArray(o) ? Object.keys(o).sort().join(',') : typeof o);
+  // Für Pfade, bei denen sich die Antwort je Parameterwert unterscheidet, den Wert in den
+  // Schlüssel aufnehmen (sonst würde z. B. i18n/pull über alle Module zu einem Eintrag verschmelzen).
+  function recVariant(info) {
+    const b = info.body || {};
+    if (/i18n\/pull/.test(info.path)) return ' module=' + (b.module || '');
+    if (/^feed\//.test(info.path)) return ' ' + Object.keys(b).sort().join(',');
+    return '';
+  }
+  const EX_CAP = 12;
+  const exSig = (q, b) => JSON.stringify([q, b]);
+  // Zwei Recorder-Stände mischen (mehrtab-sicher): Einträge vereinen, Beispiele pro Body behalten.
+  function mergeRec(dst, src) {
+    dst = dst || {};
+    for (const [k, se] of Object.entries(src || {})) {
+      const de = dst[k];
+      if (!de) { dst[k] = se; continue; }
+      de.n = Math.max(de.n || 0, se.n || 0);
+      de.first = Math.min(de.first || se.first || 0, se.first || de.first || 0) || de.first;
+      de.last = Math.max(de.last || 0, se.last || 0);
+      de.known = de.known || se.known;
+      if (se.hint && !de.hint) de.hint = se.hint;
+      de.pages = de.pages || []; de.examples = de.examples || [];
+      for (const p of (se.pages || [])) if (!de.pages.includes(p) && de.pages.length < 10) de.pages.push(p);
+      for (const ex of (se.examples || [])) {
+        const sig = exSig(ex.query, ex.body);
+        if (de.examples.length < EX_CAP && !de.examples.some((x) => exSig(x.query, x.body) === sig)) de.examples.push(ex);
+      }
+    }
+    return dst;
+  }
   const Recorder = (() => {
     let data = null, saveT = null, loading = null;
     const load = async () => { if (data) return data; if (!loading) loading = KV.get('recorder', {}).then((d) => (data = d || {})); return loading; };
@@ -655,21 +688,26 @@
       add(info, json) {
         if (!S().expert.recorder) return;
         load().then(() => {
-          const key = `${info.method} ${info.path} ?${shapeOf(info.query)} ${shapeOf(info.body)}`;
+          const key = `${info.method} ${info.path} ?${shapeOf(info.query)} ${shapeOf(info.body)}${recVariant(info)}`;
           const e = data[key] || (data[key] = { method: info.method, path: info.path, known: KNOWN_API.includes(info.path), first: now(), n: 0, examples: [], pages: [] });
           e.n++; e.last = now();
           if (!e.pages.includes(info.page) && e.pages.length < 10) e.pages.push(info.page);
-          if (e.examples.length < 2) e.examples.push({ page: info.page, query: redact(info.query), body: redact(info.body), response: redact(json) });
+          // pro unterschiedlichem Body/Query ein Beispiel (nicht nur die ersten zwei)
+          const rq = redact(info.query), rb = redact(info.body), sig = exSig(rq, rb);
+          if (e.examples.length < EX_CAP && !e.examples.some((x) => exSig(x.query, x.body) === sig)) e.examples.push({ page: info.page, query: rq, body: rb, response: redact(json) });
           // Hinweis nur für seitenbezogene Abfragen, nicht für allgemeine (Smileys, Übersetzungen, Zähler …)
           const general = /^(i18n|global|dino|egg-hunt|feedback|fakecheck|fsk18|wio|user\/gaclient|messenger\/(status|irc|backend)|browser-notification|tooltip|points)\b/.test(info.path);
           const hint = !general && API_HINTS.find(([re]) => re.test(info.page));
           if (hint && !e.known) e.hint = 'Kandidat für ' + hint[1];
-          clearTimeout(saveT); saveT = setTimeout(() => KV.set('recorder', data), 1500);
+          // vor dem Speichern mit dem aktuellen GM-Stand mischen, damit parallele Tabs
+          // sich nicht gegenseitig überschreiben
+          clearTimeout(saveT);
+          saveT = setTimeout(() => { KV.get('recorder', {}).then((cur) => { data = mergeRec(cur, data); return KV.set('recorder', data); }).catch(() => {}); }, 1500);
           Bus.emit('recorder');
         });
       },
       async stats() { await load(); const v = Object.values(data); return { total: v.length, fresh: v.filter((x) => !x.known).length }; },
-      async export() { await load(); return { version: VERSION, at: new Date().toISOString(), entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
+      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); return { version: VERSION, at: new Date().toISOString(), entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
       async clear() { data = {}; await KV.set('recorder', {}); Bus.emit('recorder'); },
     };
   })();
@@ -784,7 +822,6 @@
     const ages = (x.ages || []).filter((a) => a > 0);
     r.gk = groupOf(x.g, s);
     r.white = whiteReason(x, x.nick);
-    if (ages.some((a) => a >= 99)) { r.unclear = true; r.reason = 'Alter 99 (unklar)'; return r; }
     if (!ages.length || !r.gk) return r;
     const grp = s.groups[r.gk];
     const sk = srcKeyOf(src);
@@ -937,19 +974,10 @@
       if (src) m.seen[src] = now();
     });
     if (legacy && !m.legacyDone) { await legacyApply(m); m.legacyDone = 1; Members.put(m); }
-    if ((x.ages || []).some((a) => a >= 99)) log99(x.uid, x.nick);
     if (images && IMG_SOURCES.has(src) && m.avatar && (m.avatarNew || !m.img)) Images.want(m.uid, m.avatar);
     return m;
   }
   async function seenMany(list, src, opts) { const out = []; for (const u of list || []) { const m = await seen(u, src, opts); if (m) out.push(m); } return out; }
-
-  // ---------- Alter 99: mitloggen ----------
-  async function log99(uid, nick) {
-    const l = await KV.get('log99', {});
-    if (l[uid]) return;
-    l[uid] = { nick, at: now() };
-    await KV.set('log99', l);
-  }
 
   // ---------- Profilbilder als kleine Kopie ----------
   // Die Bildadressen von poppen.de sind nur begrenzt gültig – deshalb eine eigene, kleine Kopie (~150 px).
@@ -3195,9 +3223,6 @@
 
       row(ce, 'Alle Daten', 'Einstellungen, Gedächtnis, Warteliste, Fickliste (verschlüsselt) …', btn('Alle Daten sichern', () => backupAll()), btn('Alle Daten wiederherstellen', () => restoreAll()));
       row(ce, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder (z. B. für ein zweites Profil)', btn('Exportieren ohne Bilder', () => exportMemory(false)), btn('mit Bildern', () => exportMemory(true)), btn('Importieren (mischen)', () => importMemory()));
-      const n99 = document.createElement('span'); n99.className = 'vaf-mini';
-      KV.get('log99', {}).then((l) => { n99.textContent = `${Object.keys(l).length} erfasst`; });
-      row(ce, '99-Jährige', 'Profile mit Alter 99 (gelten als unklar)', btn('Exportieren (.txt)', export99), btn('Liste leeren', async () => { if (W.confirm('Liste der 99-Jährigen leeren?')) { await KV.set('log99', {}); n99.textContent = '0 erfasst'; } }), n99);
       const work = btn('Jetzt abarbeiten', () => workQueue(work));
       if (Etappe.running && Etappe.manual) work.textContent = 'Anhalten';
       row(ce, 'Warteliste', 'Blockiert wird im Hintergrund; „Jetzt abarbeiten“ arbeitet die Warteliste auch bei ausgeschaltetem Schalter einmal ganz ab', btn('Anzeigen', showQueue), work, btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
@@ -3521,6 +3546,27 @@
       const names = { ...G.get('groupnames', {}) }; managed.forEach((g) => { names[g.cms] = g.name; }); G.set('groupnames', names);
     } catch (e) { warn('Gruppenanfragen', e); }
     finally { Lock.release('pending'); }
+  }
+
+  // =====================================================================================
+  // Tampermonkey-Menü: Rekorder Export/Leeren – nur wenn der Rekorder läuft.
+  // Ein-/Ausschalten bleibt auf der Einstellungsseite.
+  // =====================================================================================
+  let recMenuIds = [];
+  function updateRecorderMenu() {
+    if (typeof GM_registerMenuCommand !== 'function') return;
+    if (typeof GM_unregisterMenuCommand === 'function') { for (const id of recMenuIds) { try { GM_unregisterMenuCommand(id); } catch {} } }
+    recMenuIds = [];
+    let on = false; try { on = !!S().expert.recorder; } catch {}
+    if (!on) return;
+    try {
+      recMenuIds.push(GM_registerMenuCommand('API-Rekorder: Exportieren', async () => {
+        try { download(`poppen-api-rekorder-${stamp()}.json`, JSON.stringify(await Recorder.export(), null, 2)); } catch (e) { warn('Rekorder-Export', e); }
+      }));
+      recMenuIds.push(GM_registerMenuCommand('API-Rekorder: Leeren', async () => {
+        try { if (W.confirm('API-Rekorder wirklich leeren?')) await Recorder.clear(); } catch (e) { warn('Rekorder-Leeren', e); }
+      }));
+    } catch (e) { warn('Rekorder-Menü', e); }
   }
 
   // =====================================================================================
@@ -4947,8 +4993,10 @@
   // Vermessung über die Größen-/Gewichtsfilter der Suche, Badges, Ausblenden, Sortierung
   // =====================================================================================
   const FIG_RENAME = { 'Kurvig': 'Mollig', 'Plus-size': 'Mastschwein', 'Plus-Size': 'Mastschwein' };
-  const FIG_MODES = { mollig: { min: 30, hide: 0 }, mastschwein: { min: 35, hide: 35 }, qualle: { min: 40, hide: 40 } };
-  const BANDS = [[40, 'Qualle'], [35, 'Mastschwein'], [30, 'mollig']];
+  const FIG_MODES = { mollig: { min: 35, hide: 0 }, mastschwein: { min: 40, hide: 40 }, qualle: { min: 45, hide: 45 } };
+  const BANDS = [[45, 'Qualle'], [40, 'Mastschwein'], [35, 'mollig']];
+  // Gewichts-Farbskala rot→grün (Schlank … Qualle); Badges nutzen die drei grünen Töne.
+  const FIG_SCALE = { Schlank: '#b62020', Normal: '#b65c20', Sportlich: '#b69820', mollig: '#98b620', Mastschwein: '#5cb620', Qualle: '#20b620' };
 
   function renameTextNodes(root) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -4984,6 +5032,15 @@
           setTimeout(qualleDisplay, 100);
         }, true);
         mast.after(q);
+        // Die virtualisierte Liste kennt die zusätzliche Zeile nicht → letzte Option (Qualle)
+        // wäre sonst nicht scrollbar. Holder + Inner um eine Zeilenhöhe verlängern.
+        try {
+          const ih = mast.offsetHeight || 32;
+          const inner = dd.querySelector('.rc-virtual-list-holder-inner');
+          const holder = dd.querySelector('.rc-virtual-list-holder');
+          if (inner && !inner.dataset.vafQualleH) { const h = parseFloat(inner.style.height) || inner.scrollHeight || 0; if (h) inner.style.height = (h + ih) + 'px'; inner.dataset.vafQualleH = '1'; }
+          if (holder && !holder.dataset.vafQualleH) { const mh = parseFloat(getComputedStyle(holder).maxHeight) || holder.clientHeight || 0; if (mh) holder.style.maxHeight = (mh + ih) + 'px'; holder.dataset.vafQualleH = '1'; }
+        } catch {}
         // andere Auswahl → Qualle aus
         for (const o of opts) if (!o.classList.contains('vaf-qualle')) o.addEventListener('click', () => G.set('qualle', false), true);
       }
@@ -4996,7 +5053,7 @@
   function qualleDisplay() {
     if (!qualleOn()) return;
     for (const it of document.querySelectorAll('.ant-select-selection-item')) {
-      if (/^(Mastschwein|Plus-size)$/i.test(it.textContent.trim())) { it.textContent = 'Qualle'; it.title = 'Qualle (sucht „Plus-size“ und blendet unter BMI 40 aus)'; }
+      if (/^(Mastschwein|Plus-size)$/i.test(it.textContent.trim())) { it.textContent = 'Qualle'; it.title = 'Qualle (sucht „Plus-size“ und blendet unter BMI 45 aus)'; }
     }
   }
 
@@ -5054,7 +5111,7 @@
       const tt = toast('Figur-Badges: vermesse Größe und Gewicht über die Suchfilter …', 0);
       const ctx = { stop: () => this.stop, step: () => {} };
       try {
-        const ths = mode === 'mollig' ? [30, 35, 40] : mode === 'mastschwein' ? [35, 40] : [40];
+        const ths = mode === 'mollig' ? [35, 40, 45] : mode === 'mastschwein' ? [40, 45] : [45];
         const base = { ...payload, weight_min: 0, weight_max: 300 };
         const s = S();
         const all = new Map();       // uid → { h, wlo, whi }
@@ -5121,7 +5178,8 @@
       const m = x.uid ? await Members.get(x.uid) : await Members.byNick(x.nick);
       const bi = bodyInfo(m);
       let b = x.card.querySelector('.vaf-fig');
-      if (bi && bi.lo < hide) { x.card.style.display = 'none'; continue; }
+      // ausgefilterte Treffer komplett entfernen (kein leerer Platzhalter im Raster)
+      if (bi && bi.lo < hide) { try { (x.card.closest('[data-index]') || x.card).remove(); } catch {} continue; }
       x.card.style.display = '';
       const bmi = bi ? Math.floor(bi.lo) : null;
       const band = bi ? bandOf(bi.lo) : '';
@@ -5129,7 +5187,7 @@
       if (!b) { b = document.createElement('div'); b.className = 'vaf-fig vaf-mark'; (x.host || x.card).prepend(b); }
       b.textContent = `${band} · BMI ${bmi}${bi.exact ? '' : '+'}`;
       b.title = `${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg`;
-      b.style.cssText = `background:${band === 'Qualle' ? '#6a1b9a' : band === 'Mastschwein' ? '#ad1457' : '#ef6c00'};color:#fff`;
+      b.style.cssText = `background:${FIG_SCALE[band] || '#777'};color:#fff`;
     }
   }
 
@@ -5163,7 +5221,11 @@
     const err = doc.querySelector('main .ant-result-error');
     if (err && /spurlos verschwunden|nicht gefunden/i.test(err.textContent || '')) return 'notfound';
     const header = doc.querySelector('header');
-    if (!header) return 'loading';
+    if (!header) {
+      // Kein SPA-Rahmen: evtl. Server-Totalausfall (502/503/504, Bad Gateway …) → wie Wartung behandeln
+      if (/\b(bad gateway|gateway time-?out|service (temporarily )?unavailable|temporarily unavailable|internal server error|error 50[234]\b|\b50[234] (bad|service|gateway|internal)|momentan nicht erreichbar|vorübergehend nicht erreichbar|server (ist )?überlast)/i.test((title + ' ' + body).slice(0, 1500))) return 'wartung';
+      return 'loading';
+    }
     if (header.querySelector('a[href="/inbox"]')) return 'normal';
     if (doc.querySelector('a[href="/login"]') || /Neues Konto erstellen/.test(body)) return 'abgemeldet';
     return 'loading';
@@ -5418,12 +5480,6 @@
     tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> eigene behalten.`;
     setTimeout(() => tt.remove(), 10000);
   }
-  async function export99() {
-    const l = await KV.get('log99', {});
-    const lines = Object.values(l).map((x) => 'https://www.poppen.de' + pathOfName(x.nick)).sort();
-    download(`poppen-99-jaehrige-${stamp()}.txt`, lines.join('\r\n') + '\r\n', 'text/plain');
-  }
-
   // ---------- Umstellung von Version 1.x ----------
   // Die alten Listen kannten keine Benutzer-IDs. Sie werden ins neue Gedächtnis übernommen, sobald
   // ein Mitglied mit ID auftaucht (Blockierliste, Listen); die alten Daten bleiben erhalten.
@@ -6360,8 +6416,18 @@
       if (lab && norm(lab.textContent) === 'sparks') { sparks = el; break; }
     }
     if (!sparks) return;
+    // Aktiv-/Ausgewählt-Markierungen entfernen: der Klon von „Sparks“ erbt sonst
+    // dessen Highlight (z.B. auf /speed-dating/play) und wirkt fälschlich aktiv.
+    // Nur auf der echten Freunde-Seite darf „Freunde“ aktiv sein.
+    const stripActive = (el) => {
+      if (location.pathname.startsWith('/friends')) return;
+      for (const n of [el, ...el.querySelectorAll('*')]) {
+        if (n.removeAttribute) { n.removeAttribute('aria-current'); n.removeAttribute('data-active'); }
+        if (n.classList) for (const c of [...n.classList]) if (/active|selected|current/i.test(c)) n.classList.remove(c);
+      }
+    };
     // schon vorhanden?
-    if (sparks.previousElementSibling && sparks.previousElementSibling.id === 'vaf-discover-friends') return;
+    if (sparks.previousElementSibling && sparks.previousElementSibling.id === 'vaf-discover-friends') { stripActive(sparks.previousElementSibling); return; }
     const a = sparks.cloneNode(true);
     a.id = 'vaf-discover-friends';
     a.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
@@ -6369,6 +6435,7 @@
     const lab = a.querySelector('[data-type="label"]'); if (lab) lab.textContent = 'Freunde';
     const ic = a.querySelector('[data-type="icon"]'); if (ic) ic.innerHTML = FRIENDS_ICON;
     const badge = a.querySelector('[data-type="badge"]'); if (badge) badge.remove();
+    stripActive(a);
     sparks.before(a);
   }
 
@@ -6963,6 +7030,7 @@
     Scan.startTimer();
     bkStartPoppen();
     headerButton();
+    updateRecorderMenu();
     setInterval(headerButton, 1500);
     refreshPending().catch(() => {});
     setInterval(() => refreshPending().catch(() => {}), 5 * 60000);
@@ -7023,7 +7091,7 @@
     let last = location.pathname + location.hash;
     setInterval(() => { const cur = location.pathname + location.hash; if (cur !== last) { last = cur; ensureUi(); checkReblock().catch(() => {}); } }, 500);
     ensureUi();
-    Bus.on('settings', () => { headerButton(); });
+    Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
     if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
