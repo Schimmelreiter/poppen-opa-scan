@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.19
+// @version      2.20
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.19';
+  const VERSION = '2.20';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -2323,9 +2323,70 @@
     a.addEventListener('click', (e) => { e.stopPropagation(); }, true);
   }
 
+  // ---------- Benachrichtigungen & Likes-/Kommentar-Popups einfärben ----------
+  // Übersetzter Profiltyp + Alter (+ Entfernung, falls bekannt) farbig neben jeden Actor-Nick.
+  const GENDER_TXT = { 'Mann': 'm', 'Frau': 'w', 'Paar': 'p', 'Trans': 'ts', 'Transsexuell': 'ts', 'Nicht-binär': 'tv' };
+  function notifTag(nick, m, a) {
+    const s = S();
+    let gk = null, ages = [];
+    if (m && (m.ages || []).length) { ages = m.ages; gk = classify({ ...m, nick }, 'Benachrichtigungen', s).gk; }
+    // Zeilen-Container hochklettern, bis die poppen-Meta (Alter/Entfernung) im Text steht
+    let row = a;
+    for (let k = 0; k < 6 && row.parentElement; k++) { row = row.parentElement; if (/\d+\s*Jahre|·\s*[\d.,]+\s*km/.test(row.textContent || '')) break; }
+    const rtxt = row ? (row.textContent || '') : '';
+    let dist = ''; const dm = rtxt.match(/·\s*([\d.,]+)\s*km/); if (dm) dist = ` · ${dm[1]} km`;
+    if (!gk || !ages.length) {                       // Fallback: poppens eigene Meta-Zeile parsen
+      const pm = rtxt.match(/(Mann|Frau|Paar|Trans|Transsexuell|Nicht[- ]binär)\s*·\s*(\d+)\s*Jahre/);
+      if (pm) { gk = GENDER_TXT[pm[1].replace('Nicht binär', 'Nicht-binär')] || null; ages = [Number(pm[2])]; }
+    }
+    if (!gk || !ages.length) return null;
+    const labels = labelsOf(gk, s);
+    const typ = ages.map((aa, i) => { const lim = limitsOf(gk, 'interaktionen', ages.length > 1 ? i : -1, s); return labels[aa <= lim[0] ? 0 : aa <= lim[1] ? 2 : 4]; });
+    const label = uniq(typ).join(' & ');
+    const maxA = Math.max(...ages); const lim = limitsOf(gk, 'interaktionen', -1, s);
+    const stage = maxA <= lim[0] ? 1 : maxA <= lim[1] ? 2 : 3;
+    const color = COLORS[stage];
+    // Zeigt poppen schon Alter/Entfernung (Listenseite), fehlt nur der übersetzte Typ → nur den anzeigen.
+    // Bei Kommentaren fehlt alles → Typ + Alter (Entfernung ist dort nicht bekannt).
+    const poppenMeta = /\d+\s*Jahre/.test(rtxt);
+    const text = poppenMeta ? label : `${label} ${ages.join('/')}`;
+    return { text, color, dark: color === COLORS[2] };
+  }
+  function notifScopes() {
+    if (/^\/notifications/.test(location.pathname)) return [document.body];
+    return [...document.querySelectorAll('.ant-modal-content, .ant-drawer-content, .ant-popover-inner')].filter((x) => x.offsetParent !== null);
+  }
+  async function decorateNotifications() {
+    const scopes = notifScopes();
+    if (!scopes.length) return;
+    const meL = norm((Me.get() || {}).nick || '');
+    for (const root of scopes) {
+      for (const a of root.querySelectorAll('a.ant-typography-link[href^="/p/"]')) {
+        if (a.dataset.vafNotif) continue;
+        if (a.closest('.vaf-ov, #vaf-fick-sec, .vaf-gr-editor, [data-vaf-skip]')) continue;   // eigene UI nicht dekorieren
+        // sauberer Nick: Titel bevorzugt, sonst Text ohne angehängte Meta (Geschlecht · NN Jahre …)
+        let nick = (a.getAttribute('title') || '').trim();
+        if (!nick) nick = (a.textContent || '').trim().replace(/\s*(Mann|Frau|Paar|Trans|Transsexuell|Nicht[- ]binär)\s*·.*$/, '').trim();
+        if (!nick) continue;
+        a.dataset.vafNotif = '1';
+        if (norm(nick) === meL) continue;
+        try {
+          const m = await Members.byNick(nick);
+          const tag = notifTag(nick, m, a);
+          if (!tag) continue;
+          const span = document.createElement('span');
+          span.className = 'vaf-mark vaf-notif-mark';
+          span.textContent = tag.text;
+          span.style.cssText = `background:${tag.color};color:${tag.dark ? '#111' : '#fff'};margin-left:6px;vertical-align:middle`;
+          a.after(span);
+        } catch {}
+      }
+    }
+  }
+
   function initListPages() {
     let t = null;
-    const run = () => { clearTimeout(t); t = setTimeout(() => { markPage(); if (location.pathname.startsWith('/inbox')) fixDeletedChatHeader(); }, 250); };
+    const run = () => { clearTimeout(t); t = setTimeout(() => { markPage(); decorateNotifications(); if (location.pathname.startsWith('/inbox')) fixDeletedChatHeader(); }, 250); };
     new MutationObserver(run).observe(document.body, { childList: true, subtree: true });
     Bus.on('settings', run);
     run();
