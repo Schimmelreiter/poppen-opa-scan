@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.2.7
+// @version      1.2.8
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.7';
+  const VERSION = '1.2.8';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -28,6 +28,13 @@
   const warn = (...a) => console.warn('[Opa-Helfer]', ...a);
   const K = (k) => 'opahelfer_' + k;
   const G = { get: (k, d) => GM_getValue(K(k), d), set: (k, v) => GM_setValue(K(k), v), del: (k) => GM_deleteValue(K(k)) };
+
+  // eigene Fehler sammeln (hilft, rote Konsolenmeldungen zuzuordnen)
+  const errors = [];
+  try {
+    W.addEventListener('error', (e) => { try { errors.push({ t: 'error', msg: String((e && (e.message || (e.error && e.error.message))) || ''), src: (e && e.filename) || '', line: (e && e.lineno) || 0 }); } catch {} });
+    W.addEventListener('unhandledrejection', (e) => { try { errors.push({ t: 'reject', msg: String((e && e.reason && (e.reason.message || e.reason)) || '') }); } catch {} });
+  } catch {}
 
   // =====================================================================================
   // API-Schicht (eigenes fetch, Kopfzeilen von der Seite spiegeln) + eigener Rekorder
@@ -240,6 +247,7 @@
     }
     return '';
   }
+  const PLACEHOLDER = /^(bitte\s*(aus)?wählen|aus\s*wählen|auswählen|wählen|keine angabe|k\.? ?a\.?|—|-|–)$/i;
   function readDetailsFrom(doc) {
     const out = {};
     for (const lab of doc.querySelectorAll('label')) {
@@ -247,15 +255,18 @@
       const field = FIELD_BY_LABEL[key];
       if (!field) continue;
       const txt = valueForLabel(lab);
-      if (txt) out[field] = txt;
+      if (txt && !PLACEHOLDER.test(txt)) out[field] = txt;
     }
     return out;
   }
   // Diagnose, damit wir sehen, was eine Seite im iframe wirklich liefert
   const diag = [];
+  const savedPages = [];   // komplette Seiten-HTMLs (für Debug-Download)
+  function pageSlug(u) { try { return new URL(u, location.origin).pathname.replace(/^\/+|\/+$/g, '').replace(/[^a-z0-9]+/gi, '-') || 'seite'; } catch { return 'seite'; } }
   function snapFrame(tag, url) {
     let d = null, accessible = true;
     try { d = theFrame().contentDocument; } catch { accessible = false; }
+    try { if (d) savedPages.push({ slug: pageSlug(url), html: '<!-- ' + tag + ' ' + url + ' -->\n' + d.documentElement.outerHTML }); } catch {}
     const info = { tag, url, accessible, frameUrl: null, title: null, labels: 0, selItems: 0, labelFor: 0, bodyLen: 0, bodyHead: '' };
     try { info.frameUrl = theFrame().contentWindow && theFrame().contentWindow.location && theFrame().contentWindow.location.href; } catch { info.frameUrl = '«blockiert»'; }
     if (d) {
@@ -305,50 +316,24 @@
     }
     snapFrame('display', url);
     if (!doc) return {};
-    // etwaige „mehr anzeigen"-Schalter aufklappen (auch mehrere / Paar-Abschnitt)
-    for (let r = 0; r < 3; r++) {
-      const more = [...doc.querySelectorAll('button,a,span')].filter((b) => /mehr anzeigen|alle anzeigen|mehr details/i.test((b.textContent || '').trim()));
-      if (!more.length) break;
-      more.forEach((b) => { try { b.click(); } catch {} });
-      await sleep(600);
-    }
-    return readDetailsFrom(doc);
+    // ZUERST lesen (vor jeglichem Klick), damit ein Klick, der die SPA
+    // weiternavigiert, die bereits gelesenen Werte nicht zunichtemacht.
+    let res = readDetailsFrom(doc);
+    // „mehr anzeigen" nur über echte Buttons aufklappen (keine <a>/<span>,
+    // die navigieren könnten), dann erneut lesen und ergänzen.
+    try {
+      for (let r = 0; r < 2; r++) {
+        const more = [...doc.querySelectorAll('button,[role="button"]')].filter((b) => /mehr anzeigen|alle anzeigen|mehr details/i.test((b.textContent || '').trim()));
+        if (!more.length) break;
+        more.forEach((b) => { try { b.click(); } catch {} });
+        await sleep(600);
+        await scrollFrameThrough();
+      }
+      res = { ...res, ...readDetailsFrom(doc) };
+    } catch (e) { warn('aufklappen', e); }
+    return res;
   }
   const readProfileDetails = (nick) => readDisplayUrl(location.origin + '/p/' + encodeURIComponent(String(nick).toLowerCase()));
-
-  // Eigenes Profil: Bearbeiten-Seite /setting/profile/personals.
-  // Dort ist das <label for="figure_name"> direkt der trait-Schlüssel und der
-  // gewählte Wert steht in .ant-select-selection-item (antd-Klassen sind stabil).
-  async function readOwnEditSelections() {
-    await loadFrame(location.origin + '/setting/profile/personals');
-    const t0 = now();
-    let doc = null;
-    const known = new Set(WANT.concat(['origin']));
-    const selText = (lab) => {
-      const item = lab.closest('.ant-form-item') || lab.parentElement;
-      const s = item && item.querySelector('.ant-select-selection-item');
-      return s ? (s.getAttribute('title') || s.textContent || '').trim() : '';
-    };
-    while (now() - t0 < 24000) {
-      try { doc = theFrame().contentDocument; } catch { doc = null; }
-      await scrollFrameThrough();
-      if (doc) {
-        const labs = [...doc.querySelectorAll('label[for]')].filter((l) => known.has(l.getAttribute('for')));
-        if (labs.length && labs.some((l) => selText(l))) break;   // Werte sind hydriert
-      }
-      await sleep(400);
-    }
-    snapFrame('edit', location.origin + '/setting/profile/personals');
-    const out = {};
-    if (!doc) return out;
-    for (const lab of doc.querySelectorAll('label[for]')) {
-      const f = lab.getAttribute('for');
-      if (!WANT.includes(f)) continue;
-      const t = selText(lab);
-      if (t) out[f] = t;
-    }
-    return out;
-  }
 
   // Sichtbarkeit (wio/state) für die offenen Profilbesuche
   async function setVisible(v) { try { await apiPost('wio/state', { value: v }); } catch (e) { warn('Sichtbarkeit', e); } }
@@ -581,12 +566,14 @@
     noteTrait(tr);
     let paired = 0;
     if (tr) {
-      status('Eigene Profilanzeige lesen (/setting/profile) …');
-      const dispOwner = await readDisplayUrl(location.origin + '/setting/profile').catch(() => ({}));
+      // Beide Seiten über den bewährten Label-Text-Weg lesen (valueForLabel).
+      // Bearbeiten-Seite ist am reichsten (figure, typ, tits, …), Profilanzeige
+      // ergänzt Felder, die das Formular nicht hat.
       status('Eigene Bearbeiten-Seite lesen (/setting/profile/personals) …');
-      const edit = await readOwnEditSelections().catch(() => ({}));
-      let page = { ...edit, ...dispOwner };   // Anzeige-Labels bevorzugt
-      if (!Object.keys(page).length) { status('Fallback: öffentliches eigenes Profil lesen …'); page = await readProfileDetails(me).catch(() => ({})); }
+      const pEdit = await readDisplayUrl(location.origin + '/setting/profile/personals').catch(() => ({}));
+      status('Eigene Profilanzeige lesen (/p/…) …');
+      const pDisp = await readProfileDetails(me).catch(() => ({}));
+      const page = { ...pEdit, ...pDisp };   // Anzeige-Labels bevorzugt, wo beide
       for (const f of WANT) {
         const code = scalarCode(tr, f); const label = page[f];
         if (code != null && label) if (addMap(f, code, label)) paired++;
@@ -594,13 +581,15 @@
       log('eigene Seiten-Labels:', page);
     }
     log('DIAGNOSE Seiten:', diag);
+    // komplette Seiten als HTML sichern (damit sich Fehler offline nachvollziehen lassen)
+    savedPages.forEach((p, i) => download(`poppen-helfer-seite-${i + 1}-${p.slug}-${stamp()}.html`, p.html));
     const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'eigenes Profil', neu_gepaart: paired,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-      offene_felder: unresolved(), diagnose: diag };
+      offene_felder: unresolved(), diagnose: diag, fehler: errors };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-eigenes-${stamp()}.json`, JSON.stringify(fertig, null, 2));
     badgeDone(`Eigenes Profil fertig – ${paired} Werte gepaart`);
-    status('Fertig. Zuordnung aus dem eigenen Profil wurde heruntergeladen.');
+    status(`Fertig. ${paired} Werte gepaart. Zuordnung + ${savedPages.length} Seiten-HTML heruntergeladen.`);
     log('ZUORDNUNG (eigenes Profil):', mapping);
   }
 
