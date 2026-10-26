@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2';
+  const VERSION = '1.2.1';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -255,14 +255,14 @@
     if (cached && cached.geo_id) return cached;
     try {
       const s = await apiGet('user/session/info');
-      const loc = s && s.geo_location;
+      const loc = s && s.account && s.account.geo_location;
       if (loc && loc.geo_id) { const { distance, distance_unit, ...geo } = loc; G.set('mygeo', geo); return geo; }
     } catch (e) { warn('Geo', e); }
     return { country_iso: 'DE', country_name: 'Germany' };
   }
-  // Eigener Nickname (aus session/info – nur der Nick, niemals E-Mail o.ä.)
+  // Eigener Nickname (aus session/info.account – nur der Nick, niemals E-Mail o.ä.)
   async function mySelf() {
-    try { const s = await apiGet('user/session/info'); return (s && (s.nickname || s.nick || s.name)) || null; } catch (e) { warn('Eigener Nick', e); return null; }
+    try { const s = await apiGet('user/session/info'); const a = (s && s.account) || {}; return a.nickname || a.nick || null; } catch (e) { warn('Eigener Nick', e); return null; }
   }
 
   // =====================================================================================
