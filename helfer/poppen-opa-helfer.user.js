@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.4.1
+// @version      1.5.0
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.4.1';
+  const VERSION = '1.5.0';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -536,52 +536,107 @@
     return reads;
   }
 
+  // ---------- Bearbeiten-Seite: Dropdown-Optionen direkt auslesen (schnellster, vollständiger Weg) ----------
+  const PLACE = /^(bitte|keine angabe|beliebig|auswählen|wählen|—|-)/i;
+  // Ein antd-Select öffnen, durchscrollen und aus der versteckten Listbox Code(=Text)+Klartext(=aria-label) lesen.
+  async function readOneSelect(doc, win, lab) {
+    const out = {};
+    const item = lab.closest('.ant-form-item');
+    const sel = item && item.querySelector('.ant-select');
+    if (!sel) return out;
+    const trigger = sel.querySelector('.ant-select-selector') || sel;
+    try { trigger.scrollIntoView({ block: 'center' }); } catch {}
+    for (const t of ['mousedown', 'mouseup']) { try { trigger.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: win })); } catch {} }
+    try { trigger.click(); } catch {}
+    await sleep(350);
+    const dd = [...doc.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')].pop();
+    if (dd) {
+      const holder = dd.querySelector('.ant-select-dropdown-list-holder') || dd.querySelector('.rc-virtual-list-holder') || dd;
+      const collect = () => { for (const o of dd.querySelectorAll('[role="option"]')) { const code = (o.textContent || '').trim(); const label = (o.getAttribute('aria-label') || '').trim(); if (/^\d+$/.test(code) && label) out[code] = label; } };
+      collect();
+      let stable = 0;
+      for (let step = 0; step < 80 && stable < 6; step++) {
+        const before = Object.keys(out).length;
+        try { holder.dispatchEvent(new WheelEvent('wheel', { deltaY: 220, bubbles: true, cancelable: true })); } catch {}
+        try { holder.scrollTop += 220; } catch {}
+        await sleep(70);
+        collect();
+        stable = Object.keys(out).length > before ? 0 : stable + 1;
+      }
+    }
+    // schließen
+    try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true })); } catch {}
+    try { doc.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch {}
+    await sleep(120);
+    return out;
+  }
+  // Alle Enum-Felder der Bearbeiten-Seite auslesen (label[for]=trait-Schlüssel).
+  async function readEditDropdowns(url, phase) {
+    await loadFrame(url);
+    let doc = null; const t0 = now();
+    while (now() - t0 < 22000) { try { doc = theFrame().contentDocument; } catch { doc = null; } await scrollFrameThrough(); if (doc && doc.querySelector('label[for]')) break; await sleep(400); }
+    const diag = [];
+    if (!doc) return diag;
+    const win = theFrame().contentWindow;
+    for (const F of WANT) {
+      if (mapping[F] && Object.keys(mapping[F]).length >= 2) continue;   // schon (fast) vollständig
+      const lab = doc.querySelector('label[for="' + F + '"]');
+      if (!lab) { diag.push({ f: F, gefunden: false }); continue; }
+      phase('Bearbeiten-Dropdown: ' + F);
+      const opts = await readOneSelect(doc, win, lab).catch(() => ({}));
+      let n = 0;
+      for (const [code, label] of Object.entries(opts)) {
+        if (code === '0' || PLACE.test(label)) continue;
+        (seenCodes[F] = seenCodes[F] || new Set()).add(code);
+        if (addMap(F, code, label)) n++;
+      }
+      diag.push({ f: F, gelesen: Object.keys(opts).length, neu: n });
+    }
+    return diag;
+  }
+
   async function run() {
     ensureBadge(); G.set('started', now());
-    status('Turbo-Start: Optionslisten + gezielte Code-Suche …');
+    status('Lese Bearbeiten-Dropdowns (schnellster, vollständiger Weg) …');
 
     await pullI18n(status).catch((e) => warn('i18n', e));
     await pullRelationship();
     const opt = await pullOptionLists(status);
 
-    status('Ermittle funktionierenden Suchraum …');
-    const probeRes = await probeLocation();
-    log('Such-Probe:', probeRes.probe);
-    if (!probeRes.chosen) {
-      const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Turbo', profile_gelesen: 0,
-        werte: mapping, option_listen: opt, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-        offene_felder: unresolved(), such_probe: probeRes.probe, fehler: errors };
-      download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
-      badgeDone('Suche lieferte 0 – siehe such_probe im Export');
-      status('Keine Treffer – bitte Export (such_probe) schicken.');
-      return;
+    // 1) Bearbeiten-Seite(n): komplette Optionslisten aller Felder direkt auslesen
+    const editDiag = [];
+    for (const url of ['/setting/profile/personals', '/setting/profile/preferences', '/setting/profile/sexual']) {
+      if (unresolvedOrEmpty().length === 0) break;
+      try { editDiag.push(...await readEditDropdowns(location.origin + url, status)); } catch (e) { warn('Edit-Dropdowns ' + url, e); }
     }
-    const loc = probeRes.chosen.loc;
-    status(`Suchraum: ${probeRes.chosen.name}`);
 
-    status('Schalte unsichtbar für offene Profilbesuche …');
-    const visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500);
-
-    // Turbo: jedes trait-Feld gezielt pro Code auflösen
-    let read = 0;
-    for (const F of WANT) read += await resolveFieldTurbo(F, loc, status);
-
-    if (visBefore === 'visible') { status('Stelle Sichtbarkeit wieder her …'); await setVisible('visible'); }
+    // 2) Fallback-Turbo nur noch für Felder, die so nicht abgedeckt wurden
+    status('Ermittle funktionierenden Suchraum (für Restfelder) …');
+    const probeRes = await probeLocation();
+    let read = 0, loc = probeRes.chosen && probeRes.chosen.loc;
+    const rest = WANT.filter((f) => !(mapping[f] && Object.keys(mapping[f]).length));
+    if (loc && rest.length) {
+      status(`Fallback-Turbo für ${rest.length} Restfelder …`);
+      const visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500);
+      for (const F of rest) read += await resolveFieldTurbo(F, loc, status);
+      if (visBefore === 'visible') await setVisible('visible');
+    }
 
     status('Untersuche Alter 99 …');
-    const age99 = await ageNinetyNine(status, loc).catch((e) => { warn('Alter99', e); return null; });
+    const age99 = loc ? await ageNinetyNine(status, loc).catch(() => null) : null;
 
-    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Turbo (gezielte Code-Suche)', suchraum: probeRes.chosen.name, profile_gelesen: read,
-      werte: mapping, option_listen: opt, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
+    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Bearbeiten-Dropdowns + Fallback', suchraum: probeRes.chosen && probeRes.chosen.name, profile_gelesen: read,
+      werte: mapping, option_listen: opt, edit_diag: editDiag, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
       offene_felder: unresolved(), alter_99: age99, such_probe: probeRes.probe, fehler: errors };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
 
-    badgeDone(`Fertig – ${mapCount()} Werte aus ${read} Profilen`);
+    badgeDone(`Fertig – ${mapCount()} Werte`);
     status('Fertig. Roh-Aufnahme + Zuordnung heruntergeladen.');
-    log('ALTER 99:', age99);
-    log('ZUORDNUNG:', mapping);
+    log('ALTER 99:', age99); log('EDIT-DIAG:', editDiag); log('ZUORDNUNG:', mapping);
   }
+  // Felder ohne (ausreichende) Zuordnung – als grobe Abbruchbedingung fürs Durchgehen der Reiter
+  const unresolvedOrEmpty = () => WANT.filter((f) => !(mapping[f] && Object.keys(mapping[f]).length >= 2));
 
   // Nur das eigene Profil auswerten (keine fremden Besuche, keine Unsichtbarkeit nötig)
   async function runOwn() {
@@ -635,7 +690,7 @@
         <div style="color:#a6a6a6;margin:0 0 16px">Was soll der Helfer tun? Das Hauptscript sollte jetzt deaktiviert sein.</div>
         <div style="display:flex;flex-direction:column;gap:10px">
           <button data-full style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
-            <b style="color:#ffc21a">Voller Lauf (Turbo)</b><br><span style="color:#a6a6a6">Kein Import nötig. Holt Optionslisten direkt und löst jedes Feld gezielt pro Code über die Suche auf (auch seltene Werte) – nur wenige Besuche statt tausender Profile. Außerdem Alter-99-Prüfung.</span></button>
+            <b style="color:#ffc21a">Voller Lauf (Turbo)</b><br><span style="color:#a6a6a6">Kein Import nötig. Liest die kompletten Dropdown-Optionen deiner Bearbeiten-Seite direkt aus (alle Felder, auch seltene Werte) – praktisch ohne Profilbesuche. Rest per gezielter Suche. Außerdem Alter-99-Prüfung.</span></button>
           <button data-self style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
             <b style="color:#ffc21a">Nur eigenes Profil</b><br><span style="color:#a6a6a6">Nur die Werte des eigenen Profils holen – keine fremden Besuche, keine Unsichtbarkeit. Gedacht als Ergänzung zum vollen Lauf im anderen Profil.</span></button>
         </div>
