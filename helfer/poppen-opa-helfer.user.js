@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.2.4
+// @version      1.2.5
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.4';
+  const VERSION = '1.2.5';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -236,6 +236,24 @@
     }
     return out;
   }
+  // Diagnose, damit wir sehen, was eine Seite im iframe wirklich liefert
+  const diag = [];
+  function snapFrame(tag, url) {
+    let d = null, accessible = true;
+    try { d = theFrame().contentDocument; } catch { accessible = false; }
+    const info = { tag, url, accessible, frameUrl: null, title: null, labels: 0, selItems: 0, labelFor: 0, bodyLen: 0, bodyHead: '' };
+    try { info.frameUrl = theFrame().contentWindow && theFrame().contentWindow.location && theFrame().contentWindow.location.href; } catch { info.frameUrl = '«blockiert»'; }
+    if (d) {
+      try { info.title = d.title; } catch {}
+      try { info.labels = d.querySelectorAll('label').length; } catch {}
+      try { info.labelFor = d.querySelectorAll('label[for]').length; } catch {}
+      try { info.selItems = d.querySelectorAll('.ant-select-selection-item').length; } catch {}
+      try { const b = (d.body && d.body.innerText || '').trim(); info.bodyLen = b.length; info.bodyHead = b.slice(0, 160).replace(/\s+/g, ' '); } catch {}
+    }
+    diag.push(info);
+    return info;
+  }
+
   async function readDisplayUrl(url) {
     await loadFrame(url);
     const t0 = now();
@@ -246,6 +264,7 @@
       if (doc && [...doc.querySelectorAll('label')].some((l) => FIELD_BY_LABEL[(l.textContent || '').trim().toLowerCase()])) break;
       await sleep(400);
     }
+    snapFrame('display', url);
     if (!doc) return {};
     // etwaige „mehr anzeigen"-Schalter aufklappen (auch mehrere / Paar-Abschnitt)
     for (let r = 0; r < 3; r++) {
@@ -279,6 +298,7 @@
       }
       await sleep(400);
     }
+    snapFrame('edit', location.origin + '/setting/profile/personals');
     const out = {};
     if (!doc) return out;
     for (const lab of doc.querySelectorAll('label[for]')) {
@@ -533,9 +553,10 @@
       }
       log('eigene Seiten-Labels:', page);
     }
+    log('DIAGNOSE Seiten:', diag);
     const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'eigenes Profil', neu_gepaart: paired,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-      offene_felder: unresolved() };
+      offene_felder: unresolved(), diagnose: diag };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-eigenes-${stamp()}.json`, JSON.stringify(fertig, null, 2));
     badgeDone(`Eigenes Profil fertig – ${paired} Werte gepaart`);
