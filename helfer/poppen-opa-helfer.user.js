@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.3.0
+// @version      1.3.1
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -385,23 +385,51 @@
   }
   function stamp() { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`; }
 
-  // Suchkörper: weltweit (location:null), alle Geschlechter, keine echten Filter
-  function searchBody(age) {
+  // Suchkörper: alle Geschlechter, keine echten Filter. location wird separat
+  // gesetzt (der funktionierende Suchraum wird zu Beginn ermittelt).
+  function searchBody(loc, age) {
     return {
-      location: null, genders: ['m', 'w', 'ts', 'tv'], has_image: 0, online: false,
+      location: loc, genders: ['m', 'w', 'ts', 'tv'], has_image: 0, online: false,
       enable_search_gender: false, enable_fakecheck_status: false,
       sort: ['last_riseup'], order: ['desc'], preference_conjunction: 'or', second_preference_conjunction: 'or',
-      size_min: 0, size_max: 300, weight_min: 0, weight_max: 500, age_min: age, age_max: age,
+      size_min: 130, size_max: 220, weight_min: 0, weight_max: 300, age_min: age, age_max: age,
     };
   }
 
-  async function ageNinetyNine(phase) {
+  // Funktionierenden Suchraum ermitteln: mehrere location-Formate auf Alter 30
+  // testen, erstes mit Treffern gewinnt. Nur geo_location (Stadt/geo_id), keine E-Mail.
+  async function probeLocation() {
+    let acc = {};
+    try { const s = await apiGet('user/session/info'); acc = (s && s.account) || {}; } catch (e) { warn('session', e); }
+    const gl = acc.geo_location || {};
+    const city = gl.city || null;
+    let geo = null;
+    if (gl.geo_id) { const { distance, distance_unit, ...g } = gl; geo = g; }
+    const variants = [];
+    if (geo) variants.push(['geo_id', { ...geo, distance: 0, distance_unit: 'km' }]);
+    if (city) variants.push(['city', { city }]);
+    if (city) variants.push(['city+200km', { city, distance: 200, distance_unit: 'km' }]);
+    variants.push(['country', { country_iso: 'DE', country_name: 'Germany', distance: 0, distance_unit: 'km' }]);
+    variants.push(['null', null]);
+    const probe = []; let chosen = null;
+    for (const [name, loc] of variants) {
+      let total = 0, n = 0, msg = null;
+      try { const d = await apiPost('user/search', { ...searchBody(loc, 30), page: 1, limit: 30 }); total = (d && d.total) || 0; n = ((d && d.users) || []).length; }
+      catch (e) { msg = String((e && e.message) || e); }
+      probe.push({ name, total, n, msg });
+      if (!chosen && (total > 0 || n > 0)) chosen = { name, loc };
+      await sleep(300);
+    }
+    return { probe, chosen, city, hasGeoId: !!geo };
+  }
+
+  async function ageNinetyNine(phase, loc) {
     const result = { counts: {}, links: {} };
     for (const age of [97, 98, 99, 100, 101]) {
       phase('Alter-99-Suche: ' + age);
       let total = 0, links = [];
       try {
-        const d = await apiPost('user/search', { ...searchBody(age), page: 1, limit: 20 });
+        const d = await apiPost('user/search', { ...searchBody(loc, age), page: 1, limit: 20 });
         total = d && d.total || 0;
         links = ((d && d.users) || []).slice(0, 3).map((u) => location.origin + '/p/' + encodeURIComponent(String(u.nickname || '').toLowerCase()));
       } catch (e) { warn('Suche ' + age, e); }
@@ -437,8 +465,8 @@
 
   const mapCount = () => Object.values(mapping).reduce((a, m) => a + Object.keys(m).length, 0);
 
-  // Voller Lauf: Werte über eine Alle-Geschlechter-Suche (weltweit, keine Filter)
-  // erfassen. Alter 30, danach 31, 32 … bis nichts Neues mehr kommt.
+  // Voller Lauf: Werte über eine Alle-Geschlechter-Suche erfassen.
+  // Alter 30, danach 31, 32 … bis nichts Neues mehr kommt.
   async function run() {
     ensureBadge(); G.set('started', now());
     status('Start: Werte über Alle-Geschlechter-Suche erfassen …');
@@ -446,6 +474,21 @@
     // i18n + Beziehungsstatus (meist kein Klartext, nur Bonus)
     await pullI18n(status).catch((e) => warn('i18n', e));
     await pullRelationship();
+
+    status('Ermittle funktionierenden Suchraum …');
+    const probeRes = await probeLocation();
+    log('Such-Probe:', probeRes.probe);
+    if (!probeRes.chosen) {
+      const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', profile_gelesen: 0,
+        werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
+        offene_felder: unresolved(), such_probe: probeRes.probe, fehler: errors };
+      download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
+      badgeDone('Suche lieferte 0 – siehe such_probe im Export');
+      status('Keine Treffer – bitte Export (such_probe) schicken.');
+      return;
+    }
+    const loc = probeRes.chosen.loc;
+    status(`Suchraum: ${probeRes.chosen.name}`);
 
     status('Schalte unsichtbar für offene Profilbesuche …');
     const visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500);
@@ -457,10 +500,10 @@
     outer:
     for (let age = AGE_FROM; age <= AGE_TO && !stop; age++) {
       lastAge = age;
-      status(`Suche Alter ${age} (alle Geschlechter, weltweit) · ${mapCount()} Werte · ${noNew} ohne Neues`);
+      status(`Suche Alter ${age} (${probeRes.chosen.name}) · ${mapCount()} Werte · ${noNew} ohne Neues`);
       let page = 1;
       for (let guard = 0; guard < 500; guard++) {
-        let d; try { d = await apiPost('user/search', { ...searchBody(age), page, limit: 30 }); } catch (e) { warn('Suche', e); break; }
+        let d; try { d = await apiPost('user/search', { ...searchBody(loc, age), page, limit: 30 }); } catch (e) { warn('Suche', e); break; }
         const users = (d && d.users) || [];
         if (!users.length) break;
         for (const u of users) {
@@ -493,11 +536,11 @@
     if (visBefore === 'visible') { status('Stelle Sichtbarkeit wieder her …'); await setVisible('visible'); }
 
     status('Untersuche Alter 99 …');
-    const age99 = await ageNinetyNine(status).catch((e) => { warn('Alter99', e); return null; });
+    const age99 = await ageNinetyNine(status, loc).catch((e) => { warn('Alter99', e); return null; });
 
-    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', profile_gelesen: read, bis_alter: lastAge,
+    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', suchraum: probeRes.chosen.name, profile_gelesen: read, bis_alter: lastAge,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-      offene_felder: unresolved(), alter_99: age99, fehler: errors };
+      offene_felder: unresolved(), alter_99: age99, such_probe: probeRes.probe, fehler: errors };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
 
