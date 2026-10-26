@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.3.2
+// @version      1.4.0
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.3.2';
+  const VERSION = '1.4.0';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -477,20 +477,73 @@
 
   // Voller Lauf: Werte über eine Alle-Geschlechter-Suche erfassen.
   // Alter 30, danach 31, 32 … bis nichts Neues mehr kommt.
+  // ---------- Turbo: komplette Optionslisten + gezielte Code-Suche ----------
+  // Manche Felder liefert user/login/option/list komplett auf einen Schlag.
+  async function pullOptionLists(phase) {
+    const out = {};
+    for (const key of ['searching_interests', 'spoken_language', 'origin']) {
+      phase('Optionsliste: ' + key);
+      try { const d = await apiGet('user/login/option/list', { key }); if (d && typeof d === 'object' && !Array.isArray(d)) out[key] = d; } catch (e) { warn('option/list ' + key, e); }
+      await sleep(150);
+    }
+    // „Suche nach" (searching_interests) hat echten Klartext → direkt ins Mapping
+    if (out.searching_interests) { mapping.searching = { ...(mapping.searching || {}), ...out.searching_interests }; G.set('mapping', mapping); }
+    return out;
+  }
+  // Suchfilter-Name je trait-Feld (meist = trait-Name; Ausnahmen hier)
+  const SEARCH_FILTER = { sex_type: 'sexual_orientation' };
+  function gendersForField(f) {
+    if (f === 'tits') return ['w'];
+    if (['beard', 'circumcised', 'dick_length', 'dick_width'].includes(f)) return ['m'];
+    return ['m', 'w'];
+  }
+  // Ein Feld gezielt auflösen: pro Code eine Suche, einen passenden Einzel-Treffer verifizieren und paaren.
+  async function resolveFieldTurbo(F, loc, phase) {
+    const sf = SEARCH_FILTER[F] || F;
+    const genders = gendersForField(F);
+    let reads = 0, miss = 0;
+    for (let code = 1; code <= 16 && miss < 4; code++) {
+      if (mapping[F] && mapping[F][String(code)]) continue;            // schon bekannt
+      phase(`Turbo: ${F} = ${code} · ${mapCount()} Werte`);
+      let paired = false;
+      for (const g of genders) {
+        let d;
+        try { d = await apiPost('user/search', { ...searchBody(loc, 0), genders: [g], [sf]: [code], age_min: 25, age_max: 70, page: 1, limit: 12 }); }
+        catch (e) { warn('Turbo-Suche', e); continue; }
+        for (const u of ((d && d.users) || []).slice(0, 6)) {
+          const info = await userInfo(u.nickname); const tr = info && info.user_trait;
+          noteTrait(tr); reads++;
+          // nur verwenden, wenn der Code wirklich passt (schützt vor ignoriertem Filter) und Einzelprofil
+          if (isSingleTrait(tr) && String(scalarCode(tr, F)) === String(code)) {
+            const pg = await readProfileDetails(u.nickname).catch(() => ({}));
+            if (pg[F] && addMap(F, code, pg[F])) paired = true;
+            await sleep(500);
+            if (paired) break;
+          }
+          await sleep(250);
+        }
+        if (paired) break;
+        await sleep(250);
+      }
+      if (paired) miss = 0; else miss++;
+    }
+    return reads;
+  }
+
   async function run() {
     ensureBadge(); G.set('started', now());
-    status('Start: Werte über Alle-Geschlechter-Suche erfassen …');
+    status('Turbo-Start: Optionslisten + gezielte Code-Suche …');
 
-    // i18n + Beziehungsstatus (meist kein Klartext, nur Bonus)
     await pullI18n(status).catch((e) => warn('i18n', e));
     await pullRelationship();
+    const opt = await pullOptionLists(status);
 
     status('Ermittle funktionierenden Suchraum …');
     const probeRes = await probeLocation();
     log('Such-Probe:', probeRes.probe);
     if (!probeRes.chosen) {
-      const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', profile_gelesen: 0,
-        werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
+      const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Turbo', profile_gelesen: 0,
+        werte: mapping, option_listen: opt, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
         offene_felder: unresolved(), such_probe: probeRes.probe, fehler: errors };
       download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
       badgeDone('Suche lieferte 0 – siehe such_probe im Export');
@@ -503,61 +556,18 @@
     status('Schalte unsichtbar für offene Profilbesuche …');
     const visBefore = await getVisible(); await setVisible('invisible'); await sleep(1500);
 
-    const STOP_STREAK = 250, HARDCAP = 2500, AGE_FROM = 30, AGE_TO = 65;
-    const seen = new Set();
-    let read = 0, noNew = 0, stop = false, lastAge = AGE_FROM;
-
-    outer:
-    for (let age = AGE_FROM; age <= AGE_TO && !stop; age++) {
-      lastAge = age;
-      status(`Suche Alter ${age} (${probeRes.chosen.name}) · ${mapCount()} Werte · ${noNew} ohne Neues`);
-      let page = 1;
-      for (let guard = 0; guard < 500; guard++) {
-        let d; try { d = await apiPost('user/search', { ...searchBody(loc, age), page, limit: 30 }); } catch (e) { warn('Suche', e); break; }
-        const users = (d && d.users) || [];
-        if (!users.length) break;
-        for (const u of users) {
-          const nick = u.nickname; if (!nick) continue;
-          const lc = String(nick).toLowerCase(); if (seen.has(lc)) continue;
-          seen.add(lc);
-          read++;
-          if (read > HARDCAP) { stop = true; status('Obergrenze erreicht – Stopp.'); break outer; }
-          status(`Alter ${age} · Profil ${read} · ${nick} · ${mapCount()} Werte · ${noNew} ohne Neues`);
-          const info = await userInfo(nick); const tr = info && info.user_trait;
-          noteTrait(tr);
-          let newHere = false, readPage = false;
-          const need = unresolved();
-          if (need.length) {
-            // Profilseite nur lesen, wenn dieses Profil für ein offenes Feld
-            // überhaupt einen eindeutigen Einzel-Code hat (sonst spart man den Besuch).
-            if (need.some((f) => singleCode(tr, f) != null && String(singleCode(tr, f)) !== '0')) {
-              readPage = true;
-              const pg = await readProfileDetails(nick).catch(() => ({}));
-              for (const f of need) {
-                const code = singleCode(tr, f);
-                const label = pg[f];
-                if (code != null && String(code) !== '0' && label) if (addMap(f, code, label)) newHere = true;
-              }
-              if (paarDiag.length < 10) paarDiag.push({ nick, seiten_felder: Object.keys(pg).length, neu: newHere });
-            }
-          }
-          if (newHere) noNew = 0; else noNew++;
-          if (noNew >= STOP_STREAK) { stop = true; status(`${STOP_STREAK} Profile ohne neuen Wert – Stopp.`); break outer; }
-          await sleep(readPage ? 600 : 150);
-        }
-        if (!d.next_page || d.next_page === page) break;
-        page = d.next_page;
-      }
-    }
+    // Turbo: jedes trait-Feld gezielt pro Code auflösen
+    let read = 0;
+    for (const F of WANT) read += await resolveFieldTurbo(F, loc, status);
 
     if (visBefore === 'visible') { status('Stelle Sichtbarkeit wieder her …'); await setVisible('visible'); }
 
     status('Untersuche Alter 99 …');
     const age99 = await ageNinetyNine(status, loc).catch((e) => { warn('Alter99', e); return null; });
 
-    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', suchraum: probeRes.chosen.name, profile_gelesen: read, bis_alter: lastAge,
-      werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-      offene_felder: unresolved(), alter_99: age99, such_probe: probeRes.probe, paar_diag: paarDiag, fehler: errors };
+    const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Turbo (gezielte Code-Suche)', suchraum: probeRes.chosen.name, profile_gelesen: read,
+      werte: mapping, option_listen: opt, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
+      offene_felder: unresolved(), alter_99: age99, such_probe: probeRes.probe, fehler: errors };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
 
@@ -619,7 +629,7 @@
         <div style="color:#a6a6a6;margin:0 0 16px">Was soll der Helfer tun? Das Hauptscript sollte jetzt deaktiviert sein.</div>
         <div style="display:flex;flex-direction:column;gap:10px">
           <button data-full style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
-            <b style="color:#ffc21a">Voller Lauf</b><br><span style="color:#a6a6a6">Kein Import nötig. Sucht weltweit über alle Geschlechter (Alter 30, dann 31, 32 …) und besucht die Profile unsichtbar, bis keine neuen Werte mehr kommen. Außerdem Alter-99-Prüfung.</span></button>
+            <b style="color:#ffc21a">Voller Lauf (Turbo)</b><br><span style="color:#a6a6a6">Kein Import nötig. Holt Optionslisten direkt und löst jedes Feld gezielt pro Code über die Suche auf (auch seltene Werte) – nur wenige Besuche statt tausender Profile. Außerdem Alter-99-Prüfung.</span></button>
           <button data-self style="text-align:left;background:#2a2a2a;color:#e8e8e8;border:1px solid #3a3a3a;border-radius:10px;padding:12px 16px;cursor:pointer">
             <b style="color:#ffc21a">Nur eigenes Profil</b><br><span style="color:#a6a6a6">Nur die Werte des eigenen Profils holen – keine fremden Besuche, keine Unsichtbarkeit. Gedacht als Ergänzung zum vollen Lauf im anderen Profil.</span></button>
         </div>
