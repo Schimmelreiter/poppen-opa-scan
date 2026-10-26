@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.0
+// @version      1.2.3
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.2';
+  const VERSION = '1.2.3';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
