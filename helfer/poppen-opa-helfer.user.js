@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.2.5
+// @version      1.2.6
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.5';
+  const VERSION = '1.2.6';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -249,19 +249,33 @@
       try { info.labelFor = d.querySelectorAll('label[for]').length; } catch {}
       try { info.selItems = d.querySelectorAll('.ant-select-selection-item').length; } catch {}
       try { const b = (d.body && d.body.innerText || '').trim(); info.bodyLen = b.length; info.bodyHead = b.slice(0, 160).replace(/\s+/g, ' '); } catch {}
+      try { info.labelTexts = [...d.querySelectorAll('label')].map((l) => (l.textContent || '').trim()).filter(Boolean).slice(0, 30); } catch {}
+      try { info.headings = [...d.querySelectorAll('h1,h2,h3')].map((h) => (h.textContent || '').trim()).filter(Boolean).slice(0, 20); } catch {}
     }
     diag.push(info);
     return info;
   }
 
+  // offscreen-iframe scrollen, damit per IntersectionObserver lazy gemountete
+  // Abschnitte (z.B. „Persönliche Details") tatsächlich rendern
+  async function scrollFrameThrough() {
+    try {
+      const w = theFrame().contentWindow, d = theFrame().contentDocument;
+      if (!w || !d) return;
+      const h = Math.max(d.body ? d.body.scrollHeight : 0, 4000);
+      for (let y = 0; y <= h; y += 500) { w.scrollTo(0, y); await sleep(120); }
+      w.scrollTo(0, h); await sleep(300);
+    } catch {}
+  }
   async function readDisplayUrl(url) {
     await loadFrame(url);
     const t0 = now();
     let doc = null;
-    while (now() - t0 < 20000) {
+    const match = (d) => d && [...d.querySelectorAll('label')].some((l) => FIELD_BY_LABEL[(l.textContent || '').trim().toLowerCase()]);
+    while (now() - t0 < 24000) {
       try { doc = theFrame().contentDocument; } catch { doc = null; }
-      // warten, bis mindestens ein bekanntes Detail-Label da ist
-      if (doc && [...doc.querySelectorAll('label')].some((l) => FIELD_BY_LABEL[(l.textContent || '').trim().toLowerCase()])) break;
+      await scrollFrameThrough();          // lazy-Abschnitte erzwingen
+      if (match(doc)) break;
       await sleep(400);
     }
     snapFrame('display', url);
@@ -290,8 +304,9 @@
       const s = item && item.querySelector('.ant-select-selection-item');
       return s ? (s.getAttribute('title') || s.textContent || '').trim() : '';
     };
-    while (now() - t0 < 22000) {
+    while (now() - t0 < 24000) {
       try { doc = theFrame().contentDocument; } catch { doc = null; }
+      await scrollFrameThrough();
       if (doc) {
         const labs = [...doc.querySelectorAll('label[for]')].filter((l) => known.has(l.getAttribute('for')));
         if (labs.length && labs.some((l) => selText(l))) break;   // Werte sind hydriert
