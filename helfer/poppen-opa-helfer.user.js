@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.3.1
+// @version      1.3.2
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.3.1';
+  const VERSION = '1.3.2';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -462,6 +462,16 @@
     const v = tr[f];
     return Array.isArray(v) ? (v.find((x) => x != null && x !== 0) ?? null) : v;
   }
+  // Eindeutiger Einzel-Code: Skalar, oder Array mit genau EINEM Nicht-Null-Wert
+  // (Paare mit zwei belegten Werten je Feld sind mehrdeutig -> null -> überspringen).
+  function singleCode(tr, f) {
+    if (!tr || tr[f] == null) return null;
+    const v = tr[f];
+    if (!Array.isArray(v)) return v;
+    const nz = v.filter((x) => x != null);
+    return nz.length === 1 ? nz[0] : null;
+  }
+  const paarDiag = [];
 
   const mapCount = () => Object.values(mapping).reduce((a, m) => a + Object.keys(m).length, 0);
 
@@ -515,18 +525,25 @@
           status(`Alter ${age} · Profil ${read} · ${nick} · ${mapCount()} Werte · ${noNew} ohne Neues`);
           const info = await userInfo(nick); const tr = info && info.user_trait;
           noteTrait(tr);
-          let newHere = false;
-          // nur Einzelprofile zum Paaren (Paar-Arrays sind mehrdeutig); Codes zählen trotzdem
-          if (isSingleTrait(tr)) {
-            const need = unresolved();
-            if (need.length) {
+          let newHere = false, readPage = false;
+          const need = unresolved();
+          if (need.length) {
+            // Profilseite nur lesen, wenn dieses Profil für ein offenes Feld
+            // überhaupt einen eindeutigen Einzel-Code hat (sonst spart man den Besuch).
+            if (need.some((f) => singleCode(tr, f) != null && String(singleCode(tr, f)) !== '0')) {
+              readPage = true;
               const pg = await readProfileDetails(nick).catch(() => ({}));
-              for (const f of need) { const code = scalarCode(tr, f); const label = pg[f]; if (code != null && label) if (addMap(f, code, label)) newHere = true; }
+              for (const f of need) {
+                const code = singleCode(tr, f);
+                const label = pg[f];
+                if (code != null && String(code) !== '0' && label) if (addMap(f, code, label)) newHere = true;
+              }
+              if (paarDiag.length < 10) paarDiag.push({ nick, seiten_felder: Object.keys(pg).length, neu: newHere });
             }
           }
           if (newHere) noNew = 0; else noNew++;
           if (noNew >= STOP_STREAK) { stop = true; status(`${STOP_STREAK} Profile ohne neuen Wert – Stopp.`); break outer; }
-          await sleep(isSingleTrait(tr) ? 600 : 200);
+          await sleep(readPage ? 600 : 150);
         }
         if (!d.next_page || d.next_page === page) break;
         page = d.next_page;
@@ -540,7 +557,7 @@
 
     const fertig = { version: VERSION, at: new Date().toISOString(), quelle: 'Alle-Geschlechter-Suche', suchraum: probeRes.chosen.name, profile_gelesen: read, bis_alter: lastAge,
       werte: mapping, beobachtete_codes: Object.fromEntries(Object.entries(seenCodes).map(([k, v]) => [k, [...v]])),
-      offene_felder: unresolved(), alter_99: age99, such_probe: probeRes.probe, fehler: errors };
+      offene_felder: unresolved(), alter_99: age99, such_probe: probeRes.probe, paar_diag: paarDiag, fehler: errors };
     download(`poppen-helfer-roh-${stamp()}.json`, JSON.stringify(Recorder.export(), null, 2));
     download(`poppen-helfer-zuordnung-${stamp()}.json`, JSON.stringify(fertig, null, 2));
 
