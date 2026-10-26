@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.2.1';
+  const VERSION = '1.2.2';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -222,27 +222,39 @@
   function loadFrame(url) {
     return new Promise((resolve) => { const f = theFrame(); const done = () => { f.removeEventListener('load', done); resolve(); }; f.addEventListener('load', done); f.src = url; setTimeout(done, 25000); });
   }
+  // Detail-Block der Profilanzeige: <label>Figur</label><div><div>Normal</div></div>
+  // Klassennamen sind zufällig (styled-components) -> nur über den Label-Text gehen.
+  function readDetailsFrom(doc) {
+    const out = {};
+    for (const lab of doc.querySelectorAll('label')) {
+      const key = (lab.textContent || '').trim().toLowerCase();
+      const field = FIELD_BY_LABEL[key];
+      const v = lab.nextElementSibling;
+      if (!field || !v) continue;
+      const txt = (v.textContent || '').trim();
+      if (txt) out[field] = txt;
+    }
+    return out;
+  }
   async function readProfileDetails(nick) {
     await loadFrame(location.origin + '/p/' + encodeURIComponent(String(nick).toLowerCase()));
     const t0 = now();
     let doc = null;
     while (now() - t0 < 20000) {
       try { doc = theFrame().contentDocument; } catch { doc = null; }
-      if (doc && [...doc.querySelectorAll('h2')].some((h) => /Persönliche Details/i.test(h.textContent))) break;
+      // warten, bis mindestens ein bekanntes Detail-Label da ist
+      if (doc && [...doc.querySelectorAll('label')].some((l) => FIELD_BY_LABEL[(l.textContent || '').trim().toLowerCase()])) break;
       await sleep(400);
     }
     if (!doc) return {};
-    const h = [...doc.querySelectorAll('h2')].find((x) => /Persönliche Details/i.test(x.textContent));
-    if (!h) return {};
-    let sec = h; for (let i = 0; i < 6 && sec.parentElement; i++, sec = sec.parentElement) if (sec.querySelector('label')) break;
-    const more = [...sec.querySelectorAll('button')].find((b) => /mehr anzeigen/i.test(b.textContent)); if (more) { more.click(); await sleep(700); }
-    const out = {};
-    for (const lab of sec.querySelectorAll('label')) {
-      const key = (lab.textContent || '').trim().toLowerCase(); const field = FIELD_BY_LABEL[key];
-      const v = lab.nextElementSibling; if (!field || !v) continue;
-      out[field] = (v.textContent || '').trim();
+    // etwaige „mehr anzeigen"-Schalter aufklappen (auch mehrere / Paar-Abschnitt)
+    for (let r = 0; r < 3; r++) {
+      const more = [...doc.querySelectorAll('button,a,span')].filter((b) => /mehr anzeigen|alle anzeigen|mehr details/i.test((b.textContent || '').trim()));
+      if (!more.length) break;
+      more.forEach((b) => { try { b.click(); } catch {} });
+      await sleep(600);
     }
-    return out;
+    return readDetailsFrom(doc);
   }
 
   // Sichtbarkeit (wio/state) für die offenen Profilbesuche
