@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.14
+// @version      2.15
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -27,7 +27,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.14';
+  const VERSION = '2.15';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -6208,6 +6208,87 @@
   }
 
   // =====================================================================================
+  // „Meine Freunde“ – Abschnitt auf /my/profile (über „Popsters in der Nähe“) und Menüeintrag „Entdecken“
+  //  Die Freundesliste von poppen.de ist gut versteckt; Quelle ist friends/list.
+  // =====================================================================================
+  const FRIENDS_URL = '/friends/1';
+  const FRIENDS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path d="M8.5 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7m0 2c-3 0-7 1.5-7 4.5V20h14v-2.5c0-3-4-4.5-7-4.5m8.5-2a3 3 0 1 0 0-6 3 3 0 0 0 0 6m0 2c-.6 0-1.2.07-1.74.2 1.3.9 2.24 2.1 2.24 3.8V20h6v-2.5c0-2.6-3.3-3.5-6.5-3.5"/></svg>';
+
+  // oberste Section (Container) zu einer Überschrift im Hauptbereich finden
+  function sectionOf(h) {
+    const main = document.querySelector('main');
+    let s = h;
+    while (s.parentElement && s.parentElement !== main && !s.parentElement.matches('.Hg9Kid, main')) s = s.parentElement;
+    return s;
+  }
+
+  async function friendsProfileSection() {
+    if (location.pathname !== '/my/profile') return;
+    if (document.getElementById('vaf-friends-sec')) return;
+    const h2 = [...document.querySelectorAll('main h2')].find((h) => /Popsters in der N/i.test(h.textContent));
+    if (!h2) return;
+    const near = sectionOf(h2);
+    const anchor0 = near.querySelector('a[href^="/p/"]');
+    if (!anchor0) return;                      // Raster-Vorlage noch nicht da
+    const itemTpl = anchor0.parentElement;     // .xJwT0p
+    const container = itemTpl.parentElement;   // .VBQs6B
+
+    let friends = [];
+    try { const d = await apiPost('friends/list', { sort: 'online', page: 1 }); friends = ((d && d.users) || []).map(normUser).filter(Boolean).slice(0, 8); }
+    catch (e) { warn('Freunde', e); return; }
+
+    const sec = near.cloneNode(true);
+    sec.id = 'vaf-friends-sec';
+    const secH2 = sec.querySelector('h2');
+    if (secH2) secH2.innerHTML = `<a href="${FRIENDS_URL}" class="df-link-inherit" style="color:inherit">Meine Freunde</a>`;
+    const secAnchor0 = sec.querySelector('a[href^="/p/"]');
+    const secItemTpl = secAnchor0.parentElement;
+    const secContainer = secItemTpl.parentElement;
+    const blank = secItemTpl.cloneNode(true);
+    secContainer.innerHTML = '';
+    if (!friends.length) {
+      const note = document.createElement('div');
+      note.style.cssText = 'color:#a6a6a6;padding:4px 0';
+      note.textContent = 'Noch keine Freunde.';
+      secContainer.appendChild(note);
+    }
+    for (const u of friends) {
+      const it = blank.cloneNode(true);
+      const a = it.querySelector('a'); const img = it.querySelector('img');
+      if (a) a.setAttribute('href', pathOfName(u.nick));
+      if (img) { img.setAttribute('src', u.avatar || ''); img.setAttribute('alt', u.nick || ''); }
+      secContainer.appendChild(it);
+    }
+    near.before(sec);
+  }
+
+  // Link „Freunde“ vor „Sparks“ im Entdecken-Dropdown (global, auf jeder Seite)
+  function discoverMenuLink() {
+    const labels = document.querySelectorAll('a [data-type="label"], a[data-type]');
+    let sparks = null;
+    for (const el of document.querySelectorAll('a')) {
+      const lab = el.querySelector('[data-type="label"]');
+      if (lab && norm(lab.textContent) === 'sparks') { sparks = el; break; }
+    }
+    if (!sparks) return;
+    // schon vorhanden?
+    if (sparks.previousElementSibling && sparks.previousElementSibling.id === 'vaf-discover-friends') return;
+    const a = sparks.cloneNode(true);
+    a.id = 'vaf-discover-friends';
+    a.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
+    a.setAttribute('href', FRIENDS_URL);
+    const lab = a.querySelector('[data-type="label"]'); if (lab) lab.textContent = 'Freunde';
+    const ic = a.querySelector('[data-type="icon"]'); if (ic) ic.innerHTML = FRIENDS_ICON;
+    const badge = a.querySelector('[data-type="badge"]'); if (badge) badge.remove();
+    sparks.before(a);
+  }
+
+  function friendsUi() {
+    try { discoverMenuLink(); } catch (e) { warn('Entdecken-Menü', e); }
+    friendsProfileSection().catch((e) => warn('Meine Freunde', e));
+  }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
@@ -6221,6 +6302,7 @@
     try { messengerTerms(); } catch (e) { warn('Termine', e); }
     try { templateUi(); } catch (e) { warn('Textvorlagen', e); }
     try { privacyBlockersUi(); } catch (e) { warn('Blockierende Popsters', e); }
+    friendsUi();
     if (/^\/p\/[^/]+\/?$/.test(location.pathname)) {
       blockedProfileUi().catch((e) => warn('Geblocktes Profil', e));
       profilePage().catch((e) => warn('Profil', e));
@@ -6304,7 +6386,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

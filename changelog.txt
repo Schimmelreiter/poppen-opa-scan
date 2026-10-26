@@ -6,6 +6,10 @@ Neueste Version oben.
 - Gruppen (Whitelist): Besitzer und Moderatoren aller eigenen Gruppen kommen auf die Whitelist (vom Opa-Schutz Blockierte werden entsperrt)
 - Mitglieder verwalteter Gruppen nur noch auf der Whitelist, wenn du die Gruppe allein leitest (als Moderator nie, als Besitzer ohne weitere Moderatoren; Zweitprofile zählen nicht); sonst werden die Einträge sofort entfernt und die Mitglieder nach den Regeln geprüft
 
+2.15 (26.10.2026)
+- Abschnitt „Meine Freunde“ auf /my/profile über „Popsters in der Nähe“ (bis zu 8 Freunde, Überschrift verlinkt die Freundesliste /friends/1)
+- Menü „Entdecken“: neuer Eintrag „Freunde“ (→ /friends/1) vor „Sparks“, auf jeder Seite
+
 2.14 (25.10.2026)
 - Eigene Ansicht „Blockierende Popsters“ unter /setting/privacy/home (Aufruf über #blockierer, nicht änderbar): Liste im Stil der Gruppen-Mitgliederseite, ohne Mülleimer; bekannte Mitglieder mit Bild, Name (Link zum Profil) und „Geschlecht · Alter · Ort“, sonst Platzhalter mit der ID
 - Menüeintrag „Blockierende Popsters“ (Beschreibung „Popsters, die mich ignorieren“) auf der Datenschutz-Seite direkt über „Wer kann was sehen“
