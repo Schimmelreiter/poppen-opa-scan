@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Opa-Schutz Helfer (Werte-Erfassung)
 // @namespace    local.visitor-age-filter.helfer
-// @version      1.5.0
+// @version      1.6.1
 // @description  Einmalige Erfassung aller user/info-Werte (Code→Klartext) für den Opa-Schutz und Untersuchung von Alter 99. Labels gibt es nur auf der Profilseite, daher wird dafür unsichtbar offen gelesen. Eigenständig mit eigenem Rekorder – das Hauptscript währenddessen bitte deaktivieren.
 // @match        https://www.poppen.de/*
 // @grant        GM_getValue
@@ -15,7 +15,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '1.5.0';
+  const VERSION = '1.6.1';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   if (W.top !== W) return;                 // nur im Hauptfenster
   if (!/(^|\.)poppen\.de$/.test(location.hostname)) return;
@@ -167,6 +167,7 @@
   // mapping: field -> { code: label }ß   ;   seen: field -> Set(codes)
   const mapping = G.get('mapping', {});
   const seenCodes = {};
+  const editReadDone = new Set();   // Felder, die diesen Lauf schon von der Bearbeiten-Seite gelesen wurden
   function addMap(field, code, label) {
     if (code == null || code === '' || label == null || label === '') return false;
     code = String(code); label = String(label).trim();
@@ -551,18 +552,27 @@
     await sleep(350);
     const dd = [...doc.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')].pop();
     if (dd) {
-      const holder = dd.querySelector('.ant-select-dropdown-list-holder') || dd.querySelector('.rc-virtual-list-holder') || dd;
+      // Virtualisierte antd-Liste: nur ein Fenster um den aktuellen Wert ist gerendert.
+      // Deshalb explizit von ganz oben bis ganz unten durchscrollen und bei jedem Schritt einsammeln.
+      const scroller = dd.querySelector('.rc-virtual-list-holder') || dd.querySelector('.ant-select-dropdown-list-holder') || dd;
       const collect = () => { for (const o of dd.querySelectorAll('[role="option"]')) { const code = (o.textContent || '').trim(); const label = (o.getAttribute('aria-label') || '').trim(); if (/^\d+$/.test(code) && label) out[code] = label; } };
-      collect();
-      let stable = 0;
-      for (let step = 0; step < 80 && stable < 6; step++) {
-        const before = Object.keys(out).length;
-        try { holder.dispatchEvent(new WheelEvent('wheel', { deltaY: 220, bubbles: true, cancelable: true })); } catch {}
-        try { holder.scrollTop += 220; } catch {}
-        await sleep(70);
-        collect();
-        stable = Object.keys(out).length > before ? 0 : stable + 1;
+      try { scroller.scrollTop = 0; } catch {}
+      await sleep(70); collect();
+      let stall = 0;
+      for (let step = 0; step < 200 && stall < 4; step++) {
+        const beforeN = Object.keys(out).length;
+        const prevTop = scroller.scrollTop;
+        const stepPx = Math.max(80, (scroller.clientHeight || 220) - 40);
+        try { scroller.scrollTop = prevTop + stepPx; } catch {}
+        try { scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: stepPx, bubbles: true, cancelable: true })); } catch {}
+        await sleep(60); collect();
+        const atEnd = (scroller.scrollHeight - scroller.scrollTop - (scroller.clientHeight || 0)) <= 2;
+        const moved = scroller.scrollTop !== prevTop;
+        if (!moved && Object.keys(out).length === beforeN) stall++; else stall = 0;
+        if (atEnd) { await sleep(70); collect(); break; }
       }
+      // zur Sicherheit auch das letzte sichtbare Option-Element in den Blick holen
+      try { const opts = dd.querySelectorAll('[role="option"]'); if (opts.length) { opts[opts.length - 1].scrollIntoView({ block: 'end' }); await sleep(60); collect(); } } catch {}
     }
     // schließen
     try { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true })); } catch {}
@@ -579,17 +589,18 @@
     if (!doc) return diag;
     const win = theFrame().contentWindow;
     for (const F of WANT) {
-      if (mapping[F] && Object.keys(mapping[F]).length >= 2) continue;   // schon (fast) vollständig
+      if (editReadDone.has(F)) continue;   // jedes Feld genau einmal von der Bearbeiten-Seite auslesen
       const lab = doc.querySelector('label[for="' + F + '"]');
-      if (!lab) { diag.push({ f: F, gefunden: false }); continue; }
+      if (!lab) { diag.push({ f: F, gefunden: false }); continue; }   // nicht auf diesem Reiter -> nächster Reiter probiert erneut
       phase('Bearbeiten-Dropdown: ' + F);
       const opts = await readOneSelect(doc, win, lab).catch(() => ({}));
       let n = 0;
       for (const [code, label] of Object.entries(opts)) {
         if (code === '0' || PLACE.test(label)) continue;
         (seenCodes[F] = seenCodes[F] || new Set()).add(code);
-        if (addMap(F, code, label)) n++;
+        if (addMap(F, code, label)) n++;   // überschreibt auch vorhandene Labels mit dem exakten poppen-Text
       }
+      editReadDone.add(F);
       diag.push({ f: F, gelesen: Object.keys(opts).length, neu: n });
     }
     return diag;
@@ -606,7 +617,7 @@
     // 1) Bearbeiten-Seite(n): komplette Optionslisten aller Felder direkt auslesen
     const editDiag = [];
     for (const url of ['/setting/profile/personals', '/setting/profile/preferences', '/setting/profile/sexual']) {
-      if (unresolvedOrEmpty().length === 0) break;
+      if (WANT.every((f) => editReadDone.has(f))) break;
       try { editDiag.push(...await readEditDropdowns(location.origin + url, status)); } catch (e) { warn('Edit-Dropdowns ' + url, e); }
     }
 

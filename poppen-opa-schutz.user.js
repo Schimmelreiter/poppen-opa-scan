@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.20
+// @version      2.25
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.20';
+  const VERSION = '2.25';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -707,7 +707,7 @@
         });
       },
       async stats() { await load(); const v = Object.values(data); return { total: v.length, fresh: v.filter((x) => !x.known).length }; },
-      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); return { version: VERSION, at: new Date().toISOString(), entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
+      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} return { version: VERSION, at: new Date().toISOString(), valuemap, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
       async clear() { data = {}; await KV.set('recorder', {}); Bus.emit('recorder'); },
     };
   })();
@@ -1679,6 +1679,7 @@
     if (!ui || !/^\d+$/.test(String(ui.uid || ''))) return null;
     const m = await seen({ uid: ui.uid, nickname: ui.nickname, gender: Array.isArray(tr && tr.gender) ? tr.gender : [ui.gender], age: ui.age, avatar: ui.avatar, payclass: ui.userClass }, 'Profil', { images: false });
     if (!m || !tr) return m;
+    try { grNoteUnknownCodes(tr); } catch {}   // neue/unbekannte Profil-Codes nebenbei erfassen (Punkt 18)
     const g = Array.isArray(tr.gender) ? tr.gender : [];
     const h = +((tr.size || [])[0] || 0), w = +((tr.weight || [])[0] || 0);
     if (g.length <= 1 && h >= 120 && h <= 230 && w >= 30 && w <= 350) {
@@ -4095,6 +4096,7 @@
           if (d.verdict === 'accept' || d.verdict === 'reject') {
             cur.textContent = `${i}/${reqs.length}: ${r.name} – ${d.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`;
             const out = await decideRequest(r.name, d.verdict === 'accept');
+            if (out === 'ok') await grWriteDecisionNote(cms, r.name, d.verdict, d.reason, r.note).catch(() => {});
             if (out !== 'ok' && out !== 'Test') { res.verdict = 'fail'; res.reason = out.replace(/^Fehlschlag: /, ''); }
           }
         }
@@ -6583,42 +6585,62 @@
   const GR_GENDERS = [['m', 'Mann'], ['w', 'Frau'], ['p', 'Paar'], ['ts', 'Trans'], ['tv', 'Nicht-binär']];
   const grGenderName = (g) => (GR_GENDERS.find((x) => x[0] === g) || [, g])[1];
 
+  const SEARCHING_VALS = [['1', 'One night stand'], ['2', 'Freundschaft'], ['3', 'Partnertausch'], ['4', 'Fototausch'], ['5', 'Freundschaft +'], ['6', 'Partnerschaft'], ['7', 'Affäre'], ['8', 'Clubbesuche'], ['9', 'Cybersex'], ['10', 'Dom/Sub']];
+  // Reihenfolge der Herkunfts-Blöcke im Feld-Dropdown (optgroup-Trenner, nicht anklickbar).
+  const GR_GROUP_ORDER = ['Über mich', 'Steht auf', 'Sucht nach', 'Status & Listen'];
+
   // Feldkatalog. sex: Feld gilt nur für diese Person im Paar (m=Mann, w=Frau). type: num|enum|country|lang|bool.
+  // group: Herkunfts-Block. Innerhalb eines Blocks wird im Dropdown alphabetisch sortiert.
   const GR_FIELDS = [
-    { key: 'age', label: 'Alter', type: 'num', trait: 'age', min: 18, max: 99 },
-    { key: 'size', label: 'Größe', type: 'num', trait: 'size', min: 130, max: 220, unit: 'cm' },
-    { key: 'weight', label: 'Gewicht', type: 'num', trait: 'weight', min: 0, max: 300, unit: 'kg' },
-    { key: 'dick_length', label: 'Penislänge', type: 'num', trait: 'dick_length', min: 0, max: 40, unit: 'cm', sex: 'm' },
-    { key: 'dick_width', label: 'Penisdicke', type: 'num', trait: 'dick_width', min: 0, max: 20, unit: 'cm', sex: 'm' },
-    { key: 'photos', label: 'Fotos (Anzahl)', type: 'num', derived: 'photos', min: 0, max: 50 },
-    { key: 'ethnicity', label: 'Typ', type: 'enum', trait: 'ethnicity' },
-    { key: 'figure_name', label: 'Figur', type: 'enum', trait: 'figure_name' },
-    { key: 'sex_type', label: 'Sexualität', type: 'enum', trait: 'sex_type' },
-    { key: 'hair', label: 'Haarfarbe', type: 'enum', trait: 'hair' },
-    { key: 'hair_length', label: 'Haarlänge', type: 'enum', trait: 'hair_length' },
-    { key: 'eyes_name', label: 'Augenfarbe', type: 'enum', trait: 'eyes_name' },
-    { key: 'beard', label: 'Bart', type: 'enum', trait: 'beard', sex: 'm' },
-    { key: 'body_hair', label: 'Körperbehaarung', type: 'enum', trait: 'body_hair' },
-    { key: 'intimately_hair', label: 'Intimbehaarung', type: 'enum', trait: 'intimately_hair' },
-    { key: 'tits', label: 'Körbchengröße', type: 'enum', trait: 'tits', sex: 'w' },
-    { key: 'circumcised', label: 'Beschnitten', type: 'enum', trait: 'circumcised', sex: 'm' },
-    { key: 'glass', label: 'Brille', type: 'enum', trait: 'glass' },
-    { key: 'smoker', label: 'Raucher', type: 'enum', trait: 'smoker' },
-    { key: 'tattoo', label: 'Tätowierungen', type: 'enum', trait: 'tattoo' },
-    { key: 'piercing', label: 'Piercings', type: 'enum', trait: 'piercing' },
-    { key: 'zodiac', label: 'Sternzeichen', type: 'enum', trait: 'zodiac' },
-    { key: 'origin', label: 'Herkunft', type: 'country', trait: 'origin' },
-    { key: 'spoken_language', label: 'Sprachen', type: 'lang', trait: 'spoken_language' },
-    { key: 'verified', label: 'Verifiziert', type: 'bool', derived: 'verified' },
-    { key: 'hasphoto', label: 'Hat Fotos', type: 'bool', derived: 'hasphoto' },
-    // Beziehung / eigene Listen – alle auf den Kandidaten bezogen
-    { key: 'relationship', label: 'Beziehungsstatus', type: 'enum', ctxKey: 'relCats', relDyn: true },
-    { key: 'single', label: 'Single', type: 'bool', derived: 'single' },
-    { key: 'fickliste', label: 'Fickliste-Status', type: 'enum', ctxKey: 'fickArr', vals: [['1', 'Will ich'], ['2', 'Gefickt'], ['3', 'Nein, danke!'], ['4', 'Nie wieder!']] },
-    { key: 'ignoriert', label: 'Von mir ignoriert', type: 'bool', derived: 'ign' },
-    { key: 'ignoriert_mich', label: 'Ignoriert mich', type: 'bool', derived: 'ignByHim' },
-    { key: 'whitelist', label: 'Auf meiner Whitelist', type: 'bool', derived: 'white' },
+    { key: 'age', label: 'Alter', type: 'num', trait: 'age', min: 18, max: 99, group: 'Über mich' },
+    { key: 'size', label: 'Größe', type: 'num', trait: 'size', min: 130, max: 220, unit: 'cm', group: 'Über mich' },
+    { key: 'weight', label: 'Gewicht', type: 'num', trait: 'weight', min: 0, max: 300, unit: 'kg', group: 'Über mich' },
+    { key: 'dick_length', label: 'Penislänge', type: 'num', trait: 'dick_length', min: 0, max: 40, unit: 'cm', sex: 'm', group: 'Über mich' },
+    { key: 'dick_width', label: 'Penisdicke', type: 'num', trait: 'dick_width', min: 0, max: 20, unit: 'cm', sex: 'm', group: 'Über mich' },
+    { key: 'ethnicity', label: 'Ethnische Zugehörigkeit', type: 'enum', trait: 'ethnicity', group: 'Über mich' },
+    { key: 'figure_name', label: 'Figur', type: 'enum', trait: 'figure_name', group: 'Über mich' },
+    { key: 'sex_type', label: 'Sexualität', type: 'enum', trait: 'sex_type', group: 'Über mich' },
+    { key: 'hair', label: 'Haarfarbe', type: 'enum', trait: 'hair', group: 'Über mich' },
+    { key: 'hair_length', label: 'Haarlänge', type: 'enum', trait: 'hair_length', group: 'Über mich' },
+    { key: 'eyes_name', label: 'Augenfarbe', type: 'enum', trait: 'eyes_name', group: 'Über mich' },
+    { key: 'beard', label: 'Bart', type: 'enum', trait: 'beard', sex: 'm', group: 'Über mich' },
+    { key: 'body_hair', label: 'Körperbehaarung', type: 'enum', trait: 'body_hair', group: 'Über mich' },
+    { key: 'intimately_hair', label: 'Intimbehaarung', type: 'enum', trait: 'intimately_hair', group: 'Über mich' },
+    { key: 'tits', label: 'Körbchengröße', type: 'enum', trait: 'tits', sex: 'w', group: 'Über mich' },
+    { key: 'circumcised', label: 'Beschnitten', type: 'enum', trait: 'circumcised', sex: 'm', group: 'Über mich' },
+    { key: 'glass', label: 'Brille', type: 'enum', trait: 'glass', group: 'Über mich' },
+    { key: 'smoker', label: 'Raucher', type: 'enum', trait: 'smoker', group: 'Über mich' },
+    { key: 'tattoo', label: 'Tätowierungen', type: 'enum', trait: 'tattoo', group: 'Über mich' },
+    { key: 'piercing', label: 'Piercings', type: 'enum', trait: 'piercing', group: 'Über mich' },
+    { key: 'zodiac', label: 'Sternzeichen', type: 'enum', trait: 'zodiac', group: 'Über mich' },
+    { key: 'origin', label: 'Herkunft', type: 'country', trait: 'origin', group: 'Über mich' },
+    { key: 'spoken_language', label: 'Sprachen', type: 'lang', trait: 'spoken_language', group: 'Über mich' },
+    // „Steht auf" – aboutMe.interested (Geschlechter, auf die der Kandidat steht)
+    { key: 'interested', label: 'Steht auf', type: 'enum', ctxKey: 'interested', group: 'Steht auf', vals: [['m', 'Männer'], ['w', 'Frauen'], ['p', 'Paare'], ['ts', 'Trans'], ['tv', 'Nicht-binär']] },
+    // „Sucht nach" – aboutMe.lookingFor (Suchinteressen)
+    { key: 'lookingfor', label: 'Sucht nach', type: 'enum', ctxKey: 'lookingForCodes', group: 'Sucht nach', vals: SEARCHING_VALS },
+    // Status / eigene Listen – alle auf den Kandidaten bezogen
+    { key: 'verified', label: 'Verifiziert', type: 'bool', derived: 'verified', group: 'Status & Listen' },
+    { key: 'hasphoto', label: 'Hat Fotos', type: 'bool', derived: 'hasphoto', group: 'Status & Listen' },
+    { key: 'photos', label: 'Fotos (Anzahl)', type: 'num', derived: 'photos', min: 0, max: 50, group: 'Status & Listen' },
+    { key: 'relationship', label: 'Beziehungsstatus', type: 'enum', ctxKey: 'relCats', relDyn: true, group: 'Status & Listen' },
+    { key: 'single', label: 'Single', type: 'bool', derived: 'single', group: 'Status & Listen' },
+    { key: 'fickliste', label: 'Fickliste-Status', type: 'enum', ctxKey: 'fickArr', group: 'Status & Listen', vals: [['1', 'Will ich'], ['2', 'Gefickt'], ['3', 'Nein, danke!'], ['4', 'Nie wieder!']] },
+    { key: 'ignoriert', label: 'Von mir ignoriert', type: 'bool', derived: 'ign', group: 'Status & Listen' },
+    { key: 'ignoriert_mich', label: 'Ignoriert mich', type: 'bool', derived: 'ignByHim', group: 'Status & Listen' },
+    { key: 'whitelist', label: 'Auf meiner Whitelist', type: 'bool', derived: 'white', group: 'Status & Listen' },
   ];
+  // Feld-Dropdown nach Herkunfts-Blöcken, innerhalb alphabetisch, mit optgroup-Trennern.
+  function grFieldOptionsHtml(fields, selected) {
+    const byG = {};
+    for (const f of fields) { const g = f.group || 'Weitere'; (byG[g] = byG[g] || []).push(f); }
+    const order = [...GR_GROUP_ORDER.filter((g) => byG[g]), ...Object.keys(byG).filter((g) => !GR_GROUP_ORDER.includes(g))];
+    return order.map((g) => {
+      const opts = byG[g].slice().sort((a, b) => a.label.localeCompare(b.label, 'de'))
+        .map((f) => `<option value="${f.key}"${f.key === selected ? ' selected' : ''}>${esc(f.label)}</option>`).join('');
+      return `<optgroup label="${esc(g)}">${opts}</optgroup>`;
+    }).join('');
+  }
   const grField = (k) => GR_FIELDS.find((f) => f.key === k);
   // in einem Block für Geschlecht g verfügbare Felder
   function grFieldsFor(g) {
@@ -6650,29 +6672,17 @@
       try { const d = await apiPost('user/list/relationship', null); const list = ((d && d.category) || []).map((c) => [String(c.title), c.title]).filter((x) => x[0]); if (list.length) return (GR_OPTS_CACHE.rel = list); } catch {}
       return null;
     }
-    if (field.key === 'ethnicity') { const m = await ethnicityMap().catch(() => null); return m ? Object.entries(m).map(([c, n]) => [c, n]) : null; }
     if (field.type === 'lang') return Object.entries(LANG_DE).map(([c, n]) => [c, n]);
     if (field.type === 'country') {
       if (GR_OPTS_CACHE.country) return GR_OPTS_CACHE.country;
       try { const d = await apiGet('geo/country/all', { _version: 2 }); const list = ((d && (d.list || d.countries || d)) || []).map((c) => [String(c.iso || c.code || c.country_iso || c.id), c.name || c.country_name || c.iso]).filter((x) => x[0]); if (list.length) return (GR_OPTS_CACHE.country = list); } catch {}
       return [['DE', 'Deutschland'], ['AT', 'Österreich'], ['CH', 'Schweiz']];
     }
-    // vom Helfer importierte Zuordnung (Code→Klartext), falls vorhanden – füllt die Enum-Dropdowns
-    const vmap = (G.get('gr_valuemap', {}) || {})[field.trait];
-    if (vmap && typeof vmap === 'object' && Object.keys(vmap).length) return Object.entries(vmap).map(([c, n]) => [c, n]);
-    // sonstige enum: aus i18n ziehen, Schlüssel <trait>.<code>
-    if (GR_OPTS_CACHE[field.key]) return GR_OPTS_CACHE[field.key];
-    const alt = { figure_name: 'figure', eyes_name: 'eyes', sex_type: 'sex_type', hair_length: 'hair_length', body_hair: 'body_hair', intimately_hair: 'intimately_hair' };
-    const keys = [field.trait, alt[field.key]].filter(Boolean);
-    const map = {};
-    for (const module of ['profile', 'user', 'personal-detail', 'search', 'setting', 'common']) {
-      let d = null; try { d = await apiPost('i18n/pull', { locale: 'de-DE', module }); } catch { continue; }
-      if (!d || typeof d !== 'object') continue;
-      for (const [k, v] of Object.entries(d)) { const mm = new RegExp('^(' + keys.join('|') + ')[._-](\\d+)$', 'i').exec(k); if (mm && typeof v === 'string') map[mm[2]] = v; }
-      if (Object.keys(map).length) break;
-    }
-    const list = Object.entries(map).map(([c, n]) => [c, n]);
-    return list.length ? (GR_OPTS_CACHE[field.key] = list) : null;
+    // Enum: deutsche Labels zur Laufzeit aus poppens i18n (gecacht), Basis sind TRAIT_I18N/SEED/GM.
+    await ensureTraitI18n().catch(() => {});
+    const seeded = grSeededList(field.trait);
+    if (seeded.length) return seeded;
+    return null;   // kein bekannter Wertebereich → Freitextfeld
   }
   async function grValueName(field, code) {
     const opts = await grOptions(field).catch(() => null);
@@ -6744,17 +6754,39 @@
     if (node.op === 'or') return (node.kids || []).some((k) => grEval(k, ctx));
     return grLeaf(node, ctx);
   }
-  // Entscheidung für einen Bewerber (ctx: { trait, verified, photos })
+  // Hauptgruppen eines Baums: bei Top-ODER jeder Zweig, sonst der Baum selbst. Jede trägt eine eigene Begründung.
+  function grMainGroups(tree) {
+    if (!tree) return [];
+    if (tree.op === 'or') return (tree.kids || []);
+    return [tree];
+  }
+  // Entscheidung für einen Bewerber (ctx: { trait, verified, photos }). Liefert verdict + Begründung der treffenden Hauptgruppe.
   function grDecide(cms, ctx, rules) {
     const g = genderCode(ctx.trait && ctx.trait.gender);
     const block = grBlock(cms, g, rules);
-    if (!block) return { verdict: 'manual', reason: `keine Regel für ${grGenderName(g) || 'dieses Geschlecht'}` };
-    const rej = grHasRules(block.reject) && grEval(block.reject, ctx);
-    if (rej) return { verdict: 'reject', reason: 'Regel: ablehnen' };
-    const acc = grHasRules(block.accept) && grEval(block.accept, ctx);
-    if (acc) return { verdict: 'accept', reason: 'Regel: annehmen' };
-    return { verdict: 'manual', reason: 'keine Regel trifft zu' };
+    if (!block) return { verdict: 'manual', reason: '', note: `keine Regel für ${grGenderName(g) || 'dieses Geschlecht'}` };
+    if (grHasRules(block.reject)) for (const mg of grMainGroups(block.reject)) if (grHasRules(mg) && grEval(mg, ctx)) return { verdict: 'reject', reason: (mg.reason || '').trim() };
+    if (grHasRules(block.accept)) for (const mg of grMainGroups(block.accept)) if (grHasRules(mg) && grEval(mg, ctx)) return { verdict: 'accept', reason: (mg.reason || '').trim() };
+    return { verdict: 'manual', reason: '' };
   }
+  // ---------- Entscheidungs-Notiz (Punkt 17) ----------
+  //  Format:  Angenommen|Abgelehnt in "<Gruppe>" [wegen <Begründung>] am TT.MM.JJJJ
+  //  Vorhandene Ignorier-/Whitelist-Notiz bleibt per " / " erhalten; ein altes Entscheidungs-Segment wird ersetzt.
+  const GR_DECISION_RE = /^(Angenommen|Abgelehnt) in "[^"]*"(?: wegen .+?)? am \d{1,2}\.\d{1,2}\.\d{4}$/;
+  function grDecisionNoteText(cms, verdict, reason, existingNote) {
+    const gname = (G.get('groupnames', {}) || {})[cms] || ('Gruppe ' + cms);
+    let note = `${verdict === 'accept' ? 'Angenommen' : 'Abgelehnt'} in "${gname}"`;
+    if (reason) note += ` wegen ${reason}`;
+    note += ` am ${deDate(new Date())}`;
+    const keep = String(existingNote || '').split(' / ').map((s) => s.trim()).filter((s) => s && !GR_DECISION_RE.test(s));
+    return [note, ...keep].join(' / ');
+  }
+  async function grWriteDecisionNote(cms, nick, verdict, reason, existingNote) {
+    if (!cms || !nick || (verdict !== 'accept' && verdict !== 'reject') || (typeof dry === 'function' && dry())) return;
+    try { await apiPost('group/attendee/note', { cms_id: cms, nickname: nick, note: grDecisionNoteText(cms, verdict, reason, existingNote) }, { _version: 2 }); }
+    catch (e) { warn('Gruppennotiz', nick, e); }
+  }
+
   // welche Felder kommen in den Regeln eines Geschlechts vor (für die Zusatzzeile)
   function grUsedFields(cms, g, rules) {
     const block = grBlock(cms, g, rules); if (!block) return [];
@@ -6839,9 +6871,22 @@
 
   function grEl(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
 
+  // Begründungs-Zeile (optional). Wird in die Gruppen-Notiz übernommen: … [wegen <Begründung>] …
+  // Kein onChange beim Tippen (würde den Editor neu rendern und den Fokus verlieren) – node.reason wird direkt gesetzt.
+  function grReasonRow(node) {
+    const row = grEl('div', 'vaf-gr-reason');
+    row.appendChild(grEl('span', 'vaf-gr-rlbl', 'Begründung'));
+    const i = grEl('input', 'vaf-gr-rin'); i.type = 'text'; i.placeholder = 'optional, z. B. Weißbrot';
+    i.value = node.reason || '';
+    i.addEventListener('input', () => { node.reason = i.value; });
+    row.appendChild(i);
+    return row;
+  }
+
   // einen Baum (node) rekursiv rendern; onChange nach jeder Änderung; g = Geschlecht des Blocks
   function grRenderNode(node, g, onChange, depth) {
     const box = grEl('div', 'vaf-gr-group');
+    const perBranch = depth === 0 && node.op === 'or';   // bei Top-ODER: je Zweig eine Begründung
     (node.kids || []).forEach((kid, idx) => {
       if (idx > 0) {
         const conj = grEl('div', 'vaf-gr-conj');
@@ -6854,6 +6899,7 @@
       }
       if (kid.field) box.appendChild(grRenderLeaf(kid, node, g, onChange));
       else box.appendChild(grRenderNode(kid, g, onChange, depth + 1));
+      if (perBranch) box.appendChild(grReasonRow(kid));
     });
     const add = grEl('div', 'vaf-gr-add');
     const bCond = grEl('button', 'vaf-gr-addbtn', '+ Bedingung');
@@ -6862,6 +6908,7 @@
     bGrp.addEventListener('click', () => { node.kids.push({ op: 'and', kids: [newLeaf(g)] }); onChange(); });
     add.appendChild(bCond); add.appendChild(bGrp);
     if (depth > 0) { const rm = grEl('button', 'vaf-gr-rm', '✕ Gruppe'); rm.addEventListener('click', () => { node.__remove = true; onChange(); }); add.appendChild(rm); }
+    if (depth === 0 && !perBranch) box.appendChild(grReasonRow(node));   // eine Begründung für die ganze Hauptgruppe
     box.appendChild(add);
     return box;
   }
@@ -6870,7 +6917,7 @@
     const row = grEl('div', 'vaf-gr-cond');
     const fields = grFieldsFor(g);
     const fs = grEl('select', 'vaf-gr-field');
-    fs.innerHTML = fields.map((f) => `<option value="${f.key}">${esc(f.label)}</option>`).join('');
+    fs.innerHTML = grFieldOptionsHtml(fields, leaf.field);
     fs.value = leaf.field;
     fs.addEventListener('change', () => { leaf.field = fs.value; const f = grField(leaf.field); leaf.op = GR_OPS[f.type][0][0]; leaf.value = f.type === 'num' ? (f.min || 0) : f.type === 'bool' ? true : ''; onChange(); });
     row.appendChild(fs);
@@ -6898,18 +6945,36 @@
       if (f.unit) wrap.appendChild(grEl('span', 'vaf-gr-unit', ' ' + f.unit));
       return wrap;
     }
+    // Pills im poppen-Stil statt Dropdown. „ist eine von" + Sprachen = Mehrfachauswahl (ODER-verknüpft).
     const multi = (f.type === 'lang') || leaf.op === 'isoneof';
-    const sel = grEl('select', 'vaf-gr-vsel'); if (multi) sel.multiple = true;
-    sel.innerHTML = '<option value="">…</option>';
-    const setVal = () => { if (multi) { leaf.value = [...sel.selectedOptions].map((o) => o.value).filter(Boolean); } else leaf.value = sel.value; onChange(); };
-    sel.addEventListener('change', setVal);
-    wrap.appendChild(sel);
+    const box = grEl('div', 'vaf-gr-pills' + (multi ? ' multi' : ''));
+    const load = grEl('span', 'vaf-gr-pload', '…'); box.appendChild(load);
+    wrap.appendChild(box);
+    const curSet = () => new Set(Array.isArray(leaf.value) ? leaf.value.map(String) : (leaf.value === '' || leaf.value == null ? [] : [String(leaf.value)]));
     grOptions(f).then((opts) => {
-      if (!opts) { sel.innerHTML = ''; const i = grEl('input', 'vaf-gr-num'); i.type = 'text'; i.value = Array.isArray(leaf.value) ? leaf.value.join(',') : (leaf.value || ''); i.addEventListener('change', () => { leaf.value = multi ? i.value.split(',').map((s) => s.trim()).filter(Boolean) : i.value.trim(); onChange(); }); wrap.replaceChild(i, sel); return; }
-      sel.innerHTML = (multi ? '' : '<option value="">…</option>') + opts.map(([c, n]) => `<option value="${esc(String(c))}">${esc(n)}</option>`).join('');
-      const cur = Array.isArray(leaf.value) ? leaf.value.map(String) : [String(leaf.value)];
-      for (const o of sel.options) o.selected = cur.includes(o.value);
-    }).catch(() => {});
+      box.innerHTML = '';
+      if (!opts || !opts.length) {   // keine bekannten Werte → freies Eingabefeld
+        const i = grEl('input', 'vaf-gr-num'); i.type = 'text'; i.style.width = '120px';
+        i.value = Array.isArray(leaf.value) ? leaf.value.join(',') : (leaf.value || '');
+        i.addEventListener('change', () => { leaf.value = multi ? i.value.split(',').map((s) => s.trim()).filter(Boolean) : i.value.trim(); onChange(); });
+        wrap.replaceChild(i, box); return;
+      }
+      const sel = curSet();
+      const paint = () => { for (const p of box.children) p.classList.toggle('on', sel.has(p.dataset.v)); };
+      for (const [c, n, guess] of opts) {
+        const code = String(c);
+        const p = grEl('button', 'vaf-gr-pill' + (guess ? ' guess' : '')); p.type = 'button'; p.dataset.v = code;
+        p.innerHTML = esc(n) + (guess ? ' <span class="vaf-gr-warn">⚠</span>' : '');
+        if (guess) p.title = 'noch nicht gesichert';
+        p.addEventListener('click', () => {
+          if (multi) { if (sel.has(code)) sel.delete(code); else sel.add(code); leaf.value = [...sel]; }
+          else { sel.clear(); sel.add(code); leaf.value = typeof c === 'boolean' ? c : code; }
+          paint(); onChange();
+        });
+        box.appendChild(p);
+      }
+      paint();
+    }).catch(() => { box.innerHTML = ''; });
     return wrap;
   }
 
@@ -7072,13 +7137,16 @@
   }
 
   async function grProbe(name) {
-    const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '', nick: String(name), uid: '', rel: null, relCats: [] };
+    const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '', nick: String(name), uid: '', rel: null, relCats: [], interested: [], lookingForCodes: [] };
     let d;
     try { d = await apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 }); } catch (e) { out.error = e.message; return out; }
     if (!d || !d.userInfo) { out.error = 'keine Angaben'; return out; }
     const ui = d.userInfo; out.trait = d.user_trait || {};
     out.uid = String(ui.uid || (d.user_trait && d.user_trait.uid) || '');
     out.rel = d.relationship || null; out.relCats = grRelCats(out.rel);
+    const am = d.aboutMe || {};
+    out.interested = Array.isArray(am.interested) ? am.interested.map(String).filter(Boolean) : [];
+    out.lookingForCodes = Array.isArray(am.lookingFor) ? am.lookingFor.map((x) => Array.isArray(x) ? String(x[1]) : String(x)).filter(Boolean) : [];
     out.verified = /done|verifi|ok|true/i.test(String(ui.fakecheck || '')) || ui.fakecheck === true;
     out.avatar = ui.avatar || '';
     try {
@@ -7102,7 +7170,7 @@
       if (pr && pr.trait) await grEnrich(cms, pr, rules).catch(() => {});
       const ctx = pr && pr.trait ? pr : null;
       const d = ctx ? grDecide(cms, ctx, rules) : { verdict: 'manual', reason: 'keine Angaben' };
-      list.push({ nick, verdict: d.verdict, meta: ctx ? await grMetaLine(cms, ctx, rules) : (pr && pr.error) || '' });
+      list.push({ nick, verdict: d.verdict, reason: d.reason || '', note: (u && typeof u.note === 'string') ? u.note : '', meta: ctx ? await grMetaLine(cms, ctx, rules) : (pr && pr.error) || '' });
     }
     const vn = { accept: ['annehmen', 'v-acc'], reject: ['ablehnen', 'v-rej'], manual: ['liegen lassen', 'v-man'] };
     m.body.querySelector('.vaf-gr-prev').innerHTML = list.map((r) => `<div class="vaf-gr-req"><div class="vaf-gr-reqtx"><b>${esc(r.nick)}</b><span>${esc(r.meta)}</span></div><span class="vaf-gr-verdict ${vn[r.verdict][1]}">${vn[r.verdict][0]}</span></div>`).join('') || '<div>Keine prüfbaren Anfragen.</div>';
@@ -7113,7 +7181,7 @@
         const cur = grEl('div', 'vaf-cur', 'Wende an …'); m.body.appendChild(cur);
         const vis = await Vis.guard('Das Anwenden der Regeln'); if (!vis) { m.closable = true; return; }
         let done = 0;
-        for (const r of list) { if (r.verdict === 'accept' || r.verdict === 'reject') { cur.textContent = `${r.nick}: ${r.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`; try { await decideRequest(r.nick, r.verdict === 'accept'); done++; } catch (e) { warn('Anwenden', e); } await sleep(rand(1200, 2500)); } }
+        for (const r of list) { if (r.verdict === 'accept' || r.verdict === 'reject') { cur.textContent = `${r.nick}: ${r.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`; try { const out = await decideRequest(r.nick, r.verdict === 'accept'); if (out === 'ok') await grWriteDecisionNote(cms, r.nick, r.verdict, r.reason, r.note); done++; } catch (e) { warn('Anwenden', e); } await sleep(rand(1200, 2500)); } }
         Vis.restore(vis);
         cur.textContent = `Fertig – ${done} Anfrage${done === 1 ? '' : 'n'} bearbeitet.`;
         m.closable = true; m.buttons([{ label: 'Schließen', focus: true, primary: true, fn: () => m.close() }]);
@@ -7178,6 +7246,20 @@
     .vaf-gr-cond select,.vaf-gr-num,.vaf-gr-vsel{background:#2a2a2a;border:1px solid #3a3a3a;border-radius:8px;padding:5px 8px;color:#e8e8e8;font-size:13px;font-family:inherit}
     .vaf-gr-field{font-weight:600;color:#fff}.vaf-gr-val .vaf-gr-vsel{color:#ffc21a}.vaf-gr-num{width:70px;color:#ffc21a}
     .vaf-gr-unit{color:#a6a6a6;font-size:12px}
+    .vaf-gr-pills{display:inline-flex;gap:6px;flex-wrap:wrap;align-items:center;vertical-align:middle;max-width:100%}
+    .vaf-gr-pill{background:#2a2a2a;border:1.5px solid #3a3a3a;color:#e8e8e8;border-radius:999px;padding:4px 12px;font-size:13px;font-family:inherit;cursor:pointer;line-height:1.4;transition:border-color .12s,color .12s,background .12s}
+    .vaf-gr-pill:hover{border-color:#5a5a5a}
+    .vaf-gr-pill.on{border-color:#ffc21a;color:#ffc21a;background:rgba(255,194,26,.12);font-weight:600}
+    .vaf-gr-pill.guess{border-style:dashed}
+    .vaf-gr-pill .vaf-gr-warn{color:#e65100;font-weight:700}
+    .vaf-gr-pill.on .vaf-gr-warn{color:#ffb74d}
+    .vaf-gr-pload{color:#a6a6a6;font-size:13px}
+    .vaf-gr-reason{display:flex;align-items:center;gap:8px;margin:8px 0 2px;padding-left:2px}
+    .vaf-gr-rlbl{color:#a6a6a6;font-size:12.5px;white-space:nowrap}
+    .vaf-gr-rin{flex:1;min-width:150px;max-width:340px;background:#2a2a2a;border:1px solid #3a3a3a;border-radius:8px;padding:5px 10px;color:#e8e8e8;font-size:13px;font-family:inherit}
+    .vaf-gr-rin::placeholder{color:#6a6a6a}
+    .vaf-gr-field optgroup{color:#a6a6a6;font-weight:600;font-style:normal}
+    .vaf-gr-field option{color:#e8e8e8;font-weight:400}
     .vaf-gr-conj{margin:3px 0}.vaf-gr-conj .vaf-gr-op{background:none;border:0;color:#a6a6a6;font-weight:700;font-size:12px}
     .vaf-gr-rm{background:none;border:0;color:#a6a6a6;cursor:pointer;font-size:13px}
     .vaf-gr-add{margin:6px 0}.vaf-gr-addbtn{background:none;border:1px dashed #3a3a3a;border-radius:8px;padding:4px 10px;color:#a6a6a6;font-size:12.5px;cursor:pointer;margin-right:6px}
@@ -7194,6 +7276,176 @@
     .v-acc{color:#49d17a;background:rgba(73,209,122,.12)}.v-rej{color:#ff8a80;background:rgba(255,138,128,.12)}.v-man{color:#a6a6a6;background:rgba(255,255,255,.06)}
     `;
     (document.head || document.documentElement).appendChild(st);
+  }
+
+  // =====================================================================================
+  // Werte-Tabelle (Code → Klartext) für die Enum-Dropdowns im Regel-Editor.
+  //
+  //  Dreistufig:
+  //   1) TRAIT_I18N  – Code → interner i18n-Schlüssel (aus poppen-Trait-Katalog, Bundle 44621).
+  //                    Stabil (semantische Namen), ändert sich praktisch nie.
+  //   2) Laufzeit    – ensureTraitI18n() löst diese Schlüssel aus poppens eigener i18n in die
+  //                    aktuelle Sprache auf (ein i18n/pull, 14 Tage gecacht). Immer poppen-exakt,
+  //                    folgt der UI-Sprache, aktualisiert sich bei poppen-Updates automatisch.
+  //   3) GR_VALUEMAP_SEED – deutscher Offline-Fallback, falls die i18n (noch) nicht geladen ist.
+  //
+  //  Vorrang je Code:  importierte Helfer-Tabelle (GM 'gr_valuemap')  >  Laufzeit-i18n  >  SEED.
+  //  Ausgeschlossen sind reine Such-/Leerwerte ("ANY", "keine Angabe/UNSELECTED").
+  // =====================================================================================
+
+  // (1) Code → i18n-Schlüssel. Ja/Nein-Felder bewusst ausgelassen (Schlüssel "YES"/"NO" zu generisch;
+  //     SEED liefert dort bereits das korrekte, gesicherte Ja/Nein).
+  const TRAIT_I18N = {
+    figure_name:     { 2: 'SLENDER', 3: 'NORMAL', 4: 'ATHLETIC', 5: 'PLUMP', 6: 'FAT' },
+    eyes_name:       { 1: 'EYES_BROWN', 2: 'EYES_BLUE', 3: 'EYES_GREEN', 4: 'EYES_OTHER' },
+    hair:            { 1: 'HAIR_BLACK', 2: 'HAIR_BROWN', 3: 'HAIR_BLOND', 4: 'HAIR_RED', 6: 'HAIR_GREY', 5: 'HAIR_OTHER' },
+    hair_length:     { 2: 'BALDNESS', 3: 'SHORT', 4: 'MIDDLE', 5: 'LONG' },
+    beard:           { 1: 'BEARD_NONE', 2: 'BEARD_3DAYSBART', 3: 'BEARD_GOATIE', 4: 'BEARD_FULL', 5: 'BEARD_MUSTACHE' },
+    sex_type:        { 1: 'SEXUALITY_TYPE_HOMO', 2: 'SEXUALITY_TYPE_HETERO', 3: 'SEXUALITY_TYPE_BI', 4: 'SEXUALITY_TYPE_BIINTERESSIERT' },
+    intimately_hair: { 1: 'L_INTIMATE_HAIR_SHAVED', 2: 'L_INTIMATE_HAIR_PART_SHAVED', 3: 'L_INTIMATE_HAIR_HAIRED' },
+    body_hair:       { 1: 'BODY_HAIR_NONE', 2: 'BODY_HAIR_SOME', 3: 'BODY_HAIR_LOT' },
+    tits:            { 1: 'TI_SIZE_A', 2: 'TI_SIZE_B', 3: 'TI_SIZE_C', 4: 'TI_SIZE_D', 5: 'TI_SIZE_E', 6: 'TI_SIZE_F', 7: 'TI_SIZE_G', 8: 'TI_SIZE_H', 9: 'TI_SIZE_J' },
+    circumcised:     { 1: 'L_CIRCUMCISED_YES', 2: 'L_CIRCUMCISED_NO' },
+    ethnicity:       { 1: 'ETHNICITY_AFRICAN', 2: 'ETHNICITY_ARAB', 3: 'ETHNICITY_ASIAN', 4: 'ETHNICITY_CAUCASIAN_WHITE', 5: 'ETHNICITY_LATINO_HISPANIC', 6: 'ETHNICITY_MEDITERRANEAN', 7: 'ETHNICITY_PACIFIC_ISLANDER', 8: 'ETHNICITY_MIXED_RACE', 9: 'ETHNICITY_INDIGENOUS', 10: 'ETHNICITY_AFRICAN_AMERICAN_BLACK', 11: 'ETHNICITY_INDIAN', 12: 'ETHNICITY_MIDDLE_EASTERN', 13: 'ETHNICITY_OTHER' },
+    zodiac:          { 1: 'ZODIAC_CAPRICORN', 2: 'ZODIAC_AQUARIUS', 3: 'ZODIAC_PISCES', 4: 'ZODIAC_ARIES', 5: 'ZODIAC_TAURUS', 6: 'ZODIAC_GEMINI', 7: 'ZODIAC_CANCER', 8: 'ZODIAC_LEO', 9: 'ZODIAC_VIRGO', 10: 'ZODIAC_LIBRA', 11: 'ZODIAC_SCORPIO', 12: 'ZODIAC_SAGGITARIUS' },
+  };
+
+  // (3) Deutscher Offline-Fallback.
+  const GR_VALUEMAP_SEED = {
+    figure_name:     { 2: 'Schlank', 3: 'Normal', 4: 'Sportlich', 5: 'Kurvig', 6: 'Plus-size' },
+    eyes_name:       { 1: 'Braun', 2: 'Blau', 3: 'Grün', 4: 'Andere' },
+    hair:            { 1: 'Schwarz', 2: 'Braun', 3: 'Blond', 4: 'Rot', 6: 'Grau', 5: 'Andere' },
+    hair_length:     { 2: 'Glatze', 3: 'Kurz', 4: 'Mittel', 5: 'Lang' },
+    beard:           { 1: 'Glatt rasiert', 2: '3-Tage-Bart', 3: 'Goatee', 4: 'Vollbart', 5: 'Schnauzer' },
+    body_hair:       { 1: 'Keine', 2: 'Leicht behaart', 3: 'Stark behaart' },
+    intimately_hair: { 1: 'rasiert', 2: 'teilrasiert', 3: 'behaart' },
+    tits:            { 1: 'A', 2: 'B', 3: 'C', 4: 'D', 5: 'E', 6: 'F', 7: 'G', 8: 'H', 9: 'J' },
+    circumcised:     { 1: 'Ja', 2: 'Nein' },
+    sex_type:        { 1: 'Gay', 2: 'Hetero', 3: 'Bi', 4: 'bi-interessiert' },
+    ethnicity:       { 1: 'Afrikanisch', 2: 'Arabisch', 3: 'Asiatisch', 4: 'Europäisch', 5: 'Latino', 6: 'Mediterran', 7: 'Pazifische Inseln', 8: 'Mixed', 9: 'Indigen', 10: 'Afroamerikanisch', 11: 'Indisch', 12: 'Mittlerer Osten', 13: 'Andere' },
+    // Ja/Nein-Merkmale  (1 = Ja, 0 = Nein; Code 2 = "egal" ist nur Suchwert)
+    glass:           { 1: 'Ja', 0: 'Nein' },
+    smoker:          { 1: 'Ja', 0: 'Nein' },
+    tattoo:          { 1: 'Ja', 0: 'Nein' },
+    piercing:        { 1: 'Ja', 0: 'Nein' },
+    handicap:        { 1: 'Ja', 0: 'Nein' },
+    zodiac:          { 1: 'Steinbock', 2: 'Wassermann', 3: 'Fische', 4: 'Widder', 5: 'Stier', 6: 'Zwillinge', 7: 'Krebs', 8: 'Löwe', 9: 'Jungfrau', 10: 'Waage', 11: 'Skorpion', 12: 'Schütze' },
+  };
+
+  // Codes, deren SEED-Text nur meine Übersetzung des i18n-Schlüssels ist (⚠, bis die Laufzeit-i18n greift).
+  const GR_VALUEMAP_GUESS = {
+    ethnicity: { 6: true, 7: true, 10: true, 11: true },   // 9 (Indigen) per Helfer bestätigt
+    beard:     { 5: true },                                 // Schnauzer
+  };
+
+  // (2) i18n-Schlüssel → aktuelle Sprache, einmal pro 14 Tage aus poppens i18n, GM-gecacht.
+  const TRAIT_I18N_TTL = 14 * DAY;
+  let _traitI18nBusy = null;
+  async function ensureTraitI18n() {
+    const c = G.get('trait_i18n', null);
+    if (c && c.at > now() - TRAIT_I18N_TTL && c.labels && Object.keys(c.labels).length) return;
+    if (_traitI18nBusy) return _traitI18nBusy;
+    _traitI18nBusy = (async () => {
+      const need = new Set();
+      for (const m of Object.values(TRAIT_I18N)) for (const k of Object.values(m)) need.add(k);
+      const labels = {};
+      const modules = ['common', 'account', 'profile', 'search', 'personal-detail', 'user', 'setting', 'member', 'detail', 'user-info'];
+      for (const module of modules) {
+        let d = null; try { d = await apiPost('i18n/pull', { locale: 'de-DE', module }); } catch { continue; }
+        if (!d || typeof d !== 'object') continue;
+        for (const [k, v] of Object.entries(d)) {
+          if (typeof v !== 'string') continue;
+          const bare = k.includes(':') ? k.slice(k.lastIndexOf(':') + 1) : k;   // evtl. Namespace-Präfix abstreifen
+          const hit = need.has(bare) ? bare : (need.has(bare.toUpperCase()) ? bare.toUpperCase() : null);
+          if (hit && !labels[hit]) labels[hit] = v;
+        }
+        if (Object.keys(labels).length >= need.size) break;
+      }
+      if (Object.keys(labels).length) G.set('trait_i18n', { at: now(), locale: 'de-DE', labels });
+    })();
+    try { await _traitI18nBusy; } finally { _traitI18nBusy = null; }
+  }
+
+  // Zusammenführen: SEED (Fallback) <- Laufzeit-i18n (exakt) <- GM-Import (bestätigt).
+  // Ergebnis: { code: { t: <Klartext>, guess: <bool> } }
+  function grSeeded(trait) {
+    const out = {};
+    const seed = GR_VALUEMAP_SEED[trait] || {};
+    const guess = GR_VALUEMAP_GUESS[trait] || {};
+    const keys = TRAIT_I18N[trait] || {};
+    const i18n = ((G.get('trait_i18n', null) || {}).labels) || {};
+    const codes = new Set([...Object.keys(seed), ...Object.keys(keys)]);
+    for (const c of codes) {
+      const de = keys[c] && i18n[keys[c]];
+      if (de) out[c] = { t: de, guess: false };                 // poppen-exakt
+      else if (seed[c] != null) out[c] = { t: seed[c], guess: !!guess[c] };
+    }
+    const gm = (G.get('gr_valuemap', {}) || {})[trait] || {};
+    for (const [c, l] of Object.entries(gm)) {
+      const t = l && typeof l === 'object' ? (l.t || l.label || l.name) : l;
+      if (t != null && t !== '') out[c] = { t: String(t), guess: false };
+    }
+    return out;
+  }
+  // Als Optionsliste [[code, label, guess], …], numerisch sortiert.
+  function grSeededList(trait) {
+    const o = grSeeded(trait);
+    return Object.keys(o).sort((a, b) => (Number(a) || 0) - (Number(b) || 0)).map((c) => [c, o[c].t, o[c].guess]);
+  }
+
+  // =====================================================================================
+  // Punkt 18 (schlank): neue/unbekannte Profil-Codes „kostenlos" erfassen + Tabelle exportieren.
+  //  Ergänzt die vollständige Tabelle nur, wenn poppen mal einen neuen Code anhängt.
+  // =====================================================================================
+  // „Leer/egal"-Sentinels je Feld (keine echten Profilwerte, nicht als „neu" melden).
+  const GR_SENTINEL = { figure_name: ['1'], hair_length: ['1'], glass: ['2'], smoker: ['2'], tattoo: ['2'], piercing: ['2'], handicap: ['2'] };
+  const GR_KNOWN_TRAITS = [...new Set([...Object.keys(GR_VALUEMAP_SEED), ...Object.keys(TRAIT_I18N)])];
+
+  // Momentaufnahme der kompletten Werte-Tabelle (wird in jeden Recorder-Export eingebettet).
+  function grValueTableSnapshot() {
+    const out = {}; const i18n = ((G.get('trait_i18n', null) || {}).labels) || {}; const gmAll = G.get('gr_valuemap', {}) || {};
+    for (const t of GR_KNOWN_TRAITS) {
+      out[t] = {}; const o = grSeeded(t); const gm = gmAll[t] || {};
+      for (const [c, v] of Object.entries(o)) {
+        const key = (TRAIT_I18N[t] || {})[c];
+        let src = 'seed'; if (key && i18n[key]) src = 'i18n'; if (gm[c] != null) src = 'live';
+        out[t][c] = { t: v.t, src, key: key || undefined };
+      }
+      for (const [c, l] of Object.entries(gm)) if (!out[t][c]) { const txt = l && typeof l === 'object' ? (l.t || '') : String(l); out[t][c] = { t: txt, src: (l && typeof l === 'object' && l.status) || 'live', key: (TRAIT_I18N[t] || {})[c] }; }
+    }
+    return out;
+  }
+
+  // Debounced Einzel-Export (keine Download-Flut): 45 s nach der letzten Neuerung oder beim Verstecken des Tabs.
+  let _vmDirty = false, _vmTimer = null, _vmListen = false;
+  function grDoValueExport() {
+    if (!_vmDirty) return; _vmDirty = false;
+    try {
+      const d = new Date(); const p = (n) => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+      download(`poppen-werte-neu-${stamp}.json`, JSON.stringify({ version: VERSION, at: d.toISOString(), hinweis: 'Automatisch – neue/unbestätigte Profil-Codes gefunden.', valuemap: grValueTableSnapshot() }, null, 2));
+    } catch {}
+  }
+  function grScheduleValueExport() {
+    _vmDirty = true;
+    if (!_vmListen) { _vmListen = true; try { document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') grDoValueExport(); }); } catch {} }
+    clearTimeout(_vmTimer); _vmTimer = setTimeout(grDoValueExport, 45000);
+  }
+
+  // Aus user_trait (Codes) unbekannte/neue Werte je Feld erfassen – läuft bei jedem user/info.
+  function grNoteUnknownCodes(tr) {
+    if (!tr || typeof tr !== 'object') return;
+    const gm = G.get('gr_valuemap', {}) || {}; let changed = false;
+    for (const t of GR_KNOWN_TRAITS) {
+      let v = tr[t]; if (v == null) continue; if (!Array.isArray(v)) v = [v];
+      const known = grSeeded(t); const skip = GR_SENTINEL[t] || [];
+      for (const raw of v) {
+        const c = String(raw); if (!c || c === '0' || skip.includes(c)) continue;
+        if (known[c] || (gm[t] && gm[t][c])) continue;               // schon bekannt oder schon vermerkt
+        gm[t] = gm[t] || {}; gm[t][c] = { t: '', status: 'unconfirmed', seen: now() }; changed = true;
+      }
+    }
+    if (changed) { G.set('gr_valuemap', gm); grScheduleValueExport(); }
   }
 
   // =====================================================================================
