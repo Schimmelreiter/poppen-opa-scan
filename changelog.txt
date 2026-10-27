@@ -1,6 +1,25 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.28 (27.10.2026)
+- Regel-Editor jetzt auch auf der Bearbeiten-Seite der Gruppe (/groups/<id>/edit), direkt über „Lokale Gruppe“; dort sicher im poppen-Formular (keine versehentlichen Absende-Klicks, Enter schickt nichts ab)
+- Experten-Einstellungen aufgeräumt: „Typ annehmen“, „Typ ablehnen“, „Ohne Typ/Bild & nur Deutsch ablehnen“ und „Fotos in der Prüfung“ entfallen – das erledigt der Regel-Editor
+- Fotos: manuelle Prüfung zeigt fest den Avatar plus bis zu 5 weitere Bilder; für die reine Regelprüfung reicht 1 Bild (bei echtem Avatar gar keins), mehr nur, wenn eine Regel „Fotos (Anzahl)“ nutzt
+- Alte, nicht mehr genutzte Profilprüfung (unsichtbares Profilfenster, Typ-Zuordnung über i18n) entfernt; der alte Ethnie-Cache wird freigegeben
+
+2.27 (27.10.2026)
+- Regel-Editor: Verknüpfungen „UND“, „ODER“, „UND NICHT“, „ODER NICHT“; der erste Ausdruck einer Ebene lässt sich per „nicht“ bzw. „Gruppe verneinen“ verneinen
+- Neue Operatoren: „keine Angabe“ / „hat Angabe“ für alle Profilfelder (zählt nur, was im Profil wirklich eingetragen ist; der Such-Wert „egal“ gilt nie als Angabe), „enthält keine von“ bei Auswahlfeldern, „enthält nicht“ bei Sprachen
+- Sprachen: „enthält“ (Mehrfachauswahl, alle gelisteten, darf mehr) und „nur“ (Einfachauswahl, keine andere Sprache); „ist genau“ entfällt
+- Ja/Nein-Felder (Brille, Raucher, Tattoo, Piercing, Handicap, Beschnitten): nur noch „ist“ – verneint wird über den anderen Wert
+- Oberste Ebene neuer Regeln ist per Default „ODER“ verknüpft, verschachtelte Gruppen „UND“; eine neue Hauptgruppe übernimmt einmalig die Begründung der Gruppe davor
+- Darstellung: jede Regelgruppe in einem Kasten (rechts offen), gleich weit eingerückt; die oberste Ebene selbst ohne Linie
+
+2.26 (27.10.2026)
+- „Freunde“ im Entdecken-Menü ist nicht mehr dauerhaft hervorgehoben (gilt für alle Menüs)
+- Einstellungen: Schalter „Visuelle Einstufung“ und „Ignorieren aktiv“ stehen über ihren Reglern; Knopf „Werte der ersten Zeile für alle Quellen übernehmen“ einzeilig
+- Erfassung neuer Profil-Codes ignoriert leere Einträge (kein falscher Auto-Export mehr)
+
 2.25 (27.10.2026)
 - Regel-Editor: neue/unbekannte Profil-Codes werden nebenbei bei jedem geladenen Profil erfasst und als „unbestätigt“ vorgemerkt (falls poppen mal einen Wert anhängt); reine Leer-/Egal-Codes werden ignoriert
 - Ein einziger Auto-Export (poppen-werte-neu-…json) 45 s nach der letzten Neuerung bzw. beim Verstecken des Tabs, nur wenn wirklich etwas Neues dazukam – unabhängig vom Recorder

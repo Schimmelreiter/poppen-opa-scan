@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.25
+// @version      2.28
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.25';
+  const VERSION = '2.28';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -186,10 +186,9 @@
     autoLogin: true,
     autoLoginPauseMin: 30,
     maintenanceMin: 15,
-    // Regeln für die automatische Annahme/Ablehnung von Gruppenanfragen: leer = aus.
-    // Nicht im Quelltext hinterlegt; in den Experten-Einstellungen unter „Gruppenanfragen“ einzutragen.
-    groupReq: { match: '', accept: [], reject: [], noPicNoType: false, photos: 6,
-      fields: ['Geschlecht', 'Sexualität', 'Typ', 'Herkunft', 'Sprachen'] },
+    // Gruppenanfragen: Name der Gruppen (regulärer Ausdruck), für die das Prüf-Popup angeboten wird.
+    // Die Annahme-/Ablehnregeln selbst stehen im Regel-Editor direkt auf der Annahme- bzw. Bearbeiten-Seite der Gruppe.
+    groupReq: { match: '' },
     groupScan: {},                // cms_id → false = beim Gruppen-Scan auslassen (Standard: alle)
     managedWhitelist: {},         // cms_id → false = Mitglieder NICHT whitelisten (Standard: whitelisten)
     expert: {
@@ -3144,10 +3143,17 @@
       for (const gk of GROUP_KEYS) {
         const g = draft.groups[gk];
         const c = card(body, GROUP_NAMES[gk]);
-        row(c, 'Schalter', '',
-          sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`),
-          '<span style="width:20px"></span>',
-          sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`));
+        // Schalter-Zeile am selben Grid wie die Slider ausrichten (150px | Visuell | Ignorieren),
+        // damit jede Beschriftung über ihrer Spalte sitzt und „Ignorieren aktiv“ nicht umbricht.
+        {
+          const schalter = document.createElement('div'); schalter.className = 'vaf-srcgrid';
+          const swCell = (el, labHtml) => { const d = document.createElement('div'); d.style.cssText = 'display:flex;align-items:center;gap:10px'; d.append(el); d.append(document.createRange().createContextualFragment(labHtml)); return d; };
+          const c0 = document.createElement('div'); c0.innerHTML = '<span class="vaf-l">Schalter</span>';
+          schalter.append(c0,
+            swCell(sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`)),
+            swCell(sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`)));
+          c.appendChild(schalter);
+        }
         if (gk === 'p') {
           const sel = document.createElement('select');
           sel.innerHTML = '<option value="any">einer über der Grenze</option><option value="all">beide über der Grenze</option>';
@@ -3172,8 +3178,10 @@
           }
           c.appendChild(grid);
           const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = 'Werte der ersten Zeile für alle Quellen übernehmen';
+          b.style.whiteSpace = 'nowrap';   // einzeilig; wächst nach links
           b.addEventListener('click', () => { const f = g[key][SRC_KEYS[0]]; for (const sk of SRC_KEYS) g[key][sk] = [...f]; rerender(); touch(); });
-          row(c, '', '', b);
+          const brow = document.createElement('div'); brow.style.cssText = 'display:flex;justify-content:flex-end;padding:11px 0;border-bottom:1px solid #2c2c2c';
+          brow.appendChild(b); c.appendChild(brow);
         };
         if (gk === 'p' && g.separate) { rowsFor('srcW', 'Frau'); rowsFor('srcM', 'Mann'); } else rowsFor('src', '');
         if (gk === 'p') {
@@ -3283,22 +3291,7 @@
       row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
       // ---- Gruppenanfragen (Regeln nur hier, nicht im Quelltext) ----
       const gq = draft.groupReq;
-      const chips = (arr) => {
-        const box = document.createElement('div'); box.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center';
-        const draw = () => {
-          box.innerHTML = '';
-          arr.forEach((t, i) => { const c = document.createElement('span'); c.className = 'vaf-chip'; c.innerHTML = `${esc(t)} <b>✕</b>`; c.querySelector('b').addEventListener('click', () => { arr.splice(i, 1); draw(); touch(); }); box.appendChild(c); });
-          const add = document.createElement('button'); add.type = 'button'; add.className = 'vaf-btn'; add.textContent = '+';
-          add.addEventListener('click', () => { const v = W.prompt('Typ (wie im Profil unter „Typ“):'); if (v && v.trim()) { arr.push(v.trim()); draw(); touch(); } });
-          box.appendChild(add);
-        };
-        draw(); return box;
-      };
       row(ce, lab('Gruppenanfragen: Gruppen', 'groupReq.match'), 'Name enthält (regulärer Ausdruck); leer = aus', txtIn(gq.match, (v) => { gq.match = v; touch(); }, 'z. B. muster1|muster2'));
-      row(ce, lab('Typ annehmen', 'groupReq.accept'), '', chips(gq.accept));
-      row(ce, lab('Typ ablehnen', 'groupReq.reject'), '', chips(gq.reject));
-      row(ce, lab('Ohne Typ/Bild & nur Deutsch ablehnen', 'groupReq.noPicNoType'), 'zusätzliche Ablehnregel', sw(!!gq.noPicNoType, (v) => { gq.noPicNoType = v; touch(); }));
-      row(ce, lab('Fotos in der Prüfung', 'groupReq.photos'), '', numIn(gq.photos, (v) => { gq.photos = v; touch(); }, 0, 20));
 
       const recSt = document.createElement('span'); recSt.className = 'vaf-mini';
       Recorder.stats().then((r) => { recSt.textContent = `${r.total} Schnittstellen erfasst, davon ${r.fresh} neu`; });
@@ -3874,167 +3867,12 @@
     await Members.update(uid, (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[cms] = now(); });
   }
 
-  // ---------- Profil unsichtbar prüfen ----------
-  // Lädt das Profil in einem unsichtbaren Fenster (gleiche Seite, daher lesbar), klickt in
-  // "Persönliche Details" auf "Mehr anzeigen" und liest Felder und Fotos.
-  let probeFrame = null;
-  function frame() {
-    if (probeFrame && probeFrame.isConnected) return probeFrame;
-    probeFrame = document.createElement('iframe');
-    probeFrame.setAttribute('aria-hidden', 'true');
-    probeFrame.style.cssText = 'position:fixed;left:-20000px;top:0;width:1280px;height:1000px;border:0;visibility:hidden;pointer-events:none';
-    document.body.appendChild(probeFrame);
-    return probeFrame;
-  }
-  function frameLoad(url) {
-    return new Promise((resolve) => {
-      const f = frame();
-      const done = () => { f.removeEventListener('load', done); resolve(); };
-      f.addEventListener('load', done);
-      f.src = url;
-      setTimeout(done, 30000);
-    });
-  }
   const bigPhotoUrl = (src) => String(src).replace(/_\d+(?:_sq)?(?=\.jpe?g(?:$|\?))/i, '');
   const thumbUrl = (src) => bigPhotoUrl(src).replace(/(\.jpe?g)(?=$|\?)/i, '_350_sq$1');
   const realPhoto = (src) => !!src && /img-[a-z]\.poppen\.de\//i.test(src) && !/plcblur/i.test(src);
 
-  // ---------- Prüfung über Schnittstellen (user/info + v3/profile/gallery) ----------
-  // Typ steht dort nur als Zahl (user_trait.ethnicity); die Texte kommen aus den Übersetzungen der Seite (i18n/pull).
+  // Sprachnamen für Anzeige/Regel-Editor
   const LANG_DE = { de: 'Deutsch', en: 'Englisch', fr: 'Französisch', es: 'Spanisch', it: 'Italienisch', nl: 'Niederländisch', pl: 'Polnisch', tr: 'Türkisch', ru: 'Russisch', pt: 'Portugiesisch', ar: 'Arabisch', hu: 'Ungarisch', hr: 'Kroatisch', cs: 'Tschechisch', ro: 'Rumänisch', el: 'Griechisch' };
-  async function ethnicityMap() {
-    const c = G.get('eth_map', null);
-    if (c && c.at > now() - 30 * DAY && Object.keys(c.map || {}).length) return c.map;
-    const map = {};
-    for (const module of ['profile', 'user', 'user-info', 'personal-detail', 'setting', 'search', 'common']) {
-      let d = null;
-      try { d = await apiPost('i18n/pull', { locale: 'de-DE', module }); } catch { continue; }
-      if (!d || typeof d !== 'object') continue;
-      for (const [k, v] of Object.entries(d)) {
-        const m = /ethnic\w*[._-](\d+)$/i.exec(k);
-        if (m && typeof v === 'string') map[m[1]] = v;
-      }
-      if (Object.keys(map).length) break;
-    }
-    if (Object.keys(map).length) G.set('eth_map', { at: now(), map });
-    return Object.keys(map).length ? map : null;
-  }
-  async function apiProbe(name) {
-    const eth = await ethnicityMap().catch(() => null);
-    if (!eth) return null;                                   // keine Zuordnung → klassisch über das Profil
-    let d;
-    try { d = await apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 }); } catch (e) { return null; }
-    if (!d || !d.userInfo) return null;
-    ingestUserInfo(d).catch(() => {});
-    const tr = d.user_trait || {}, ui = d.userInfo;
-    const code = String((tr.ethnicity || [])[0] || '');
-    const fields = {};
-    fields['Typ'] = code && code !== '0' ? (eth[code] || '') : '';
-    if (code && code !== '0' && !eth[code]) return null;     // unbekannte Zahl → lieber klassisch prüfen
-    const langs = ((tr.spoken_language || [])[0] || []).filter(Boolean);
-    if (langs.length) fields['Sprachen'] = langs.map((l) => LANG_DE[l] || l).join(', ');
-    fields['Geschlecht'] = TYPE_NAMES[ui.gender] || ui.gender || '';
-    if (Array.isArray(ui.age)) fields['Alter'] = ui.age.join('/');
-    if ((tr.size || [])[0]) fields['Größe'] = tr.size[0] + 'cm';
-    if ((tr.weight || [])[0]) fields['Gewicht'] = tr.weight[0] + 'kg';
-    // öffentliche Fotos aus der Galerie (private = verschwommene Platzhalter zählen nicht)
-    const photos = [];
-    try {
-      const g = await apiGet('v3/profile/gallery', { _version: 2, nickname: String(name).toLowerCase(), page: 1, limit: Math.max(6, S().groupReq.photos) });
-      for (const it of (g && g.items) || []) {
-        const md = it.media_data || {};
-        const src = md.source_url || md.preview_url || '';
-        if (it.media_type === 'image' && !it.is_private && realPhoto(src) && !photos.includes(src)) photos.push(src);
-      }
-    } catch (e) { warn('Galerie', e); }
-    return { name, fields, photos: photos.slice(0, S().groupReq.photos), avatar: ui.avatar || '', error: '', viaApi: true };
-  }
-
-  async function probeProfile(name) {
-    const res = { name, fields: {}, photos: [], avatar: '', error: '' };
-    const wait = async (fn, ms) => { const t = Date.now(); while (Date.now() - t < ms) { const r = fn(); if (r) return r; await sleep(250); } return null; };
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      await frameLoad(profileUrl(name));
-      const doc = () => { try { return frame().contentDocument; } catch { return null; } };
-      const kind = await wait(() => { const d = doc(); if (!d) return null; const k = pageKind(d); return k === 'loading' ? null : k; }, 20000);
-      if (kind === 'werbung' && attempt === 1) continue;      // Werbe-Zwischenseite: Profil noch einmal laden
-      if (kind === 'notfound') { res.error = 'Profil nicht gefunden („Diese Seite ist spurlos verschwunden“)'; return res; }
-      if (kind === 'login' || kind === 'abgemeldet') { res.error = 'nicht eingeloggt'; res.loggedOut = true; return res; }
-      if (kind === 'wartung') { res.error = 'poppen.de wird gewartet'; res.loggedOut = true; return res; }
-      const d = doc();
-      const sectionOf = (title) => {
-        const h = [...d.querySelectorAll('main h2, aside h2, h2')].find((x) => x.textContent.trim().startsWith(title));
-        if (!h) return null;
-        let s = h;
-        for (let i = 0; i < 6 && s; i++, s = s.parentElement) if (s.querySelector('label') || s.querySelector('img')) return s;
-        return h.parentElement;
-      };
-      const details = await wait(() => sectionOf('Persönliche Details'), 15000);
-      if (details) {
-        const more = [...details.querySelectorAll('button')].find((b) => norm(b.textContent) === 'mehr anzeigen');
-        if (more) {
-          more.click();
-          await wait(() => [...sectionOf('Persönliche Details').querySelectorAll('button')].some((b) => norm(b.textContent) === 'weniger anzeigen'), 8000);
-          await sleep(600);
-        }
-        for (const lab of sectionOf('Persönliche Details').querySelectorAll('label')) {
-          const v = lab.nextElementSibling;
-          const key = lab.textContent.trim();
-          if (!key || !v) continue;
-          const vals = [...v.children].map((c) => c.textContent.trim()).filter(Boolean);
-          res.fields[key] = (vals.length ? vals : [v.textContent.trim()]).join(', ');
-        }
-      }
-      // Profilbild im Kopf des Profils (img mit dem Namen als alt-Text)
-      const av = [...d.querySelectorAll('main img[alt]')].find((im) => norm(im.getAttribute('alt')) === norm(name) && !im.closest('header'));
-      res.avatar = av ? av.getAttribute('src') || '' : '';
-      // Fotos: die Vorschauen im Abschnitt "Fotos (N)", verschwommene Platzhalter auslassen
-      const photos = [];
-      const fotoSec = sectionOf('Fotos');
-      if (fotoSec) for (const im of fotoSec.querySelectorAll('img')) {
-        const src = im.getAttribute('src');
-        if (realPhoto(src) && !photos.includes(bigPhotoUrl(src))) photos.push(bigPhotoUrl(src));
-      }
-      // Zu wenige? Dann die Galerie öffnen ("Alle anzeigen") und durchblättern
-      if (photos.length < S().groupReq.photos && fotoSec) {
-        const all = [...fotoSec.querySelectorAll('a, button')].find((x) => norm(x.textContent) === 'alle anzeigen');
-        if (all) {
-          all.click();
-          await sleep(1500);
-          for (let i = 0; i < 20 && photos.length < S().groupReq.photos; i++) {
-            for (const im of d.querySelectorAll('.swiper img, .swiper-slide img')) {
-              const src = im.getAttribute('src');
-              if (realPhoto(src) && !photos.includes(bigPhotoUrl(src))) photos.push(bigPhotoUrl(src));
-            }
-            const next = d.querySelector('.swiper-button-next:not(.swiper-button-disabled)');
-            if (!next) break;
-            next.click();
-            await sleep(600);
-          }
-        }
-      }
-      res.photos = photos.slice(0, S().groupReq.photos);
-      if (!details) res.error = 'Profilangaben nicht gefunden';
-      return res;
-    }
-    res.error = 'Werbe-Zwischenseite ließ sich nicht überspringen';
-    return res;
-  }
-
-  // Entscheidung nach den Regeln
-  function decide(fields, extra = {}) {
-    const typ = (fields['Typ'] || '').trim();
-    const is = (list) => list.some((x) => norm(x) === norm(typ));
-    if (typ && is(S().groupReq.accept)) return { verdict: 'accept', reason: `Typ: ${typ}` };
-    if (typ && is(S().groupReq.reject)) return { verdict: 'reject', reason: `Typ: ${typ}` };
-    // Zusatzregel (nur wenn eingeschaltet): Typ leer + kein Profilbild + einzige Sprache Deutsch → ablehnen
-    if (!typ && S().groupReq.noPicNoType) {
-      const langs = String(fields['Sprachen'] || '').split(/\s*,\s*/).map(norm).filter(Boolean);
-      const noPic = isPlaceholderAvatar(extra.listAvatar) && isPlaceholderAvatar(extra.avatar) && !(extra.photos || []).length;
-      if (noPic && langs.length === 1 && langs[0] === 'deutsch') return { verdict: 'reject', reason: 'Typ leer, kein Profilbild, nur Deutsch' };
-    }
-    return { verdict: 'manual', reason: typ ? `Typ: ${typ} – keine Regel` : 'Typ fehlt im Profil' };
-  }
 
   // ---------- Popup "Beitrittsanfragen prüfen" ----------
   let groupRun = null;
@@ -4084,8 +3922,8 @@
       const res = { ...r, meta: '', photos: [], verdict: 'manual', reason: '' };
       try {
         const cms = reqCms();
-        const pr = await grProbe(r.name).catch(() => ({ error: 'nicht lesbar' }));
-        res.photos = pr.photos || []; if (pr.avatar) res.avatar = pr.avatar;
+        const pr = await grProbe(r.name, { photos: grUsesField(cms, 'photos') ? 50 : GR_MANUAL_PHOTOS }).catch(() => ({ error: 'nicht lesbar' }));
+        res.photos = (pr.photos || []).slice(0, GR_MANUAL_PHOTOS); if (pr.avatar) res.avatar = pr.avatar;   // Anzeige: Avatar + bis zu 5 weitere
         if (!pr.trait) { res.reason = pr.error || 'keine Angaben'; }
         else {
           await grEnrich(cms, pr).catch(() => {});
@@ -4108,7 +3946,6 @@
       if (i < reqs.length && !run.stop) await sleep(rand(1500, 3000));
     }
     bar.style.width = '100%';
-    if (probeFrame) { probeFrame.remove(); probeFrame = null; }
     window.removeEventListener('beforeunload', guard);
     Vis.restore(vis);
     groupRun = null;
@@ -6539,36 +6376,45 @@
     near.before(sec);
   }
 
-  // Link „Freunde“ vor „Sparks“ im Entdecken-Dropdown (global, auf jeder Seite)
+  // Link „Freunde“ vor „Sparks“ in jedem Menü (Entdecken-Dropdown, Nav, mobil), auf jeder Seite.
   function discoverMenuLink() {
-    const labels = document.querySelectorAll('a [data-type="label"], a[data-type]');
-    let sparks = null;
+    const here = location.pathname;
+    const onFriends = here.startsWith('/friends');
+    const sparksList = [];
     for (const el of document.querySelectorAll('a')) {
       const lab = el.querySelector('[data-type="label"]');
-      if (lab && norm(lab.textContent) === 'sparks') { sparks = el; break; }
+      if (lab && norm(lab.textContent) === 'sparks') sparksList.push(el);
     }
-    if (!sparks) return;
-    // Aktiv-/Ausgewählt-Markierungen entfernen: der Klon von „Sparks“ erbt sonst
-    // dessen Highlight (z.B. auf /speed-dating/play) und wirkt fälschlich aktiv.
-    // Nur auf der echten Freunde-Seite darf „Freunde“ aktiv sein.
-    const stripActive = (el) => {
-      if (location.pathname.startsWith('/friends')) return;
-      for (const n of [el, ...el.querySelectorAll('*')]) {
-        if (n.removeAttribute) { n.removeAttribute('aria-current'); n.removeAttribute('data-active'); }
-        if (n.classList) for (const c of [...n.classList]) if (/active|selected|current/i.test(c)) n.classList.remove(c);
-      }
-    };
-    // schon vorhanden?
-    if (sparks.previousElementSibling && sparks.previousElementSibling.id === 'vaf-discover-friends') { stripActive(sparks.previousElementSibling); return; }
-    const a = sparks.cloneNode(true);
-    a.id = 'vaf-discover-friends';
-    a.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
-    a.setAttribute('href', FRIENDS_URL);
-    const lab = a.querySelector('[data-type="label"]'); if (lab) lab.textContent = 'Freunde';
-    const ic = a.querySelector('[data-type="icon"]'); if (ic) ic.innerHTML = FRIENDS_ICON;
-    const badge = a.querySelector('[data-type="badge"]'); if (badge) badge.remove();
-    stripActive(a);
-    sparks.before(a);
+    for (const sparks of sparksList) {
+      const parent = sparks.parentElement; if (!parent) continue;
+      // Stil-Referenz: ein inaktiver Nachbar-Link (href ≠ aktuelle Seite). Dessen Klassen
+      // übertragen wir, um jedes gehashte Aktiv-Highlight zu neutralisieren (poppen benennt
+      // den Aktiv-Zustand mit zufälligen Klassennamen, daher reicht Namens-Matching nicht).
+      const ref = [...parent.querySelectorAll('a')].find((el) => el !== sparks && el.querySelector('[data-type="label"]') && (el.getAttribute('href') || '') !== here) || null;
+      const neutralize = (a) => {
+        if (onFriends) return;                               // auf der echten Freunde-Seite darf es aktiv sein
+        if (ref) {
+          a.className = ref.className;
+          for (const sel of ['[data-type="label"]', '[data-type="icon"]']) { const r = ref.querySelector(sel), x = a.querySelector(sel); if (r && x) x.className = r.className; }
+        }
+        for (const n of [a, ...a.querySelectorAll('*')]) {
+          if (n.removeAttribute) { n.removeAttribute('aria-current'); n.removeAttribute('data-active'); }
+          if (n.classList) for (const c of [...n.classList]) if (/active|selected|current/i.test(c)) n.classList.remove(c);
+        }
+        a.classList.add('vaf-discover-friends');
+      };
+      const prev = sparks.previousElementSibling;
+      if (prev && prev.classList && prev.classList.contains('vaf-discover-friends')) { neutralize(prev); continue; }
+      const a = sparks.cloneNode(true);
+      a.removeAttribute('id');
+      a.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
+      a.setAttribute('href', FRIENDS_URL);
+      const lab = a.querySelector('[data-type="label"]'); if (lab) lab.textContent = 'Freunde';
+      const ic = a.querySelector('[data-type="icon"]'); if (ic) ic.innerHTML = FRIENDS_ICON;
+      const badge = a.querySelector('[data-type="badge"]'); if (badge) badge.remove();
+      neutralize(a);
+      sparks.before(a);
+    }
   }
 
   function friendsUi() {
@@ -6647,14 +6493,23 @@
     const has = (sex) => !sex || g === 'p' || g === sex || (g !== 'm' && g !== 'w');   // ts/tv: alles anbieten
     return GR_FIELDS.filter((f) => has(f.sex));
   }
+  // Operatoren je Feldtyp. „keine Angabe“/„hat Angabe“ (none/some) brauchen keinen Wert.
+  const GR_NA = [['none', 'keine Angabe'], ['some', 'hat Angabe']];
   const GR_OPS = {
-    num: [['eq', '='], ['ne', '≠'], ['lt', 'ist kleiner als'], ['gt', 'ist größer als'], ['between', 'zwischen']],
-    enum: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'ist eine von']],
-    country: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'ist eine von']],
-    lang: [['contains', 'enthält'], ['only', 'nur'], ['isexactly', 'ist genau']],
+    num: [['eq', 'ist gleich'], ['ne', 'ist ungleich'], ['lt', 'ist kleiner als'], ['gt', 'ist größer als'], ['between', 'zwischen'], ...GR_NA],
+    enum: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'enthält eine von'], ['noneof', 'enthält keine von'], ...GR_NA],
+    jn: [['is', 'ist'], ...GR_NA],                         // Ja/Nein-Felder: Negation = anderen Wert wählen
+    country: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'enthält eine von'], ['noneof', 'enthält keine von'], ...GR_NA],
+    lang: [['contains', 'enthält'], ['only', 'nur'], ['notcontains', 'enthält nicht'], ...GR_NA],
     bool: [['is', 'ist'], ['isnot', 'ist nicht']],
   };
+  const GR_JN = new Set(['glass', 'smoker', 'tattoo', 'piercing', 'handicap', 'circumcised']);
+  const grOpType = (f) => (f.derived === 'photos' ? 'num' : GR_JN.has(f.key) ? 'jn' : f.type);
+  const grOpsFor = (f) => GR_OPS[grOpType(f)] || [];
   const grOpName = (type, op) => ((GR_OPS[type] || []).find((x) => x[0] === op) || [, op])[1];
+  const grNoValue = (op) => op === 'none' || op === 'some';
+  // Mehrfachauswahl je Operator
+  const grIsMulti = (f, op) => (grOpType(f) === 'lang' ? (op === 'contains' || op === 'notcontains') : (op === 'isoneof' || op === 'noneof'));
 
   const grRules = () => G.get('grRules', {});
   const grSetRules = (r) => { G.set('grRules', r); Bus.emit('grRules', r); };
@@ -6713,20 +6568,33 @@
     if (op === 'is') return has.includes(want[0]);
     if (op === 'isnot') return has.length ? !has.includes(want[0]) : false;
     if (op === 'isoneof') return has.some((c) => want.includes(c));
+    if (op === 'noneof') return !has.some((c) => want.includes(c));
     return false;
   }
   function langMatch(op, value, personsLangs) {
-    const want = (Array.isArray(value) ? value : [value]).map(String);
+    const want = (Array.isArray(value) ? value : [value]).map(String).filter(Boolean);
     return personsLangs.some((langs) => {
       const have = (langs || []).map(String);
       if (op === 'contains') return want.every((w) => have.includes(w));
-      if (op === 'only') return have.length > 0 && have.every((h) => want.includes(h));
-      if (op === 'isexactly') return have.length === want.length && want.every((w) => have.includes(w));
+      if (op === 'only') return have.length > 0 && have.every((h) => want.includes(h));   // Einfachauswahl: spricht nur diese eine
+      if (op === 'notcontains') return !want.some((w) => have.includes(w));               // spricht keine der gewählten
       return false;
     });
   }
+  // Hat der Kandidat für dieses Feld einen echten Wert? (Grundlage für „keine Angabe“/„hat Angabe“)
+  //  Leer = Feld fehlt/null oder trägt nur den echten Leer-Code (0 bzw. Feld-Sentinel). Der Such-Wert „egal“ zählt nie als Angabe.
+  function grHasValue(f, ctx) {
+    if (f.type === 'lang') return ((ctx.trait && ctx.trait.spoken_language) || []).some((a) => (a || []).filter(Boolean).length > 0);
+    if (f.derived === 'photos') return (ctx.photos || []).length > 0;
+    const vals = (f.ctxKey ? (ctx[f.ctxKey] || []) : grTraitVals(f, ctx.trait)).map((v) => String(v)).filter((s) => s !== '' && s !== 'null' && s !== 'undefined');
+    if (GR_JN.has(f.key)) return vals.some((s) => s === '0' || s === '1');           // nur echte Ja/Nein-Antwort
+    if (f.type === 'num') return vals.some((s) => Number(s) > 0);
+    const skip = new Set(['0', ...((GR_SENTINEL && GR_SENTINEL[f.trait]) || [])]);
+    return vals.some((s) => !skip.has(s));
+  }
   function grLeaf(leaf, ctx) {
     const f = grField(leaf.field); if (!f) return false;
+    if (grNoValue(leaf.op)) { const h = grHasValue(f, ctx); return leaf.op === 'some' ? h : !h; }
     if (f.type === 'bool') {
       const d = f.derived;
       const actual = d === 'verified' ? !!ctx.verified
@@ -6743,15 +6611,18 @@
       const have = (ctx.relCats || []).map((x) => norm(String(x)));
       const want = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map((x) => norm(String(x))).filter(Boolean);
       const hit = want.some((w) => have.some((h) => h.includes(w) || w.includes(h)));
+      if (leaf.op === 'noneof') return !hit;
       return leaf.op === 'isnot' ? (have.length ? !hit : false) : hit;
     }
     if (f.ctxKey) return enumMatch(leaf.op, leaf.value, ctx[f.ctxKey] || []);
     return enumMatch(leaf.op, leaf.value, grTraitVals(f, ctx.trait));
   }
+  // Kind auswerten, ggf. negiert („UND NICHT“ / „ODER NICHT“ bzw. NICHT am ersten Operanden)
+  const grEvalKid = (k, ctx) => { const r = grEval(k, ctx); return k && k.neg ? !r : r; };
   function grEval(node, ctx) {
     if (!node) return false;
-    if (node.op === 'and') return (node.kids || []).every((k) => grEval(k, ctx));
-    if (node.op === 'or') return (node.kids || []).some((k) => grEval(k, ctx));
+    if (node.op === 'and') return (node.kids || []).every((k) => grEvalKid(k, ctx));
+    if (node.op === 'or') return (node.kids || []).some((k) => grEvalKid(k, ctx));
     return grLeaf(node, ctx);
   }
   // Hauptgruppen eines Baums: bei Top-ODER jeder Zweig, sonst der Baum selbst. Jede trägt eine eigene Begründung.
@@ -6765,8 +6636,8 @@
     const g = genderCode(ctx.trait && ctx.trait.gender);
     const block = grBlock(cms, g, rules);
     if (!block) return { verdict: 'manual', reason: '', note: `keine Regel für ${grGenderName(g) || 'dieses Geschlecht'}` };
-    if (grHasRules(block.reject)) for (const mg of grMainGroups(block.reject)) if (grHasRules(mg) && grEval(mg, ctx)) return { verdict: 'reject', reason: (mg.reason || '').trim() };
-    if (grHasRules(block.accept)) for (const mg of grMainGroups(block.accept)) if (grHasRules(mg) && grEval(mg, ctx)) return { verdict: 'accept', reason: (mg.reason || '').trim() };
+    if (grHasRules(block.reject)) for (const mg of grMainGroups(block.reject)) if (grHasRules(mg) && grEvalKid(mg, ctx)) return { verdict: 'reject', reason: (mg.reason || '').trim() };
+    if (grHasRules(block.accept)) for (const mg of grMainGroups(block.accept)) if (grHasRules(mg) && grEvalKid(mg, ctx)) return { verdict: 'accept', reason: (mg.reason || '').trim() };
     return { verdict: 'manual', reason: '' };
   }
   // ---------- Entscheidungs-Notiz (Punkt 17) ----------
@@ -6800,12 +6671,13 @@
   function grDNF(node) {
     if (!node) return [[]];
     if (node.field) return [[node]];
-    if (node.op === 'and') { let acc = [[]]; for (const k of (node.kids || [])) { const d = grDNF(k); const nx = []; for (const a of acc) for (const b of d) nx.push(a.concat(b)); acc = nx; } return acc.length ? acc : [[]]; }
-    if (node.op === 'or') { let out = []; for (const k of (node.kids || [])) out = out.concat(grDNF(k)); return out.length ? out : [[]]; }
+    if (node.op === 'and') { let acc = [[]]; for (const k of (node.kids || [])) { const d = k && k.neg ? [[]] : grDNF(k); const nx = []; for (const a of acc) for (const b of d) nx.push(a.concat(b)); acc = nx; } return acc.length ? acc : [[]]; }
+    if (node.op === 'or') { let out = []; for (const k of (node.kids || [])) out = out.concat(k && k.neg ? [[]] : grDNF(k)); return out.length ? out : [[]]; }
     return [[]];
   }
   // Machbarkeit einer Konjunktion je Feld; gibt pro Feld ein Beispiel-Wert zurück oder null (unmöglich)
   function grFeasible(leaves, optsByField) {
+    leaves = leaves.filter((l) => !grNoValue(l.op) && l.op !== 'notcontains');
     const byField = {};
     for (const l of leaves) (byField[l.field] = byField[l.field] || []).push(l);
     const example = {};
@@ -6826,7 +6698,7 @@
         for (const l of ls) { const w = l.value === true || l.value === 'true' || l.value === 1 || l.value === '1'; const eff = l.op === 'isnot' ? !w : w; if (want === null) want = eff; else if (want !== eff) return null; }
         example[fk] = want;
       } else if (f.type === 'lang') {
-        // vereinfachte Prüfung: contains fügt hinzu, only/isexactly beschränken
+        // vereinfachte Prüfung: contains fügt hinzu, only beschränkt
         let must = new Set(), restrict = null;
         for (const l of ls) { const vs = (Array.isArray(l.value) ? l.value : [l.value]).map(String);
           if (l.op === 'contains') vs.forEach((v) => must.add(v));
@@ -6841,7 +6713,8 @@
         for (const l of ls) { const vs = (Array.isArray(l.value) ? l.value : [l.value]).map(String);
           if (l.op === 'is') allowed = new Set([...allowed].filter((c) => c === vs[0]));
           else if (l.op === 'isoneof') allowed = new Set([...allowed].filter((c) => vs.includes(c)));
-          else if (l.op === 'isnot') allowed = new Set([...allowed].filter((c) => c !== vs[0])); }
+          else if (l.op === 'isnot') allowed = new Set([...allowed].filter((c) => c !== vs[0]));
+          else if (l.op === 'noneof') allowed = new Set([...allowed].filter((c) => !vs.includes(c))); }
         if (!allowed.size) return null; example[fk] = [...allowed][0];
       }
     }
@@ -6866,10 +6739,31 @@
   // Regel-Editor auf /groups/<cms>/requests  (Abschnitt „Nach Regeln akzeptierte Geschlechter“)
   // =====================================================================================
   const grReqCms = () => (/^\/groups\/(\d+)\/requests/.exec(location.pathname) || [])[1] || '';
-  const newTree = () => ({ op: 'and', kids: [] });
-  const newLeaf = (g) => { const f = grFieldsFor(g)[0]; return { field: f.key, op: GR_OPS[f.type][0][0], value: f.type === 'num' ? (f.min || 0) : f.type === 'bool' ? true : '' }; };
+  const grEditCms = () => (/^\/groups\/(\d+)\/edit/.exec(location.pathname) || [])[1] || '';
+  // Oberste Ebene: neue Gruppen per Default ODER-verknüpft (je Hauptgruppe eine Begründung); verschachtelt: UND.
+  const newTree = () => ({ op: 'or', kids: [] });
+  function grDefaultValue(f, op) {
+    if (grNoValue(op)) return '';
+    if (f.type === 'num' || f.derived === 'photos') return op === 'between' ? [f.min || 0, f.max || 0] : (f.min || 0);
+    if (f.type === 'bool') return true;
+    return grIsMulti(f, op) ? [] : '';
+  }
+  // Wert beim Operatorwechsel passend umformen (Einfach ↔ Mehrfach, Bereich, ohne Wert)
+  function grCoerceValue(f, op, v) {
+    if (grNoValue(op)) return '';
+    if (f.type === 'num' || f.derived === 'photos') {
+      const first = Array.isArray(v) ? v[0] : v;
+      const n = first === '' || first == null ? (f.min || 0) : Number(first);
+      return op === 'between' ? (Array.isArray(v) && v.length === 2 ? v : [n, f.max || 0]) : n;
+    }
+    if (f.type === 'bool') return typeof v === 'boolean' ? v : true;
+    if (grIsMulti(f, op)) return Array.isArray(v) ? v : (v === '' || v == null ? [] : [v]);
+    return Array.isArray(v) ? (v[0] != null ? v[0] : '') : (v == null ? '' : v);
+  }
+  const newLeaf = (g) => { const f = grFieldsFor(g)[0]; const op = grOpsFor(f)[0][0]; return { field: f.key, op, value: grDefaultValue(f, op) }; };
 
-  function grEl(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+  // Buttons immer type=button: auf /groups/<id>/edit steckt der Editor in poppens Formular (sonst Submit!)
+  function grEl(tag, cls, html) { const e = document.createElement(tag); if (tag === 'button') e.type = 'button'; if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
 
   // Begründungs-Zeile (optional). Wird in die Gruppen-Notiz übernommen: … [wegen <Begründung>] …
   // Kein onChange beim Tippen (würde den Editor neu rendern und den Fokus verlieren) – node.reason wird direkt gesetzt.
@@ -6883,34 +6777,75 @@
     return row;
   }
 
-  // einen Baum (node) rekursiv rendern; onChange nach jeder Änderung; g = Geschlecht des Blocks
-  function grRenderNode(node, g, onChange, depth) {
-    const box = grEl('div', 'vaf-gr-group');
-    const perBranch = depth === 0 && node.op === 'or';   // bei Top-ODER: je Zweig eine Begründung
-    (node.kids || []).forEach((kid, idx) => {
-      if (idx > 0) {
-        const conj = grEl('div', 'vaf-gr-conj');
-        const sel = grEl('select', 'vaf-gr-op');
-        sel.innerHTML = '<option value="and">UND</option><option value="or">ODER</option>';
-        sel.value = node.op;
-        sel.addEventListener('change', () => { node.op = sel.value; onChange(); });
-        conj.appendChild(sel);
-        box.appendChild(conj);
-      }
-      if (kid.field) box.appendChild(grRenderLeaf(kid, node, g, onChange));
-      else box.appendChild(grRenderNode(kid, g, onChange, depth + 1));
-      if (perBranch) box.appendChild(grReasonRow(kid));
+  // Verknüpfung vor einem Operanden: UND / ODER / UND NICHT / ODER NICHT.
+  //  UND/ODER gilt für die ganze Ebene (node.op), NICHT verneint nur den folgenden Operanden (kid.neg).
+  function grConjSel(node, kid, onChange, depth) {
+    const conj = grEl('div', 'vaf-gr-conj' + (kid.neg ? ' neg' : ''));
+    const sel = grEl('select', 'vaf-gr-op');
+    sel.innerHTML = '<option value="and">UND</option><option value="or">ODER</option><option value="andnot">UND NICHT</option><option value="ornot">ODER NICHT</option>';
+    sel.value = (node.op === 'or' ? 'or' : 'and') + (kid.neg ? 'not' : '');
+    sel.addEventListener('change', () => {
+      const v = sel.value; const op = v.startsWith('or') ? 'or' : 'and';
+      // Wechsel UND→ODER auf oberster Ebene: bisherige gemeinsame Begründung an die neuen Hauptgruppen weitergeben
+      if (depth === 0 && node.op !== 'or' && op === 'or' && node.reason) for (const k of node.kids || []) if (!k.reason) k.reason = node.reason;
+      node.op = op; kid.neg = v.endsWith('not'); onChange();
     });
+    conj.appendChild(sel);
+    return conj;
+  }
+  // NICHT-Schalter für den ersten Operanden einer Ebene (er hat keine Verknüpfung davor)
+  function grNegChip(kid, onChange) {
+    const b = grEl('button', 'vaf-gr-neg' + (kid.neg ? ' on' : ''), kid.neg ? 'NICHT' : 'nicht');
+    b.type = 'button'; b.title = kid.neg ? 'Verneinung aufheben' : 'Diesen Ausdruck verneinen';
+    b.addEventListener('click', () => { kid.neg = !kid.neg; onChange(); });
+    return b;
+  }
+
+  // einen Baum (node) rekursiv rendern; onChange nach jeder Änderung; g = Geschlecht des Blocks.
+  //  Kästen (oben/links/unten, rechts offen): je UND-Strecke einer Ebene ein Kasten, ein ODER beginnt einen neuen.
+  //  inBox = der Elternteil hat für genau diesen Knoten schon einen Kasten angelegt (kein Doppelkasten).
+  function grRenderNode(node, g, onChange, depth, inBox) {
+    const wrap = grEl('div', 'vaf-gr-group' + (depth === 0 ? ' root' : ''));
+    const kids = node.kids || [];
+    const isOr = node.op === 'or';
+    const perBranch = depth === 0 && isOr;              // bei Top-ODER: je Hauptgruppe eine Begründung
+    const andBox = !isOr && kids.length ? (inBox ? wrap : wrap.appendChild(grEl('div', 'vaf-gr-box'))) : null;
+    kids.forEach((kid, i) => {
+      let target;
+      if (isOr) {
+        if (i > 0) wrap.appendChild(grConjSel(node, kid, onChange, depth));
+        target = wrap.appendChild(grEl('div', 'vaf-gr-box'));
+      } else {
+        target = andBox;
+        if (i > 0) target.appendChild(grConjSel(node, kid, onChange, depth));
+      }
+      const el = kid.field ? grRenderLeaf(kid, node, g, onChange) : grRenderNode(kid, g, onChange, depth + 1, isOr);
+      if (i === 0) {
+        const chip = grNegChip(kid, onChange);
+        if (kid.field) el.insertBefore(chip, el.firstChild);
+        else {                                          // ganze Gruppe verneinen: Schalter in deren Aktionszeile
+          chip.textContent = kid.neg ? 'Gruppe verneint' : 'Gruppe verneinen';
+          const addRow = el.querySelector(':scope > .vaf-gr-add'); (addRow || el).appendChild(chip);
+        }
+      }
+      target.appendChild(el);
+      if (perBranch) target.appendChild(grReasonRow(kid));
+    });
+    if (depth === 0 && !isOr && andBox) andBox.appendChild(grReasonRow(node));   // eine Begründung für die ganze Hauptgruppe
     const add = grEl('div', 'vaf-gr-add');
     const bCond = grEl('button', 'vaf-gr-addbtn', '+ Bedingung');
-    bCond.addEventListener('click', () => { node.kids.push(newLeaf(g)); onChange(); });
+    bCond.addEventListener('click', () => { const l = newLeaf(g); if (perBranch && kids.length && kids[kids.length - 1].reason) l.reason = kids[kids.length - 1].reason; node.kids.push(l); onChange(); });
     const bGrp = grEl('button', 'vaf-gr-addbtn', '+ Gruppe');
-    bGrp.addEventListener('click', () => { node.kids.push({ op: 'and', kids: [newLeaf(g)] }); onChange(); });
+    bGrp.addEventListener('click', () => {
+      const ng = { op: 'and', kids: [newLeaf(g)] };
+      // neue Hauptgruppe erbt einmalig die Begründung der Gruppe davor (danach frei änderbar)
+      if (perBranch && kids.length && kids[kids.length - 1].reason) ng.reason = kids[kids.length - 1].reason;
+      node.kids.push(ng); onChange();
+    });
     add.appendChild(bCond); add.appendChild(bGrp);
     if (depth > 0) { const rm = grEl('button', 'vaf-gr-rm', '✕ Gruppe'); rm.addEventListener('click', () => { node.__remove = true; onChange(); }); add.appendChild(rm); }
-    if (depth === 0 && !perBranch) box.appendChild(grReasonRow(node));   // eine Begründung für die ganze Hauptgruppe
-    box.appendChild(add);
-    return box;
+    wrap.appendChild(add);
+    return wrap;
   }
 
   function grRenderLeaf(leaf, parent, g, onChange) {
@@ -6919,13 +6854,15 @@
     const fs = grEl('select', 'vaf-gr-field');
     fs.innerHTML = grFieldOptionsHtml(fields, leaf.field);
     fs.value = leaf.field;
-    fs.addEventListener('change', () => { leaf.field = fs.value; const f = grField(leaf.field); leaf.op = GR_OPS[f.type][0][0]; leaf.value = f.type === 'num' ? (f.min || 0) : f.type === 'bool' ? true : ''; onChange(); });
+    fs.addEventListener('change', () => { leaf.field = fs.value; const f2 = grField(leaf.field); leaf.op = grOpsFor(f2)[0][0]; leaf.value = grDefaultValue(f2, leaf.op); onChange(); });
     row.appendChild(fs);
     const f = grField(leaf.field);
+    const ops = grOpsFor(f);
+    if (!ops.some((o) => o[0] === leaf.op)) { leaf.op = ops[0][0]; leaf.value = grCoerceValue(f, leaf.op, leaf.value); }   // alte Operatoren (z. B. „ist genau“) umstellen
     const os = grEl('select', 'vaf-gr-op');
-    os.innerHTML = GR_OPS[f.type].map(([o, n]) => `<option value="${o}">${esc(n)}</option>`).join('');
+    os.innerHTML = ops.map(([o, n]) => `<option value="${o}">${esc(n)}</option>`).join('');
     os.value = leaf.op;
-    os.addEventListener('change', () => { leaf.op = os.value; if (leaf.op === 'between' && !Array.isArray(leaf.value)) leaf.value = [Number(leaf.value) || f.min || 0, f.max || 0]; onChange(); });
+    os.addEventListener('change', () => { leaf.op = os.value; leaf.value = grCoerceValue(f, leaf.op, leaf.value); onChange(); });
     row.appendChild(os);
     row.appendChild(grRenderValue(leaf, f, onChange));
     const rm = grEl('button', 'vaf-gr-rm', '✕');
@@ -6936,6 +6873,7 @@
 
   function grRenderValue(leaf, f, onChange) {
     const wrap = grEl('span', 'vaf-gr-val');
+    if (grNoValue(leaf.op)) return wrap;                 // „keine Angabe“ / „hat Angabe“ brauchen keinen Wert
     if (f.type === 'num' || f.derived === 'photos') {
       const mk = (val, set) => { const i = grEl('input', 'vaf-gr-num'); i.type = 'number'; if (f.min != null) i.min = f.min; if (f.max != null) i.max = f.max; i.value = val; i.addEventListener('change', () => { set(Number(i.value)); onChange(); }); return i; };
       if (leaf.op === 'between') {
@@ -6945,8 +6883,8 @@
       if (f.unit) wrap.appendChild(grEl('span', 'vaf-gr-unit', ' ' + f.unit));
       return wrap;
     }
-    // Pills im poppen-Stil statt Dropdown. „ist eine von" + Sprachen = Mehrfachauswahl (ODER-verknüpft).
-    const multi = (f.type === 'lang') || leaf.op === 'isoneof';
+    // Pills im poppen-Stil statt Dropdown. Mehrfachauswahl (ODER-verknüpft) bei „enthält (eine/keine) von“ bzw. Sprachen „enthält (nicht)“.
+    const multi = grIsMulti(f, leaf.op);
     const box = grEl('div', 'vaf-gr-pills' + (multi ? ' multi' : ''));
     const load = grEl('span', 'vaf-gr-pload', '…'); box.appendChild(load);
     wrap.appendChild(box);
@@ -7017,18 +6955,41 @@
   }
 
   let grEditorDraft = null;
+  // Einfügeposition auf /groups/<id>/edit: direkt über „Lokale Gruppe“ (nach „Diese Geschlechter Automatisch Genehmigen“)
+  function grEditAnchor() {
+    const main = document.querySelector('main'); if (!main) return null;
+    const lok = [...main.querySelectorAll('span')].find((s) => s.children.length === 0 && norm(s.textContent) === 'lokale gruppe');
+    if (!lok) return null;
+    const lab = main.querySelector('label[for="auto_approve_genders"]');
+    const item = lab && lab.closest('.ant-form-item');
+    if (item) {                                          // gemeinsamer Vorfahr → dessen Kind, das „Lokale Gruppe“ enthält
+      let anc = item.parentElement; while (anc && !anc.contains(lok)) anc = anc.parentElement;
+      if (anc) { let c = lok; while (c.parentElement && c.parentElement !== anc) c = c.parentElement; if (c.parentElement === anc) return { before: c }; }
+    }
+    const blk = lok.closest('.ant-form-item') || lok.closest('.IZaklP') || lok.parentElement;
+    return blk ? { before: blk } : null;
+  }
   function grEditorUi() {
-    const cms = grReqCms();
+    const reqCms = grReqCms(), editCms = grEditCms();
+    const cms = reqCms || editCms;
     if (!cms) { grEditorDraft = null; return; }
     if (document.getElementById('vaf-gr-editor')) return;
-    // Anker: nach der poppen-eigenen „Automatische Genehmigungsregeln festlegen“
-    const h = [...document.querySelectorAll('main h2, main h3')].find((x) => /Automatische Genehmigungsregeln/i.test(x.textContent));
-    if (!h) return;
-    let sec = h; const main = document.querySelector('main');
-    while (sec.parentElement && sec.parentElement !== main && !sec.parentElement.matches('.Hg9Kid, main')) sec = sec.parentElement;
+    let place = null;
+    if (reqCms) {
+      // Anker: nach der poppen-eigenen „Automatische Genehmigungsregeln festlegen“
+      const h = [...document.querySelectorAll('main h2, main h3')].find((x) => /Automatische Genehmigungsregeln/i.test(x.textContent));
+      if (!h) return;
+      let sec = h; const main = document.querySelector('main');
+      while (sec.parentElement && sec.parentElement !== main && !sec.parentElement.matches('.Hg9Kid, main')) sec = sec.parentElement;
+      place = { after: sec };
+    } else {
+      place = grEditAnchor(); if (!place) return;
+    }
     ensureGrStyle();
     const wrap = grEl('div', 'vaf-gr-editor'); wrap.id = 'vaf-gr-editor';
-    sec.after(wrap);
+    // im poppen-Formular: Enter in unseren Feldern darf nichts abschicken
+    wrap.addEventListener('keydown', (e) => { if (e.key === 'Enter' && /^(INPUT|SELECT)$/.test(e.target.tagName)) e.preventDefault(); });
+    if (place.after) place.after.after(wrap); else place.before.before(wrap);
     grEditorDraft = clone(grRules()[cms] || {});
     renderGrEditor(wrap, cms);
   }
@@ -7136,7 +7097,14 @@
     return pr;
   }
 
-  async function grProbe(name) {
+  // Nutzt eine Regel dieser Gruppe ein bestimmtes Feld (egal bei welchem Geschlecht)?
+  function grUsesField(cms, key, rules) { const r = ((rules || grRules())[cms]) || {}; return Object.keys(r).some((g) => grUsedFields(cms, g, rules).includes(key)); }
+  // Fotos aus der Galerie: opts.photos = wie viele weitere Bilder (ohne Avatar) gebraucht werden.
+  //  Manuelle Prüfung: Avatar + bis zu 5 weitere (fest). Reine Regelprüfung: 1 Bild reicht für „hat Fotos“
+  //  (bei echtem Avatar gar keins); nur wenn eine Regel „Fotos (Anzahl)“ nutzt, wird mehr geladen.
+  const GR_MANUAL_PHOTOS = 5;
+  const grPhotoKey = (src) => { const m = /(\d+-[0-9a-f]{16,})/i.exec(String(src || '')); return m ? m[1].toLowerCase() : String(src || ''); };
+  async function grProbe(name, opts = {}) {
     const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '', nick: String(name), uid: '', rel: null, relCats: [], interested: [], lookingForCodes: [] };
     let d;
     try { d = await apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 }); } catch (e) { out.error = e.message; return out; }
@@ -7149,9 +7117,17 @@
     out.lookingForCodes = Array.isArray(am.lookingFor) ? am.lookingFor.map((x) => Array.isArray(x) ? String(x[1]) : String(x)).filter(Boolean) : [];
     out.verified = /done|verifi|ok|true/i.test(String(ui.fakecheck || '')) || ui.fakecheck === true;
     out.avatar = ui.avatar || '';
-    try {
-      const g = await apiGet('v3/profile/gallery', { _version: 2, nickname: String(name).toLowerCase(), page: 1, limit: 12 });
-      for (const it of (g && g.items) || []) { const md = it.media_data || {}; const src = md.source_url || md.preview_url || ''; if (it.media_type === 'image' && !it.is_private && realPhoto(src) && !out.photos.includes(src)) out.photos.push(src); }
+    let want = opts.photos != null ? opts.photos : GR_MANUAL_PHOTOS;
+    if (opts.decideOnly && realPhoto(out.avatar) && want <= 1) want = 0;     // Avatar ist schon ein echtes Bild
+    if (want > 0) try {
+      const g = await apiGet('v3/profile/gallery', { _version: 2, nickname: String(name).toLowerCase(), page: 1, limit: Math.min(50, want + 1) });
+      const seen = new Set([grPhotoKey(out.avatar)]);
+      for (const it of (g && g.items) || []) {
+        if (out.photos.length >= want) break;
+        const md = it.media_data || {}; const src = md.source_url || md.preview_url || '';
+        if (it.media_type !== 'image' || it.is_private || !realPhoto(src)) continue;
+        const k = grPhotoKey(src); if (seen.has(k)) continue; seen.add(k); out.photos.push(src);
+      }
     } catch {}
     out.hasphoto = out.photos.length > 0 || realPhoto(out.avatar);
     ingestUserInfo(d).catch(() => {});
@@ -7166,7 +7142,7 @@
     const list = [];
     for (const u of pending) {
       const nick = u.nickname || u.name; if (!nick) continue;
-      const pr = await grProbe(nick).catch(() => null);
+      const pr = await grProbe(nick, { decideOnly: true, photos: grUsesField(cms, 'photos', rules) ? 50 : 1 }).catch(() => null);
       if (pr && pr.trait) await grEnrich(cms, pr, rules).catch(() => {});
       const ctx = pr && pr.trait ? pr : null;
       const d = ctx ? grDecide(cms, ctx, rules) : { verdict: 'manual', reason: 'keine Angaben' };
@@ -7218,7 +7194,7 @@
       const nick = it.name; if (!nick) continue;
       const line = grEl('div', 'vaf-gr-meta', '…'); it.descEl.after(line);
       let pr = grMetaCache.get(nick);
-      if (!pr) { pr = await grProbe(nick).catch(() => null); if (pr && pr.trait) await grEnrich(cms, pr).catch(() => {}); grMetaCache.set(nick, pr); }
+      if (!pr) { pr = await grProbe(nick, { decideOnly: true, photos: grUsesField(cms, 'photos') ? 50 : 1 }).catch(() => null); if (pr && pr.trait) await grEnrich(cms, pr).catch(() => {}); grMetaCache.set(nick, pr); }
       const ctx = pr && pr.trait ? pr : null;
       line.textContent = ctx ? (await grMetaLine(cms, ctx)) : '';
       if (!line.textContent) line.remove();
@@ -7241,7 +7217,11 @@
     .vaf-gr-lbl{color:#a6a6a6;font-size:13px}
     .vaf-gr-tt{font-weight:600;color:#fff;margin:12px 0 6px;display:flex;align-items:center;gap:7px}
     .vaf-gr-tt.acc::before{content:"✓";color:#49d17a}.vaf-gr-tt.rej::before{content:"✕";color:#ff8a80}
-    .vaf-gr-group{border-left:2px solid #3a3a3a;margin:4px 0 4px 2px;padding:2px 0 2px 12px}
+    .vaf-gr-group{margin:0;padding:0}
+    .vaf-gr-box{border:1px solid #3a3a3a;border-right:0;border-radius:10px 0 0 10px;padding:4px 0 4px 12px;margin:6px 0}
+    .vaf-gr-neg{background:none;border:1px dashed #3a3a3a;border-radius:6px;color:#6a6a6a;font-size:11px;font-weight:700;padding:2px 6px;cursor:pointer;letter-spacing:.3px;font-family:inherit}
+    .vaf-gr-neg.on{border-style:solid;border-color:#ff8a80;color:#ff8a80}
+    .vaf-gr-conj.neg .vaf-gr-op{color:#ff8a80}
     .vaf-gr-cond{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:6px 0}
     .vaf-gr-cond select,.vaf-gr-num,.vaf-gr-vsel{background:#2a2a2a;border:1px solid #3a3a3a;border-radius:8px;padding:5px 8px;color:#e8e8e8;font-size:13px;font-family:inherit}
     .vaf-gr-field{font-weight:600;color:#fff}.vaf-gr-val .vaf-gr-vsel{color:#ffc21a}.vaf-gr-num{width:70px;color:#ffc21a}
@@ -7337,6 +7317,9 @@
     ethnicity: { 6: true, 7: true, 10: true, 11: true },   // 9 (Indigen) per Helfer bestätigt
     beard:     { 5: true },                                 // Schnauzer
   };
+
+  // Altlast: der frühere Ethnie-Cache aus i18n/pull wird nicht mehr gebraucht (Speicher freigeben).
+  try { if (G.get('eth_map', null)) G.del('eth_map'); } catch {}
 
   // (2) i18n-Schlüssel → aktuelle Sprache, einmal pro 14 Tage aus poppens i18n, GM-gecacht.
   const TRAIT_I18N_TTL = 14 * DAY;
@@ -7435,17 +7418,20 @@
   // Aus user_trait (Codes) unbekannte/neue Werte je Feld erfassen – läuft bei jedem user/info.
   function grNoteUnknownCodes(tr) {
     if (!tr || typeof tr !== 'object') return;
-    const gm = G.get('gr_valuemap', {}) || {}; let changed = false;
+    const gm = G.get('gr_valuemap', {}) || {}; let changed = false, pruned = false;
+    // Aufräumen: nur numerische Codes sind gültig (alte null/Platzhalter entfernen)
+    for (const t of Object.keys(gm)) for (const c of Object.keys(gm[t] || {})) if (!/^\d+$/.test(c)) { delete gm[t][c]; pruned = true; }
     for (const t of GR_KNOWN_TRAITS) {
       let v = tr[t]; if (v == null) continue; if (!Array.isArray(v)) v = [v];
       const known = grSeeded(t); const skip = GR_SENTINEL[t] || [];
       for (const raw of v) {
-        const c = String(raw); if (!c || c === '0' || skip.includes(c)) continue;
+        const c = String(raw); if (!/^\d+$/.test(c) || c === '0' || skip.includes(c)) continue;   // nur echte Zahlen, kein null/Leer/Sentinel
         if (known[c] || (gm[t] && gm[t][c])) continue;               // schon bekannt oder schon vermerkt
         gm[t] = gm[t] || {}; gm[t][c] = { t: '', status: 'unconfirmed', seen: now() }; changed = true;
       }
     }
-    if (changed) { G.set('gr_valuemap', gm); grScheduleValueExport(); }
+    if (changed || pruned) G.set('gr_valuemap', gm);
+    if (changed) grScheduleValueExport();
   }
 
   // =====================================================================================
