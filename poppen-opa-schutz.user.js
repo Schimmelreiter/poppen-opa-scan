@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.28
+// @version      2.29
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.28';
+  const VERSION = '2.29';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -149,6 +149,9 @@
   // gelten, solange der Quelltext-Wert unverändert bleibt.
   // =====================================================================================
   const SRC_KEYS = ['interaktionen', 'besucher', 'party', 'gruppen', 'suche'];
+  // „Global“: gemeinsame Grenzen für alle Quellen (Experten-Schalter „Gemeinsame Grenzen für alle Quellen“)
+  const LIM_KEYS = ['global', ...SRC_KEYS];
+  const AGE_MAX = 99;           // Schieberegler 18–99; 99 = offenes Ende (schließt auch Ältere ein)
   const SOURCES = {
     interaktionen: { label: 'Interaktionen', avail: true, tip: 'Mitglieder, die dir ein Like, einen Sticker oder eine Nachricht geschickt haben' },
     besucher: { label: 'Profilbesucher', avail: true, tip: 'Mitglieder, die dein Profil besucht haben' },
@@ -162,15 +165,15 @@
     Besucher: 'besucher', Profilbesucher: 'besucher', Gruppen: 'gruppen', Suche: 'suche', Mitgliedersuche: 'suche',
     Vorgemerkt: 'suche', Sync: 'sync', Profil: 'besucher', Warteliste: 'suche',
   };
-  const ages3 = (a, b, c) => ({ interaktionen: [a, b, c], besucher: [a, b, c], party: [a, b, c], gruppen: [a, b, c], suche: [a, b, c] });
+  const ages3 = (a, b, c) => ({ global: [a, b, c], interaktionen: [a, b, c], besucher: [a, b, c], party: [a, b, c], gruppen: [a, b, c], suche: [a, b, c] });
 
   const DEFAULTS = {
     groups: {
-      m: { visual: true, ignore: true, types: ['m'], src: ages3(29, 48, 50),
+      m: { visual: true, ignore: true, ageVisual: false, ageIgnore: false, types: ['m'], src: ages3(29, 48, 50),
         labels: ['Jungspund', 'Jungspunde', 'Mann', 'Männer', 'Opa', 'Opas'] },
-      w: { visual: false, ignore: false, types: ['w'], src: ages3(29, 48, 50),
+      w: { visual: false, ignore: false, ageVisual: false, ageIgnore: false, types: ['w'], src: ages3(29, 48, 50),
         labels: ['junge Frau', 'junge Frauen', 'Frau', 'Frauen', 'Oma', 'Omas'] },
-      p: { visual: false, ignore: false, types: ['p'], separate: false, coupleMode: 'any',
+      p: { visual: false, ignore: false, ageVisual: false, ageIgnore: false, types: ['p'], separate: false, coupleMode: 'any',
         src: ages3(29, 48, 50), srcW: ages3(29, 48, 50), srcM: ages3(29, 48, 50),
         sugarDaddy: { on: false, gap: 15 }, sugarMom: { on: false, gap: 15 },
         labels: ['junges Paar', 'junge Paare', 'Paar', 'Paare', 'Geronto-Paar', 'Geronto-Paare'] },
@@ -186,12 +189,10 @@
     autoLogin: true,
     autoLoginPauseMin: 30,
     maintenanceMin: 15,
-    // Gruppenanfragen: Name der Gruppen (regulärer Ausdruck), für die das Prüf-Popup angeboten wird.
-    // Die Annahme-/Ablehnregeln selbst stehen im Regel-Editor direkt auf der Annahme- bzw. Bearbeiten-Seite der Gruppe.
-    groupReq: { match: '' },
     groupScan: {},                // cms_id → false = beim Gruppen-Scan auslassen (Standard: alle)
     managedWhitelist: {},         // cms_id → false = Mitglieder NICHT whitelisten (Standard: whitelisten)
     expert: {
+      sharedLimits: true,           // „Gemeinsame Grenzen für alle Quellen“: nur die Zeile „Global“ gilt
       debug: false,
       dryRun: false,
       firstScanMax: 1000,
@@ -234,8 +235,14 @@
     const stored = GM_getValue(K_SETTINGS, {}) || {};
     const s = clone(DEFAULTS);
     const flatDef = flatten(DEFAULTS);
+    // 2.29: neue Quelle „Global“ übernimmt anfangs die Werte von „Interaktionen“
+    for (const gk of Object.keys(DEFAULTS.groups)) for (const key of ['src', 'srcW', 'srcM']) {
+      const pre = `groups.${gk}.${key}`;
+      if (!(pre + '.global' in stored) && stored[pre + '.interaktionen']) stored[pre + '.global'] = { ...stored[pre + '.interaktionen'] };
+    }
     for (const [p, e] of Object.entries(stored)) {
       if (!e || typeof e !== 'object' || !('v' in e)) continue;
+      if (p.startsWith('groupReq.')) continue;   // 2.29: Einstellung „Gruppenanfragen: Gruppen“ entfernt
       const def = p in flatDef ? flatDef[p] : getPath(DEFAULTS, p);
       // Quelltext geändert → der neue Quelltext-Wert gilt
       // 2.1: Pop-MOD-Klarsinn aus dem Quelltext entfernt (über das Präfix „Pop-MOD-“ abgedeckt) – eigene Namen bleiben
@@ -259,7 +266,11 @@
     // Partygäste (gibt es auf poppen.de nicht, ausgeblendet) = Profilbesucher
     for (const k of Object.keys(s.groups || {})) {
       const g = s.groups[k];
-      for (const key of ['src', 'srcW', 'srcM']) if (g[key] && g[key].besucher) g[key].party = [...g[key].besucher];
+      for (const key of ['src', 'srcW', 'srcM']) {
+        if (!g[key]) continue;
+        if (g[key].besucher) g[key].party = [...g[key].besucher];
+        for (const k of LIM_KEYS) if (Array.isArray(g[key][k])) g[key][k] = g[key][k].map((x) => Math.max(18, Math.min(AGE_MAX, Number(x) || 18)));
+      }
     }
     return s;
   }
@@ -642,6 +653,7 @@
       return head;
     }
     if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = redact(x, k, depth + 1); return o; }
+    if (key && /^(msg_id|id|uid|item_id|refer_id|comment_id|cms_id|group_id)$/i.test(key) && (typeof v === 'string' || typeof v === 'number')) return v;   // Kennungen sind keine Telefonnummern
     if (typeof v === 'string') {
       const t = v.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '«E-Mail»');
       if (/^https?:\/\//i.test(t) || /^\/\w/.test(t)) return t;
@@ -706,7 +718,7 @@
         });
       },
       async stats() { await load(); const v = Object.values(data); return { total: v.length, fresh: v.filter((x) => !x.known).length }; },
-      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} return { version: VERSION, at: new Date().toISOString(), valuemap, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
+      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} const idres = G.get('idres_test', null); return { version: VERSION, at: new Date().toISOString(), valuemap, idres, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
       async clear() { data = {}; await KV.set('recorder', {}); Bus.emit('recorder'); },
     };
   })();
@@ -776,11 +788,12 @@
 
   // ---------- Altersgrenzen ----------
   // je Quelle [Stufe 1 bis, Stufe 2 bis, Ignorieren ab]
+  const openTop = (x) => (x >= AGE_MAX ? Infinity : x);   // Obergrenze 99 = offenes Ende (auch 100-Jährige)
   function limitsOf(gk, src, person = -1, s = S()) {
     const grp = s.groups[gk];
-    const key = SRC_KEYS.includes(src) ? src : 'suche';
-    if (gk === 'p' && grp.separate && person >= 0) return (person === 0 ? grp.srcW : grp.srcM)[key];
-    return grp.src[key];
+    const key = s.expert && s.expert.sharedLimits ? 'global' : SRC_KEYS.includes(src) ? src : 'suche';
+    const set = gk === 'p' && grp.separate && person >= 0 ? (person === 0 ? grp.srcW : grp.srcM) : grp.src;
+    return set[key] || set.interaktionen;
   }
   const srcKeyOf = (src) => (SRC_KEYS.includes(src) ? src : (NOTE_SOURCES[src] || 'suche'));
 
@@ -827,7 +840,7 @@
     const mode = r.gk === 'p' ? grp.coupleMode : 'any';
     const per = ages.map((a, i) => {
       const lim = limitsOf(r.gk, sk, ages.length > 1 ? i : -1, s);
-      const stage = a <= lim[0] ? 1 : a <= lim[1] ? 2 : 3;
+      const stage = a <= openTop(lim[0]) ? 1 : a <= openTop(lim[1]) ? 2 : 3;
       return { a, lim, stage, over: a >= lim[2], near: a < lim[2] && a + (s.warnYears || 0) >= lim[2] };
     });
     const pick = (f) => (mode === 'all' ? per.every(f) : per.some(f));
@@ -1033,7 +1046,7 @@
   })();
 
   // ---------- eigenes Profil ----------
-  // Aus session/info werden NUR uid, Nickname, Geschlecht und Wohnort gelesen.
+  // Aus session/info werden NUR uid, Nickname, Geschlecht, Alter und Wohnort gelesen.
   async function loadMe(force = false) {
     const me = Me.get();
     if (me && !force && now() - (me.at || 0) < 6 * 3600000) return me;
@@ -1041,12 +1054,65 @@
       const d = await apiGet('user/session/info', { _version: 2 });
       const a = d && d.account;
       if (!a) return me;
-      const nm = { uid: String(a.uid), nick: a.nickname, g: a.gender || [], cities: [(a.geo_location && a.geo_location.city) || ''], second: !!a.secondary_location_status, at: now() };
+      const nm = { uid: String(a.uid), nick: a.nickname, g: a.gender || [], age: Array.isArray(a.age) ? a.age.map(Number) : [], cities: [(a.geo_location && a.geo_location.city) || ''], second: !!a.secondary_location_status, at: now() };
       if (me && me.cities && me.cities[1]) nm.cities[1] = me.cities[1];
       if (a.geo_location && a.geo_location.geo_id) { const { distance, distance_unit, ...geo } = a.geo_location; G.set('mygeo', geo); }
       Me.set(nm);
       return nm;
     } catch (e) { warn('Eigenes Profil nicht lesbar', e); return me; }
+  }
+  // ---------- „Grenzen altern mit mir“ ----------
+  // Eigenes Alter möglichst genau am Geburtstag (Geburtsdatum aus user/info des eigenen Profils);
+  // ist das Datum nicht lesbar, gilt das Alter aus session/info (dann ab dem Tag, an dem das Skript es merkt).
+  async function myAgeNow() {
+    const me = Me.get();
+    if (!me) return null;
+    let bd = G.get('my_bday', null);
+    if ((!bd || now() - bd.at > 30 * DAY) && me.nick) {
+      try {
+        const d = await apiGet('user/info/' + encodeURIComponent(me.nick), { _version: 2 });
+        const b = d && d.userInfo && d.userInfo.birthday;
+        const first = String((Array.isArray(b) ? b[0] : b) || '');
+        bd = { d: /^\d{4}-\d{2}-\d{2}/.test(first) ? first.slice(0, 10) : '', at: now() };
+        G.set('my_bday', bd);
+      } catch (e) { /* später erneut */ }
+    }
+    if (bd && bd.d) return ageToday({ hi: bd.d });
+    return me.age && me.age[0] > 0 ? me.age[0] : null;
+  }
+  // Hebt bei jedem neuen eigenen Lebensjahr die Grenzen der Gruppen mit Schalter „… altern mit mir“ um die Differenz an.
+  // Entsperrt wird dadurch niemand (siehe projection: nur aktiv verschobene Grenzen geben frei).
+  function shiftLimits(s, diff) {
+    const out = [];
+    for (const gk of GROUP_KEYS) {
+      const g = s.groups[gk];
+      if (!g || (!g.ageVisual && !g.ageIgnore)) continue;
+      for (const key of ['src', 'srcW', 'srcM']) for (const k of LIM_KEYS) {
+        const v = g[key] && g[key][k];
+        if (!Array.isArray(v)) continue;
+        if (g.ageVisual) { v[0] = Math.min(AGE_MAX, v[0] + diff); v[1] = Math.min(AGE_MAX, v[1] + diff); }
+        if (g.ageIgnore) v[2] = Math.min(AGE_MAX, v[2] + diff);
+      }
+      out.push(GROUP_NAMES[gk] || gk);
+    }
+    return out;
+  }
+  async function ageWithMe() {
+    const a = await myAgeNow();
+    if (!a) return;
+    if (!(await Lock.take('agewithme', 'Grenzen altern'))) return;
+    try {
+      const last = G.get('my_age_last', 0);
+      if (!last || a < last) { G.set('my_age_last', a); return; }
+      if (a === last) return;
+      G.set('my_age_last', a);
+      const s = clone(S());
+      const names = shiftLimits(s, a - last);
+      if (!names.length) return;
+      saveSettings(s);
+      log(`Grenzen altern mit: ${a - last} Jahr(e) älter → ${names.join(', ')}`);
+      toast(`Alles Gute! Die Altersgrenzen (${names.join(', ')}) sind mit dir um ${a - last === 1 ? 'ein Jahr' : (a - last) + ' Jahre'} gealtert.`);
+    } finally { Lock.release('agewithme'); }
   }
   // Zweitwohnsitz: aus der Einstellungsseite (Zeile „Zweitwohnsitz“), höchstens einmal täglich
   async function loadSecondHome() {
@@ -1111,6 +1177,9 @@
         src: old && rankOf(old.src) <= rankOf(src) ? old.src : src, added: (old && old.added) || now(), tries: (old && old.tries) || 0,
       };
       item.prio = rankOf(item.src) * 1000 + (200 - oldest);
+      // von poppen gesperrt / in Echtheitsprüfung: neu Eingereihte ans Ende; schon Eingereihte bleiben, wo sie sind
+      if (old && old.prio >= 100000) item.prio += 100000;
+      else if (!old && m && m.pstate) item.prio += 100000;
       await DB.put('queue', item);
       Queue.changed();
       return !old;
@@ -1313,9 +1382,9 @@
           await Queue.remove(q.uid); st.dropped++; return 'skip';
         }
       }
-      // Vorprüfung 2: Regeln (Whitelist, Favoriten, Mitarbeiter, verwaltete Gruppen, Alter 99, Grenzen)
+      // Vorprüfung 2: Regeln (Whitelist, Favoriten, Mitarbeiter, verwaltete Gruppen, Grenzen)
       const c = classify({ ...(m || q), nick: q.nick }, q.src);
-      if (!c.ignore) { await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: c.white ? 'Whitelist: ' + c.white : c.unclear ? 'Alter unklar' : 'nicht mehr über der Grenze' }); return 'skip'; }
+      if (!c.ignore) { await Queue.remove(q.uid); st.dropped++; st.items.push({ nick: q.nick, res: c.white ? 'Whitelist: ' + c.white : 'nicht mehr über der Grenze' }); return 'skip'; }
       if (!m || !m.uid || String(m.uid).startsWith('nick:')) {
         const r = await blockByNickDom(q.nick);
         if (typeof r === 'string') { if (r === 'Test') { st.test++; return 'test'; } await this.fail(q, r, st); return 'fail'; }
@@ -1962,6 +2031,99 @@
   async function scanGroups(ctx) { const r = await scanGroupsWhite(ctx); return addRes(r, await scanGroupsBlack(ctx)); }
 
   // ---------- Mitgliedersuche, systematisch (Alter für Alter, ganz Deutschland) ----------
+  // ---------- Suchseite schützen ----------
+  // poppen merkt sich die zuletzt abgeschickte Suche (user/search) auf dem Server und lädt sie auf /search
+  // über user/search/detailed/arguments. Hintergrund-Suchen würden sie überschreiben. Deshalb:
+  //  - die Suche des Nutzers auf /search wird gemerkt (LastUserState),
+  //  - beim Laden der Suchseite wird die Antwort von detailed/arguments auf diesen Stand umgeschrieben,
+  //  - Hintergrund-Suchen pausieren, solange /search in irgendeinem Tab offen ist, und laufen erst
+  //    5 Minuten nach dem Verlassen weiter (erneuter Besuch setzt die Frist zurück; der Fortschritt bleibt),
+  //  - nach jedem Hintergrundlauf (und vor jeder Pause) wird der Server-Stand mit der Nutzer-Suche zurückgesetzt.
+  const SEARCH_COOL = 5 * 60000;
+  const SEARCH_FIELDS = ['genders', 'location', 'distance', 'age_min', 'age_max', 'has_image', 'sort', 'order', 'online',
+    'enable_search_gender', 'enable_fakecheck_status', 'preference_conjunction', 'second_preference_conjunction',
+    'size_min', 'size_max', 'weight_min', 'weight_max', 'figure', 'zodiac', 'smoker', 'searching', 'sexual_orientation'];
+  const SearchGuard = (() => {
+    const onSearch = () => location.pathname.startsWith('/search');
+    let was = false;
+    function beat() {
+      const open = { ...(G.get('search_open', {}) || {}) };
+      const t = now();
+      for (const [k, ts] of Object.entries(open)) if (t - ts > 25000) delete open[k];
+      const on = onSearch();
+      if (on) open[TAB_ID] = t; else delete open[TAB_ID];
+      if (was && !on) G.set('search_left', t);
+      was = on;
+      G.set('search_open', open);
+    }
+    function remaining() {
+      const open = G.get('search_open', {}) || {};
+      if (Object.values(open).some((ts) => now() - ts < 25000)) return Infinity;
+      return Math.max(0, SEARCH_COOL - (now() - G.get('search_left', 0)));
+    }
+    const busy = () => remaining() > 0;
+    function cleanState(b) {
+      const o = {};
+      for (const k of SEARCH_FIELDS) if (b && b[k] !== undefined) o[k] = clone(b[k]);
+      return o;
+    }
+    // Nutzer-Suche auf der Suchseite mitschneiden (eigene Abfragen laufen am Beobachter vorbei)
+    function record(body) {
+      if (!onSearch() || !body || typeof body !== 'object') return;
+      G.set('search_user_state', { ...cleanState(body), at: now() });
+    }
+    async function ensureState() {
+      if (G.get('search_user_state', null)) return;
+      try {
+        const d = await apiGet('user/search/detailed/arguments');
+        if (d && typeof d === 'object') {
+          const st = cleanState(d);
+          if (st.location && d.lat != null && st.location.lat == null) st.location = { ...st.location, lat: d.lat, lon: d.lon };
+          G.set('search_user_state', { ...st, at: now() });
+        }
+      } catch (e) { warn('Suchstand lesen', e); }
+    }
+    async function restore() {
+      if (!G.get('search_dirty', false)) return;
+      const st = G.get('search_user_state', null);
+      if (!st) return;
+      const { at, ...body } = st;
+      try { await apiPost('user/search', { ...body, page: 1, limit: 1 }); G.set('search_dirty', false); log('Suchstand des Nutzers wiederhergestellt'); }
+      catch (e) { warn('Suchstand zurückschreiben', e); }
+    }
+    // Antwort der Suchseite auf den Nutzer-Stand umschreiben
+    function rewriteArgs(data) {
+      const st = G.get('search_user_state', null);
+      // nur wenn eine eigene Hintergrund-Suche den Server-Stand verändert hat (sonst gilt, was poppen liefert – auch von anderen Geräten)
+      if (!st || !G.get('search_dirty', false) || !data || typeof data !== 'object') return null;
+      const { at, ...body } = st;
+      const out = { ...data };
+      for (const k of SEARCH_FIELDS) delete out[k];
+      Object.assign(out, clone(body));
+      if (body.location && body.location.lat != null) { out.lat = body.location.lat; out.lon = body.location.lon; }
+      return out;
+    }
+    // vor jeder Hintergrund-Suche: warten, solange die Suchseite offen ist (bzw. bis 5 Minuten danach)
+    async function wait(ctx) {
+      let paused = false;
+      while (busy() && !(ctx && ctx.stop && ctx.stop())) {
+        if (!paused) { paused = true; await restore(); }
+        const r = remaining();
+        const msg = r === Infinity ? 'Pause: Suchseite ist geöffnet' : `Pause: Suchseite war offen – weiter in ${Math.max(1, Math.ceil(r / 60000))} Min.`;
+        if (ctx && ctx.phase) ctx.phase(msg);
+        await sleep(5000);
+      }
+    }
+    function start() {
+      if (!ON_POPPEN) return;
+      beat(); setInterval(beat, 5000);
+      W.addEventListener('pagehide', () => { if (onSearch()) { const o = { ...(G.get('search_open', {}) || {}) }; delete o[TAB_ID]; G.set('search_open', o); G.set('search_left', now()); } });
+      onApi(/^user\/search$/, (d, info) => { if (info.method === 'POST') record(info.body); });
+      onApi(/^user\/search\/detailed\/arguments$/, null, (data) => rewriteArgs(data));
+    }
+    return { start, busy, remaining, wait, ensureState, restore, record, rewriteArgs };
+  })();
+
   function searchBase() {
     const loc = G.get('mygeo', null) || { country_iso: 'DE', country_name: 'Germany' };
     return {
@@ -1972,7 +2134,11 @@
   }
   async function searchAll(payload, ctx, onUsers, label) {
     let page = 1, n = 0, total = 0;
+    await SearchGuard.ensureState();
     for (let guard = 0; guard < 100000 && !ctx.stop(); guard++) {
+      await SearchGuard.wait(ctx);
+      if (ctx.stop()) break;
+      G.set('search_dirty', true);
       const d = await apiPost('user/search', { ...payload, page, limit: 20 });
       const l = (d && d.users) || [];
       total = d.total || total;
@@ -1992,15 +2158,16 @@
     for (const gk of GROUP_KEYS) {
       const grp = s.groups[gk];
       if (!grp.ignore) continue;
-      const lims = gk === 'p' && grp.separate ? [grp.srcW.suche[2], grp.srcM.suche[2]] : [grp.src.suche[2]];
+      const lims = gk === 'p' && grp.separate ? [limitsOf(gk, 'suche', 0, s)[2], limitsOf(gk, 'suche', 1, s)[2]] : [limitsOf(gk, 'suche', -1, s)[2]];
       let from = Math.min(...lims);
       if (gk === 'p' && (grp.sugarDaddy.on || grp.sugarMom.on)) from = 18;
       for (const t of grp.types) plan.push({ gk, t, from });
     }
     const steps = plan.reduce((a, p) => a + (99 - p.from + 1), 0);
     let done = 0;
+    try {
     for (const p of plan) {
-      for (let age = 98; age >= p.from && !ctx.stop(); age--) {
+      for (let age = AGE_MAX; age >= p.from && !ctx.stop(); age--) {
         ctx.outer && ctx.outer(done++, steps);
         ctx.phase && ctx.phase(`Mitgliedersuche: ${TYPE_NAMES[p.t]} · ${age} Jahre`);
         await searchAll({ ...base, genders: [p.t], age_min: age, age_max: age }, ctx, async (users) => {
@@ -2009,6 +2176,7 @@
         }, `${TYPE_NAMES[p.t]}, ${age} Jahre`);
       }
     }
+    } finally { await SearchGuard.restore(); }
     ctx.outer && ctx.outer(steps, steps);
     return res;
   }
@@ -2341,10 +2509,10 @@
     }
     if (!gk || !ages.length) return null;
     const labels = labelsOf(gk, s);
-    const typ = ages.map((aa, i) => { const lim = limitsOf(gk, 'interaktionen', ages.length > 1 ? i : -1, s); return labels[aa <= lim[0] ? 0 : aa <= lim[1] ? 2 : 4]; });
+    const typ = ages.map((aa, i) => { const lim = limitsOf(gk, 'interaktionen', ages.length > 1 ? i : -1, s); return labels[aa <= openTop(lim[0]) ? 0 : aa <= openTop(lim[1]) ? 2 : 4]; });
     const label = uniq(typ).join(' & ');
     const maxA = Math.max(...ages); const lim = limitsOf(gk, 'interaktionen', -1, s);
-    const stage = maxA <= lim[0] ? 1 : maxA <= lim[1] ? 2 : 3;
+    const stage = maxA <= openTop(lim[0]) ? 1 : maxA <= openTop(lim[1]) ? 2 : 3;
     const color = COLORS[stage];
     // Zeigt poppen schon Alter/Entfernung (Listenseite), fehlt nur der übersetzte Typ → nur den anzeigen.
     // Bei Kommentaren fehlt alles → Typ + Alter (Entfernung ist dort nicht bekannt).
@@ -2755,7 +2923,6 @@
     return `<span>Mitglieder gelesen</span><b>${fmtN(total.total)}</b><span>Über der Grenze</span><b>${fmtN(total.hits)}</b>` +
       `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
       `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
-      `<span>Alter unklar (99)</span><b>${fmtN(total.unclear)}</b>` +
       (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
       (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '');
   }
@@ -2968,6 +3135,15 @@
   #vaf-set .vaf-info b{color:#ffc21a}
   #vaf-set .vaf-srcgrid{display:grid;grid-template-columns:150px 1fr 1fr;gap:6px 18px;align-items:center;padding:10px 0;border-bottom:1px solid #2c2c2c}
   #vaf-set .vaf-srcgrid .vaf-h{color:#8c8c8c;font-size:12px}
+  #vaf-set .vaf-srcgrid.shared{grid-template-columns:1fr 1fr}
+  #vaf-set .vaf-card > .vaf-srcgrid:last-child{border-bottom:0}
+  #vaf-set .vaf-grow .vaf-glab .vaf-d{color:#8c8c8c;font-size:12px}
+  #vaf-set .vaf-grow .vaf-gctl{grid-column:2 / span 2;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  #vaf-set .vaf-grow.shared .vaf-glab, #vaf-set .vaf-grow.shared .vaf-gctl{grid-column:1 / -1}
+  #vaf-set .vaf-grow.shared .vaf-glab{display:flex;gap:10px;align-items:baseline}
+  #vaf-set .vaf-lbls{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 18px;width:100%}
+  #vaf-set .vaf-lbls .vaf-txt{min-width:0;width:100%;box-sizing:border-box}
+  #vaf-set .vaf-ver{font-size:13px;font-weight:400;color:#8c8c8c}
   #vaf-set .vaf-sl{position:relative;height:36px;min-width:180px;user-select:none;touch-action:none}
   #vaf-set .vaf-sl .t{position:absolute;top:22px;left:8px;right:8px;height:4px;background:#444;border-radius:2px}
   #vaf-set .vaf-sl .f{position:absolute;top:22px;height:4px;background:#ffc21a;border-radius:2px}
@@ -3132,7 +3308,7 @@
     settingsDirty = false;
     el.id = 'vaf-set';
     const W1 = word();
-    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz</h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div></div><div id="vaf-set-body"></div>`;
+    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <span class="vaf-ver">${esc(VERSION)}</span></h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
     const body = el.querySelector('#vaf-set-body');
     const touch = () => { settingsDirty = true; projectLater(); };
     const lab = (text, path) => `<span data-path="${path}">${text}</span>`;
@@ -3140,43 +3316,62 @@
 
     function build() {
       // ---- Gruppen ----
+      // Gemeinsame Grenzen (Experten-Schalter): nur die Zeile „Global“, volle Breite; Quellen-Spalte entfällt.
+      const shared = !!draft.expert.sharedLimits;
+      // Zeile im Raster der Schieberegler: Beschriftung links (bzw. bei gemeinsamen Grenzen darüber),
+      // Bedienelement beginnt genau unter dem Visuell-Regler / dem Schalter „Visuelle Einstufung“.
+      const gRow = (c, labHtml, desc, ...ctl) => {
+        const r = document.createElement('div'); r.className = 'vaf-srcgrid vaf-grow' + (shared ? ' shared' : '');
+        const l = document.createElement('div'); l.className = 'vaf-glab';
+        l.innerHTML = `<span class="vaf-l">${labHtml}</span>${desc ? `<div class="vaf-d">${desc}</div>` : ''}`;
+        const k = document.createElement('div'); k.className = 'vaf-gctl';
+        ctl.flat().filter(Boolean).forEach((x) => k.append(typeof x === 'string' ? document.createRange().createContextualFragment(x) : x));
+        r.append(l, k); c.appendChild(r); return r;
+      };
+      // zwei Zellen unter „Visuell“ und „Ignorieren“ (bei getrennten Quellen mit leerer Quellen-Spalte davor)
+      const pairRow = (c, a, b) => {
+        const r = document.createElement('div'); r.className = 'vaf-srcgrid' + (shared ? ' shared' : '');
+        if (!shared) r.appendChild(document.createElement('div'));
+        r.append(a, b); c.appendChild(r); return r;
+      };
+      const swCell = (el, labHtml) => { const d = document.createElement('div'); d.style.cssText = 'display:flex;align-items:center;gap:10px'; d.append(el); d.append(document.createRange().createContextualFragment(labHtml)); return d; };
       for (const gk of GROUP_KEYS) {
         const g = draft.groups[gk];
         const c = card(body, GROUP_NAMES[gk]);
-        // Schalter-Zeile am selben Grid wie die Slider ausrichten (150px | Visuell | Ignorieren),
-        // damit jede Beschriftung über ihrer Spalte sitzt und „Ignorieren aktiv“ nicht umbricht.
-        {
-          const schalter = document.createElement('div'); schalter.className = 'vaf-srcgrid';
-          const swCell = (el, labHtml) => { const d = document.createElement('div'); d.style.cssText = 'display:flex;align-items:center;gap:10px'; d.append(el); d.append(document.createRange().createContextualFragment(labHtml)); return d; };
-          const c0 = document.createElement('div'); c0.innerHTML = '<span class="vaf-l">Schalter</span>';
-          schalter.append(c0,
-            swCell(sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`)),
-            swCell(sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`)));
-          c.appendChild(schalter);
-        }
+        // Schalter über ihrer Spalte; die „altern mit mir“-Schalter sind immer bedienbar
+        pairRow(c,
+          swCell(sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`)),
+          swCell(sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`)));
+        pairRow(c,
+          swCell(sw(g.ageVisual, (v) => { g.ageVisual = v; touch(); }, 'Hebt die Grenzen der visuellen Einstufung an deinem Geburtstag um ein Jahr an'), lab('Grenzen altern mit mir', `groups.${gk}.ageVisual`)),
+          swCell(sw(g.ageIgnore, (v) => { g.ageIgnore = v; touch(); }, 'Hebt die Grenze „Ignorieren ab“ an deinem Geburtstag um ein Jahr an. Wer schon blockiert ist, wird dadurch nicht entsperrt.'), lab('Grenze altert mit mir', `groups.${gk}.ageIgnore`)));
         if (gk === 'p') {
           const sel = document.createElement('select');
           sel.innerHTML = '<option value="any">einer über der Grenze</option><option value="all">beide über der Grenze</option>';
           sel.value = g.coupleMode; sel.addEventListener('change', () => { g.coupleMode = sel.value; touch(); });
-          row(c, lab('Paar-Regel', 'groups.p.coupleMode'), 'wann ein Paar als alt gilt', sel);
+          gRow(c, lab('Paar-Regel', 'groups.p.coupleMode'), '', sel);
           const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = !!g.separate;
           chk.addEventListener('change', () => { g.separate = chk.checked; rerender(); touch(); });
-          row(c, lab('Getrenntes Alter', 'groups.p.separate'), 'je Quelle eine Zeile für die Frau und eine für den Mann', chk);
+          gRow(c, lab('Getrenntes Alter', 'groups.p.separate'), '', chk);
         }
         const rowsFor = (key, who) => {
           const grid = document.createElement('div');
-          grid.className = 'vaf-srcgrid';
-          grid.innerHTML = `<div class="vaf-h">Quelle${who ? ' · ' + who : ''}</div><div class="vaf-h">Visuell: Stufe 1 bis · Stufe 2 bis</div><div class="vaf-h">Ignorieren ab</div>`;
-          for (const sk of SRC_KEYS) {
-            if (!SOURCES[sk].avail) continue;   // Partygäste: ausgeblendet, intern = Profilbesucher
+          grid.className = 'vaf-srcgrid' + (shared ? ' shared' : '');
+          const w = who ? who + ' · ' : '';
+          grid.innerHTML = `${shared ? '' : '<div></div>'}<div class="vaf-h">${w}Visuell: Stufe 1 bis · Stufe 2 bis</div><div class="vaf-h">${w}Ignorieren ab</div>`;
+          const keys = shared ? ['global'] : SRC_KEYS.filter((sk) => SOURCES[sk].avail);   // Partygäste: ausgeblendet, intern = Profilbesucher
+          for (const sk of keys) {
+            if (!g[key][sk]) g[key][sk] = [...g[key].interaktionen];
             const v = g[key][sk];
+            const s1 = slider(18, AGE_MAX, [v[0], v[1]], (x) => { v[0] = x[0]; v[1] = x[1]; touch(); });
+            const s2 = slider(18, AGE_MAX, [v[2]], (x) => { v[2] = x[0]; touch(); });
+            if (shared) { s1.title = s2.title = 'Gilt für alle Quellen · 99 = offenes Ende'; grid.append(s1, s2); continue; }
             const name = document.createElement('div');
             name.innerHTML = lab(esc(SOURCES[sk].label), `groups.${gk}.${key}.${sk}`); name.title = SOURCES[sk].tip;
-            const s1 = slider(18, 100, [v[0], v[1]], (x) => { v[0] = x[0]; v[1] = x[1]; touch(); });
-            const s2 = slider(18, 100, [v[2]], (x) => { v[2] = x[0]; touch(); });
             grid.append(name, s1, s2);
           }
           c.appendChild(grid);
+          if (shared) return;
           const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = 'Werte der ersten Zeile für alle Quellen übernehmen';
           b.style.whiteSpace = 'nowrap';   // einzeilig; wächst nach links
           b.addEventListener('click', () => { const f = g[key][SRC_KEYS[0]]; for (const sk of SRC_KEYS) g[key][sk] = [...f]; rerender(); touch(); });
@@ -3185,12 +3380,12 @@
         };
         if (gk === 'p' && g.separate) { rowsFor('srcW', 'Frau'); rowsFor('srcM', 'Mann'); } else rowsFor('src', '');
         if (gk === 'p') {
-          row(c, lab('Sugar Daddy', 'groups.p.sugarDaddy'), 'Mann deutlich älter als die Frau', sw(g.sugarDaddy.on, (v) => { g.sugarDaddy.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarDaddy.gap, (x) => { g.sugarDaddy.gap = x; touch(); }, 1, 60), 'Jahren');
-          row(c, lab('Sugar Mom', 'groups.p.sugarMom'), 'Frau deutlich älter als der Mann', sw(g.sugarMom.on, (v) => { g.sugarMom.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarMom.gap, (x) => { g.sugarMom.gap = x; touch(); }, 1, 60), 'Jahren');
+          gRow(c, lab('Sugar Daddy', 'groups.p.sugarDaddy'), 'Mann deutlich älter als die Frau', sw(g.sugarDaddy.on, (v) => { g.sugarDaddy.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarDaddy.gap, (x) => { g.sugarDaddy.gap = x; touch(); }, 1, 60), 'Jahren');
+          gRow(c, lab('Sugar Mom', 'groups.p.sugarMom'), 'Frau deutlich älter als der Mann', sw(g.sugarMom.on, (v) => { g.sugarMom.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarMom.gap, (x) => { g.sugarMom.gap = x; touch(); }, 1, 60), 'Jahren');
         }
-        const lbl = document.createElement('div'); lbl.style.cssText = 'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:100%';
+        const lbl = document.createElement('div'); lbl.className = 'vaf-lbls';
         [0, 2, 4, 1, 3, 5].forEach((i) => { const t = g.labels[i]; const inp = txtIn(t, (v) => { g.labels[i] = v.trim() || DEFAULTS.groups[gk].labels[i]; touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; lbl.appendChild(inp); });
-        row(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Stufe 1 · 2 · 3; oben Einzahl, unten Mehrzahl', lbl);
+        gRow(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Oben Einzahl, unten Mehrzahl', lbl);
         const types = document.createElement('div'); types.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap';
         for (const t of ['m', 'w', 'p', 'ts', 'tv']) {
           const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:6px;align-items:center';
@@ -3202,7 +3397,7 @@
           });
           l.append(ch, TYPE_NAMES[t]); types.appendChild(l);
         }
-        row(c, lab('Profiltypen', `groups.${gk}.types`), 'ein Haken entfernt den Typ aus den anderen Gruppen', types);
+        gRow(c, lab('Profiltypen', `groups.${gk}.types`), '', types).classList.add('vaf-last');
       }
 
       // ---- Allgemein ----
@@ -3286,12 +3481,10 @@
       };
       drawRank();
       row(ce, lab('Rangfolge der Quellen', 'expert.rank'), 'oben = wichtigste', rank);
+      row(ce, lab('Gemeinsame Grenzen für alle Quellen', 'expert.sharedLimits'), 'an: eine Zeile „Global“ für alle Quellen · aus: Grenzen je Quelle', sw(x.sharedLimits, (v) => { x.sharedLimits = v; rerender(); touch(); }));
       row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
       row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
       row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
-      // ---- Gruppenanfragen (Regeln nur hier, nicht im Quelltext) ----
-      const gq = draft.groupReq;
-      row(ce, lab('Gruppenanfragen: Gruppen', 'groupReq.match'), 'Name enthält (regulärer Ausdruck); leer = aus', txtIn(gq.match, (v) => { gq.match = v; touch(); }, 'z. B. muster1|muster2'));
 
       const recSt = document.createElement('span'); recSt.className = 'vaf-mini';
       Recorder.stats().then((r) => { recSt.textContent = `${r.total} Schnittstellen erfasst, davon ${r.fresh} neu`; });
@@ -3300,6 +3493,13 @@
       const recCl = document.createElement('button'); recCl.type = 'button'; recCl.className = 'vaf-btn'; recCl.textContent = 'Leeren';
       recCl.addEventListener('click', async () => { if (W.confirm('Rekorder leeren?')) { await Recorder.clear(); recSt.textContent = '0 Schnittstellen erfasst'; } });
       row(ce, lab('API-Rekorder', 'expert.recorder'), 'schneidet Abfragen der Seite mit (Sensibles geschwärzt)', sw(x.recorder, (v) => { x.recorder = v; touch(); }), recSt, recEx, recCl);
+      // ID-Auflösung (uid → Nickname): erst nach bestandenem Selbsttest im Einsatz
+      const irSt = document.createElement('span'); irSt.className = 'vaf-mini';
+      const irInfo = () => { const t = G.get('idres_test', null); irSt.textContent = t ? `${t.ok ? 'bestanden' : 'nicht bestanden'} am ${deDateTime(t.at)} · ${(t.details && t.details.summary) || ''}` : 'noch nicht geprüft'; irSt.style.color = t && !t.ok ? '#ff7875' : ''; };
+      irInfo();
+      const irBtn = document.createElement('button'); irBtn.type = 'button'; irBtn.className = 'vaf-btn'; irBtn.textContent = 'Selbsttest';
+      irBtn.addEventListener('click', async () => { irBtn.disabled = true; irSt.textContent = 'prüfe an bekannten Profilen …'; try { await idresSelfTest(); } catch (e) { toast('Selbsttest fehlgeschlagen: ' + esc(e.message)); } irBtn.disabled = false; irInfo(); });
+      row(ce, 'ID-Auflösung', 'ermittelt Nicknames zu Mitglieds-IDs (Blockierende Popsters, böse Popsters, Warteliste)', irSt, irBtn);
       // Daten
       const btn = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
       // Abgleich mit JOYclub (Briefkasten)
@@ -3350,9 +3550,9 @@
     // Basis ist die ganze Blockierliste (auch von Hand Blockierte); verändert wird nur, was die neuen Regeln wegnehmen oder hinzufügen
     const cur = G.get('blocked_count', null);
     const after = cur == null ? p.keep + p.add : Math.max(0, cur - p.drop + p.add);
-    e.textContent = `${fmtN(after)} / ${fmtN(lim)}${p.unclear ? ' +' : ''}`;
+    e.textContent = `${fmtN(after)} / ${fmtN(lim)}`;
     e.style.color = after > lim ? '#ff7875' : lim - after < 50 ? '#ffa940' : '';
-    e.title = `bleiben ${fmtN(p.keep)}, fallen weg ${fmtN(p.drop)}, kommen dazu ${fmtN(p.add)}, unklar ${fmtN(p.unclear)}`;
+    e.title = `bleiben ${fmtN(p.keep)}, fallen weg ${fmtN(p.drop)}, kommen dazu ${fmtN(p.add)}`;
   }, 600); }
 
   // Auswirkungen einer Regeländerung
@@ -3369,15 +3569,16 @@
       const src = blocked && m.blk.src ? m.blk.src : srcOfMember(m);
       const ages = m.birth && m.birth.length ? m.birth.map((b) => ageToday(b)) : m.ages;
       const cn = classify({ ...m, ages }, src, newS);
-      if (cn.unclear) { res.unclear++; return; }
       if (blocked) {
-        if (cn.ignore) { res.keep++; if (m.blk.note && noteWord(m, newS) !== noteWord(m, oldS)) { res.notes++; res.noteList.push(m); } }
+        // Entsperrt wird nur, wen DIESE Änderung (aktiv verschobene Grenze) freigibt – nicht, wer schon vorher
+        // unter der Grenze lag (z. B. weil die Grenzen automatisch „mit mir gealtert“ sind). Alte Säcke werden nicht jünger.
+        if (cn.ignore || !classify({ ...m, ages }, src, oldS).ignore) { res.keep++; if (cn.ignore && m.blk.note && noteWord(m, newS) !== noteWord(m, oldS)) { res.notes++; res.noteList.push(m); } }
         else { res.drop++; res.dropList.push(m); }
       } else if (cn.ignore && !(m.blk && !m.unblk)) { res.add++; res.addList.push({ ...m, ages, _src: src }); }
     });
     return res;
   }
-  const RULE_PATHS = (s) => JSON.stringify([GROUP_KEYS.map((k) => { const g = s.groups[k]; return [g.ignore, g.types, g.src, g.srcW, g.srcM, g.separate, g.coupleMode, g.sugarDaddy, g.sugarMom, g.labels[4]]; }), s.whitelist, s.expert.limit]);
+  const RULE_PATHS = (s) => JSON.stringify([GROUP_KEYS.map((k) => { const g = s.groups[k]; return [g.ignore, g.types, g.src, g.srcW, g.srcM, g.separate, g.coupleMode, g.sugarDaddy, g.sugarMom, g.labels[4]]; }), s.whitelist, s.expert.limit, !!s.expert.sharedLimits]);
 
   async function saveFromPage(...a) { return Prio.run('Einstellungen speichern', () => saveFromPage_(...a)); }
   async function saveFromPage_() {
@@ -3387,7 +3588,7 @@
     const cur = G.get('blocked_count', null);
     const html = `<div class="vaf-stats"><span>Derzeit blockiert</span><b>${fmtN(cur == null ? p.keep + p.drop : cur)}</b>` +
       `<span>Nach Anwenden</span><b>${fmtN(cur == null ? p.keep + p.add : Math.max(0, cur - p.drop + p.add))}</b><span>Fallen weg</span><b>${fmtN(p.drop)}</b><span>Kommen dazu</span><b>${fmtN(p.add)}</b>` +
-      `<span>Notizen weichen ab</span><b>${fmtN(p.notes)}</b><span>Unklar (Alter 99)</span><b>${fmtN(p.unclear)}</b></div>`;
+      `<span>Notizen weichen ab</span><b>${fmtN(p.notes)}</b></div>`;
     const v = await ask('Regeln geändert', html, [
       { label: 'Änderungen speichern und anwenden', value: 'all', primary: true },
       ...(p.drop ? [{ label: '… und Mitglieder entsperren', value: 'drop' }] : []),
@@ -3455,7 +3656,8 @@
   }
   async function showQueue() {
     const l = await Queue.list();
-    const m = modal({ title: 'Warteliste', sub: `${fmtN(l.length)} Mitglieder, in dieser Reihenfolge`, html: `<div class="vaf-list">${l.slice(0, 2000).map((q) => `<div>${esc(q.nick)} · ${(q.ages || []).join('/')} · ${esc(q.src)}</div>`).join('') || '<div>leer</div>'}${l.length > 2000 ? '<div>…</div>' : ''}</div>` });
+    const mc = Members.cached();
+    const m = modal({ title: 'Warteliste', sub: `${fmtN(l.length)} Mitglieder, in dieser Reihenfolge`, html: `<div class="vaf-list">${l.slice(0, 2000).map((q) => `<div>${q.nick ? `<a href="${esc(pathOfName(q.nick))}" target="_blank" rel="noopener" style="color:inherit">${esc(q.nick)}</a>` : `ID ${esc(q.uid)}`} · ${(q.ages || []).join('/')} · ${esc(q.src)}${esc(pstateNote(mc.get(String(q.uid))))}</div>`).join('') || '<div>leer</div>'}${l.length > 2000 ? '<div>…</div>' : ''}</div>` });
     m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
   }
 
@@ -3632,6 +3834,7 @@
       const managed = await myGroups('managed');
       G.set('pending', { n: managed.reduce((s, g) => s + g.pending, 0), groups: managed.filter((g) => g.pending).map((g) => ({ cms: g.cms, name: g.name, n: g.pending })), at: now() });
       const names = { ...G.get('groupnames', {}) }; managed.forEach((g) => { names[g.cms] = g.name; }); G.set('groupnames', names);
+      Bus.emit('pending');
     } catch (e) { warn('Gruppenanfragen', e); }
     finally { Lock.release('pending'); }
   }
@@ -3661,7 +3864,6 @@
   // Gruppen-Beitrittsanfragen (/groups/<Nummer>/requests): prüfen, annehmen/ablehnen,
   // Aufgenommene sofort auf die Gruppen-Whitelist
   // =====================================================================================
-  const groupMatch = () => { const m = (S().groupReq.match || '').trim(); if (!m) return false; try { return new RegExp(m, 'i').test(groupName()); } catch { return false; } };
   const reqCms = () => (/^\/groups\/(\d+)\/requests/.exec(location.pathname) || [])[1] || '';
   async function show(target, label, action = (x) => x.click()) {
     const el = typeof target === 'function' ? target() : target;
@@ -3847,7 +4049,7 @@
     if (!it) return 'Fehlschlag: Anfrage nicht mehr in der Liste';
     if (dry()) return 'Test';
     await show(() => { const x = findRequestItems().find((y) => y.name === name); return x && (accept ? x.accept : x.reject); },
-      `${accept ? 'Akzeptieren' : 'Ablehnen'} (${name})`);
+      `${accept ? 'Akzeptieren' : 'Ablehnen'} (${name})`, (x) => { x.__vafPass = true; x.click(); });   // am Knopf-Haken vorbei (Notiz schreibt der Aufrufer)
     // ggf. Rückfrage "Bist du sicher?" bestätigen
     await sleep(700);
     const ok = [...document.querySelectorAll('button')].find((b) => isVisible(b) && norm(b.textContent) === 'ok' && b.closest('.ant-modal, [role=dialog]'));
@@ -3929,12 +4131,15 @@
           await grEnrich(cms, pr).catch(() => {});
           const ctx = pr;
           res.meta = await grMetaLine(cms, ctx).catch(() => '');
-          const d = grDecide(cms, ctx);
+          const prev = GrDone.find(cms, uidFromAvatar(r.avatar), r.name);   // schon bearbeitet → wie in der Liste
+          const d = prev ? { verdict: prev.verdict, reason: prev.reason || '' } : grDecide(cms, ctx);
           res.verdict = d.verdict; res.reason = d.reason;
           if (d.verdict === 'accept' || d.verdict === 'reject') {
             cur.textContent = `${i}/${reqs.length}: ${r.name} – ${d.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`;
+            const pageIt = findRequestItems().find((y) => y.name === r.name);
+            await grWriteDecisionNote(cms, r.name, d.verdict, d.reason, pageIt && pageIt.note ? pageIt.note.value : (r.note || '')).catch(() => {});   // Notiz VOR der Entscheidung
             const out = await decideRequest(r.name, d.verdict === 'accept');
-            if (out === 'ok') await grWriteDecisionNote(cms, r.name, d.verdict, d.reason, r.note).catch(() => {});
+            if (out === 'ok') GrDone.put(cms, { uid: pr.uid || uidFromAvatar(r.avatar), nick: r.name, avatar: r.avatar, verdict: d.verdict, reason: d.reason, by: 'auto' });
             if (out !== 'ok' && out !== 'Test') { res.verdict = 'fail'; res.reason = out.replace(/^Fehlschlag: /, ''); }
           }
         }
@@ -4006,6 +4211,8 @@
       });
       const act = async (accept) => {
         for (const b of el.querySelectorAll('button')) b.disabled = true;
+        const it = await findRequestByName(r.name);
+        if (it) await gaManualDecision(reqCms(), it, accept).catch((e) => warn('Notiz vor Entscheidung', e));   // Notiz zuerst, dann merken
         const out = await decideRequest(r.name, accept);
         if (out === 'ok' || out === 'Test') { el.remove(); refresh(); }
         else {
@@ -4924,7 +5131,7 @@
 
   // =====================================================================================
   // Figur: „Kurvig“ → „Mollig“, „Plus-size“ → „Mastschwein“ (überall), Zusatzoption „Qualle“ (Suche),
-  // Vermessung über die Größen-/Gewichtsfilter der Suche, Badges, Ausblenden, Sortierung
+  // Vermessung über die Profilangaben (user/info je sichtbarer Trefferkarte, gedrosselt), Badges, Ausblenden, Sortierung
   // =====================================================================================
   const FIG_RENAME = { 'Kurvig': 'Mollig', 'Plus-size': 'Mastschwein', 'Plus-Size': 'Mastschwein' };
   const FIG_MODES = { mollig: { min: 35, hide: 0 }, mastschwein: { min: 40, hide: 40 }, qualle: { min: 45, hide: 45 } };
@@ -5019,14 +5226,13 @@
   }
   onApi(/^user\/search$/, null, (data, info) => {
     if (!location.pathname.startsWith('/search')) return null;
-    if (info.body && info.body.size_min === info.body.size_max && info.body.size_min !== 130) return null;   // eigene Vermessungs-Abfrage
     const mode = figModeOf(info.body);
     if (!mode) { lastFig = null; return null; }
     const { page, limit, ...rest } = info.body;
     const key = JSON.stringify({ ...rest, q: mode });
     lastFig = { mode, payload: rest, key };
-    if (!Measure.done.has(key)) setTimeout(() => Measure.start(rest, mode, key), 500);
     const users = (data && data.users) || [];
+    Measure.want(users);
     const cache = Members.cached();
     const withKey = users.map((u, i) => ({ u, i, k: figKey(cache.get(String(u.uid)), mode) }));
     const hide = FIG_MODES[mode].hide;
@@ -5035,71 +5241,43 @@
     return { ...data, users: kept.map((x) => x.u) };
   });
 
-  // ---------- Vermessung im Hintergrund ----------
+  // ---------- Vermessung über die Profilangaben ----------
+  // Keine Hintergrund-Suchen mehr (die würden die gespeicherte Suche des Nutzers überschreiben):
+  // Für jede SICHTBARE Trefferkarte ohne gültige Messung wird einmal user/info gelesen (gedrosselt);
+  // Größe/Gewicht landen im Gedächtnis (Members.body), fehlende Angaben merken sich als „UNKNOWN“.
+  const inView = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < (W.innerHeight || 900) && r.width > 0; };
   const Measure = {
-    done: new Set(), running: false, stop: false,
-    async start(payload, mode, key) {
-      if (this.running || this.done.has(key)) return;
-      this.running = true; this.stop = false;
-      if (!(await Lock.take('measure', key))) { this.running = false; return; }
-      const tt = toast('Figur-Badges: vermesse Größe und Gewicht über die Suchfilter …', 0);
-      const ctx = { stop: () => this.stop, step: () => {} };
+    q: new Map(), running: false,
+    want(users) { for (const u of users || []) if (u && validUid(u) && u.nickname) this.q.set(String(u.uid), u.nickname); if (this.q.size) setTimeout(() => this.pump(), 300); },
+    known(m) {
+      if (bodyInfo(m)) return true;
+      return !!(m && m.bodyUnk && now() - m.bodyUnk < S().expert.bodyUnknownDays * DAY);
+    },
+    async pump() {
+      if (this.running) return;
+      this.running = true;
       try {
-        const ths = mode === 'mollig' ? [35, 40, 45] : mode === 'mastschwein' ? [40, 45] : [45];
-        const base = { ...payload, weight_min: 0, weight_max: 300 };
-        const s = S();
-        const all = new Map();       // uid → { h, wlo, whi }
-        let heights = 0;
-        for (let h = 130; h <= 220 && !this.stop; h++) {
-          const atH = new Set();
-          await searchAll({ ...base, size_min: h, size_max: h }, ctx, async (users) => { for (const u of users) { atH.add(u.uid); all.set(u.uid, { h, wlo: 0, whi: 300 }); } });
-          if (!atH.size) continue;
-          heights++;
-          tt.innerHTML = `Figur-Badges: vermesse … <b>${h} cm</b> (${fmtN(all.size)} Mitglieder)`;
-          // grobe Bänder
-          let prev = null;
-          for (const T of ths) {
-            const inT = new Set();
-            await searchAll({ ...base, size_min: h, size_max: h, weight_min: wFor(T, h) }, ctx, async (users) => { for (const u of users) inT.add(u.uid); });
-            for (const uid of atH) {
-              const b = all.get(uid);
-              if (inT.has(uid)) b.wlo = Math.max(b.wlo, wFor(T, h));
-              else b.whi = Math.min(b.whi, wFor(T, h) - 1);
-            }
-            prev = inT;
-            if (!inT.size) break;
-          }
-          // feine Bänder (ganzzahliger BMI) nur für noch nicht vermessene Treffer ab der untersten Grenze
-          const pending = new Set([...atH].filter((uid) => { const b = all.get(uid); const m = Members.cached().get(uid); return b.wlo >= wFor(ths[0], h) && !bodyInfo(m); }));
-          for (let k = ths[0]; pending.size && k < 90 && !this.stop; k++) {
-            const lo = wFor(k, h), hi = wFor(k + 1, h) - 1;
-            if (lo > 300) break;
-            await searchAll({ ...base, size_min: h, size_max: h, weight_min: lo, weight_max: Math.min(300, hi) }, ctx, async (users) => {
-              for (const u of users) { const b = all.get(u.uid); if (b) { b.wlo = Math.max(b.wlo, lo); b.whi = Math.min(b.whi, hi); } pending.delete(u.uid); }
-            });
-          }
-          for (const uid of atH) {
-            const b = all.get(uid);
-            await Members.update(uid, (m) => {
-              const old = m.body && m.body[0];
-              if (old && old.src === 'Profil' && now() - old.at < s.expert.bodyValidDays * DAY) return;
-              const keepFine = old && old.h === h && old.wlo >= b.wlo && old.whi <= b.whi && now() - old.at < s.expert.bodyValidDays * DAY;
-              m.body = [keepFine ? old : { h, wlo: b.wlo, whi: b.whi, at: now() }];
-              delete m.bodyUnk;
-            });
-          }
+        let idle = 0;
+        while (this.q.size && lastFig && location.pathname.startsWith('/search') && idle < 600) {
+          const cache = Members.cached();
+          for (const uid of [...this.q.keys()]) if (this.known(cache.get(uid))) this.q.delete(uid);
+          const vis = cardsOn(document).filter((x) => inView(x.card));
+          const visUids = new Set(vis.map((x) => String(x.uid || '')));
+          const visNicks = new Set(vis.map((x) => norm(x.nick || '')));
+          const uid = [...this.q.keys()].find((u) => visUids.has(u) || visNicks.has(norm(this.q.get(u))));
+          if (!uid) { idle++; await sleep(1000); continue; }
+          idle = 0;
+          const nick = this.q.get(uid); this.q.delete(uid);
+          try {
+            const d = await apiGet('user/info/' + encodeURIComponent(nick), { _version: 2 });
+            await ingestUserInfo(d);
+            const m = await Members.get(uid);
+            if (m && !bodyInfo(m)) await Members.update(uid, (x) => { x.bodyUnk = now(); });
+          } catch (e) { warn('Figur: Profil nicht lesbar', nick, e && e.message); }
           markSearchFig();
+          await sleep(1500 + Math.random() * 1500);
         }
-        // in der eigentlichen Suche, aber in keiner Größen-Suche → UNKNOWN
-        if (!this.stop) {
-          await searchAll(base, ctx, async (users) => { for (const u of users) if (!all.has(u.uid)) await Members.update(u.uid, (m) => { if (!m.body) m.bodyUnk = now(); }); });
-          this.done.add(key);
-        }
-        tt.innerHTML = `Figur-Badges: <b>fertig</b> – ${fmtN(all.size)} Mitglieder vermessen. <a href="#" id="vaf-fig-reload" style="color:#ffc21a">Liste neu sortieren</a>`;
-        const a = document.getElementById('vaf-fig-reload'); if (a) a.onclick = (e) => { e.preventDefault(); location.reload(); };
-        setTimeout(() => tt.remove(), 20000);
-      } catch (e) { tt.textContent = 'Figur-Vermessung abgebrochen: ' + e.message; setTimeout(() => tt.remove(), 8000); }
-      finally { this.running = false; Lock.release('measure'); markSearchFig(); }
+      } finally { this.running = false; }
     },
   };
 
@@ -6294,6 +6472,14 @@
       rows.push({ uid, nick: (m && m.nick) || names[uid] || '', m: m || null });
     }
     rows.sort((a, b) => (a.nick || a.uid).localeCompare(b.nick || b.uid, 'de', { sensitivity: 'base' }));
+    // Platzhalter ohne Nickname: im Hintergrund über die ID auflösen, danach neu zeichnen
+    const missing = rows.filter((r) => !r.nick).map((r) => r.uid);
+    if (missing.length && !fillBlockers.busy) {
+      fillBlockers.busy = true;
+      (async () => { let n = 0; for (const uid of missing.slice(0, 60)) { const r = await Resolver.resolve(uid).catch(() => null); if (r && r.nick) n++; } return n; })()
+        .then((n) => { if (n) { syncEvilNames().catch(() => {}); if (el.isConnected) fillBlockers(el); } })
+        .finally(() => { fillBlockers.busy = false; });
+    }
     const at = G.get('evil_at', 0);
     const head = `<div class="vaf-blk-head"><h2>Blockierende Popsters</h2>
       <div class="vaf-blk-sub">Popsters, die mich ignorieren.${at ? ` Zuletzt aktualisiert: ${esc(deDateTime(at))}.` : ''}</div></div>`;
@@ -6309,7 +6495,7 @@
       const title = nick
         ? `<a class="vaf-blk-name" href="${esc(pathOfName(nick))}">${esc(name)}</a>`
         : `<span class="vaf-blk-name">${esc(name)}</span>`;
-      return `<li class="vaf-blk-item">${pic}<div class="vaf-blk-txt">${title}<span class="vaf-blk-meta">${esc(meta)}</span></div></li>`;
+      return `<li class="vaf-blk-item">${pic}<div class="vaf-blk-txt">${title}<span class="vaf-blk-meta">${esc(meta + pstateNote(r.m))}</span></div></li>`;
     }).join('');
     el.innerHTML = head + `<ul class="vaf-blk-list">${items}</ul>`;
   }
@@ -6493,18 +6679,24 @@
     const has = (sex) => !sex || g === 'p' || g === sex || (g !== 'm' && g !== 'w');   // ts/tv: alles anbieten
     return GR_FIELDS.filter((f) => has(f.sex));
   }
-  // Operatoren je Feldtyp. „keine Angabe“/„hat Angabe“ (none/some) brauchen keinen Wert.
-  const GR_NA = [['none', 'keine Angabe'], ['some', 'hat Angabe']];
+  // Operatoren je Feldtyp. „keine Angabe“ (none) braucht keinen Wert.
+  //  Verneinte Operatoren („ist nicht“, „enthält keine von“, „enthält nicht“, „ist ungleich“, „hat Angabe“) gibt es nicht
+  //  mehr: das erledigt die Verknüpfung „… NICHT“ (sonst doppelte Verneinung). Alte Regeln werden beim Öffnen umgestellt.
+  const GR_NA = [['none', 'keine Angabe']];
   const GR_OPS = {
-    num: [['eq', 'ist gleich'], ['ne', 'ist ungleich'], ['lt', 'ist kleiner als'], ['gt', 'ist größer als'], ['between', 'zwischen'], ...GR_NA],
-    enum: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'enthält eine von'], ['noneof', 'enthält keine von'], ...GR_NA],
+    num: [['eq', 'ist gleich'], ['lt', 'ist kleiner als'], ['gt', 'ist größer als'], ['between', 'zwischen'], ...GR_NA],
+    enum: [['is', 'ist'], ['isoneof', 'enthält eine von'], ...GR_NA],
+    enumchip: [['is', 'ist'], ['isoneof', 'enthält eine von']],   // „keine Angabe“ als eigener Wert-Chip (Ethnische Zugehörigkeit)
     jn: [['is', 'ist'], ...GR_NA],                         // Ja/Nein-Felder: Negation = anderen Wert wählen
-    country: [['is', 'ist'], ['isnot', 'ist nicht'], ['isoneof', 'enthält eine von'], ['noneof', 'enthält keine von'], ...GR_NA],
-    lang: [['contains', 'enthält'], ['only', 'nur'], ['notcontains', 'enthält nicht'], ...GR_NA],
+    country: [['is', 'ist'], ['isoneof', 'enthält eine von'], ...GR_NA],
+    lang: [['contains', 'enthält'], ['only', 'nur'], ...GR_NA],
     bool: [['is', 'ist'], ['isnot', 'ist nicht']],
   };
+  // Felder, bei denen „keine Angabe“ ein Chip neben den echten Werten ist (statt Operator)
+  const GR_NONE_CHIP = '__none';
+  const GR_CHIP_NA = new Set(['ethnicity']);
   const GR_JN = new Set(['glass', 'smoker', 'tattoo', 'piercing', 'handicap', 'circumcised']);
-  const grOpType = (f) => (f.derived === 'photos' ? 'num' : GR_JN.has(f.key) ? 'jn' : f.type);
+  const grOpType = (f) => (f.derived === 'photos' ? 'num' : GR_JN.has(f.key) ? 'jn' : GR_CHIP_NA.has(f.key) ? 'enumchip' : f.type);
   const grOpsFor = (f) => GR_OPS[grOpType(f)] || [];
   const grOpName = (type, op) => ((GR_OPS[type] || []).find((x) => x[0] === op) || [, op])[1];
   const grNoValue = (op) => op === 'none' || op === 'some';
@@ -6536,7 +6728,7 @@
     // Enum: deutsche Labels zur Laufzeit aus poppens i18n (gecacht), Basis sind TRAIT_I18N/SEED/GM.
     await ensureTraitI18n().catch(() => {});
     const seeded = grSeededList(field.trait);
-    if (seeded.length) return seeded;
+    if (seeded.length) return GR_CHIP_NA.has(field.key) ? [...seeded, [GR_NONE_CHIP, 'keine Angabe']] : seeded;
     return null;   // kein bekannter Wertebereich → Freitextfeld
   }
   async function grValueName(field, code) {
@@ -6614,22 +6806,41 @@
       if (leaf.op === 'noneof') return !hit;
       return leaf.op === 'isnot' ? (have.length ? !hit : false) : hit;
     }
+    const vals = Array.isArray(leaf.value) ? leaf.value.map(String) : [String(leaf.value)];
+    if (vals.includes(GR_NONE_CHIP)) {                     // Chip „keine Angabe“ (ODER mit den übrigen gewählten Werten)
+      if (!grHasValue(f, ctx)) return true;
+      const rest = vals.filter((v) => v !== GR_NONE_CHIP);
+      if (!rest.length) return false;
+      return enumMatch(leaf.op === 'is' ? 'isoneof' : leaf.op, rest, f.ctxKey ? (ctx[f.ctxKey] || []) : grTraitVals(f, ctx.trait));
+    }
     if (f.ctxKey) return enumMatch(leaf.op, leaf.value, ctx[f.ctxKey] || []);
     return enumMatch(leaf.op, leaf.value, grTraitVals(f, ctx.trait));
+  }
+  // Gruppen-Knoten: { kids: [...], neg?, reason? }. Jedes Kind ab dem zweiten trägt seine eigene Verknüpfung
+  //  davor (kid.conj = 'and' | 'or', kid.neg = NICHT). Es gilt UND vor ODER: eine Gruppe ist ein ODER ihrer
+  //  UND-Strecken („Läufe“). Ältere Bäume (node.op für die ganze Ebene) werden weiter verstanden.
+  const grIsGroup = (n) => !!(n && !n.field && Array.isArray(n.kids));
+  const grConjOf = (node, i) => (i === 0 ? '' : (node.kids[i] && node.kids[i].conj) || (node.op === 'or' ? 'or' : 'and'));
+  function grRuns(node) {
+    const runs = [];
+    (node && node.kids || []).forEach((k, i) => { if (i === 0 || grConjOf(node, i) === 'or') runs.push([i]); else runs[runs.length - 1].push(i); });
+    return runs;
   }
   // Kind auswerten, ggf. negiert („UND NICHT“ / „ODER NICHT“ bzw. NICHT am ersten Operanden)
   const grEvalKid = (k, ctx) => { const r = grEval(k, ctx); return k && k.neg ? !r : r; };
   function grEval(node, ctx) {
     if (!node) return false;
-    if (node.op === 'and') return (node.kids || []).every((k) => grEvalKid(k, ctx));
-    if (node.op === 'or') return (node.kids || []).some((k) => grEvalKid(k, ctx));
-    return grLeaf(node, ctx);
+    if (node.field) return grLeaf(node, ctx);
+    const kids = node.kids || [];
+    return grRuns(node).some((run) => run.every((i) => grEvalKid(kids[i], ctx)));
   }
-  // Hauptgruppen eines Baums: bei Top-ODER jeder Zweig, sonst der Baum selbst. Jede trägt eine eigene Begründung.
+  // Hauptgruppen eines Baums = ODER-Abschnitte der obersten Ebene. Die Begründung steht am ersten Glied des Abschnitts.
   function grMainGroups(tree) {
     if (!tree) return [];
-    if (tree.op === 'or') return (tree.kids || []);
-    return [tree];
+    if (tree.field) return [tree];
+    const kids = tree.kids || [];
+    const runs = grRuns(tree);
+    return runs.map((run) => ({ kids: run.map((i, j) => (j === 0 ? { ...kids[i], conj: undefined } : kids[i])), reason: (kids[run[0]] && kids[run[0]].reason) || (runs.length === 1 ? tree.reason || '' : '') }));
   }
   // Entscheidung für einen Bewerber (ctx: { trait, verified, photos }). Liefert verdict + Begründung der treffenden Hauptgruppe.
   function grDecide(cms, ctx, rules) {
@@ -6671,9 +6882,14 @@
   function grDNF(node) {
     if (!node) return [[]];
     if (node.field) return [[node]];
-    if (node.op === 'and') { let acc = [[]]; for (const k of (node.kids || [])) { const d = k && k.neg ? [[]] : grDNF(k); const nx = []; for (const a of acc) for (const b of d) nx.push(a.concat(b)); acc = nx; } return acc.length ? acc : [[]]; }
-    if (node.op === 'or') { let out = []; for (const k of (node.kids || [])) out = out.concat(k && k.neg ? [[]] : grDNF(k)); return out.length ? out : [[]]; }
-    return [[]];
+    const kids = node.kids || [];
+    let out = [];
+    for (const run of grRuns(node)) {
+      let acc = [[]];
+      for (const i of run) { const k = kids[i]; const d = k && k.neg ? [[]] : grDNF(k); const nx = []; for (const a of acc) for (const b of d) nx.push(a.concat(b)); acc = nx; }
+      out = out.concat(acc);
+    }
+    return out.length ? out : [[]];
   }
   // Machbarkeit einer Konjunktion je Feld; gibt pro Feld ein Beispiel-Wert zurück oder null (unmöglich)
   function grFeasible(leaves, optsByField) {
@@ -6740,8 +6956,41 @@
   // =====================================================================================
   const grReqCms = () => (/^\/groups\/(\d+)\/requests/.exec(location.pathname) || [])[1] || '';
   const grEditCms = () => (/^\/groups\/(\d+)\/edit/.exec(location.pathname) || [])[1] || '';
-  // Oberste Ebene: neue Gruppen per Default ODER-verknüpft (je Hauptgruppe eine Begründung); verschachtelt: UND.
-  const newTree = () => ({ op: 'or', kids: [] });
+  // Oberste Ebene: neue Glieder per Default ODER-verknüpft (je Hauptgruppe eine Begründung); verschachtelt: UND.
+  const newTree = () => ({ kids: [] });
+  // Alte Bäume auf das neue Format bringen: Verknüpfung je Glied, keine verneinten Operatoren mehr,
+  //  „keine Angabe“ der Ethnie als Chip. Logik bleibt gleich (bis auf Personen ganz ohne Angabe bei „ist nicht“).
+  function grNormLeaf(l) {
+    const f = grField(l.field); if (!f) return l;
+    const flip = () => { l.neg = !l.neg; };
+    if (l.op === 'some') { l.op = 'none'; l.value = ''; flip(); }
+    if (l.op === 'ne') { l.op = 'eq'; flip(); }
+    if (l.op === 'isnot' && f.type !== 'bool') { l.op = 'is'; flip(); }
+    if (l.op === 'noneof') { l.op = 'isoneof'; flip(); }
+    if (l.op === 'notcontains') { l.op = Array.isArray(l.value) && l.value.length > 1 ? 'isoneof_lang' : 'contains'; flip(); }
+    if (l.op === 'isoneof_lang') { l.op = 'contains'; }   // mehrere Sprachen: „enthält“ verlangt alle – nächstbeste Entsprechung
+    if (GR_CHIP_NA.has(f.key) && l.op === 'none') { l.op = 'is'; l.value = GR_NONE_CHIP; }
+    return l;
+  }
+  function grNormTree(node, top = true) {
+    if (!node) return newTree();
+    if (node.field) return grNormLeaf(node);
+    const kids = node.kids || [];
+    kids.forEach((k, i) => {
+      if (i > 0 && !k.conj) k.conj = node.op === 'or' ? 'or' : 'and';
+      if (i === 0) delete k.conj;
+      grNormTree(k, false);
+    });
+    // frühere gemeinsame Begründung einer UND-Hauptgruppe → ans erste Glied
+    if (top && node.reason && kids[0] && !kids[0].reason && grRuns(node).length === 1) kids[0].reason = node.reason;
+    if (top) delete node.reason;
+    delete node.op;
+    return node;
+  }
+  function grNormRules(r) {
+    for (const g of Object.keys(r || {})) { const b = r[g]; if (!b) continue; b.accept = grNormTree(b.accept); b.reject = grNormTree(b.reject); }
+    return r;
+  }
   function grDefaultValue(f, op) {
     if (grNoValue(op)) return '';
     if (f.type === 'num' || f.derived === 'photos') return op === 'between' ? [f.min || 0, f.max || 0] : (f.min || 0);
@@ -6777,18 +7026,23 @@
     return row;
   }
 
-  // Verknüpfung vor einem Operanden: UND / ODER / UND NICHT / ODER NICHT.
-  //  UND/ODER gilt für die ganze Ebene (node.op), NICHT verneint nur den folgenden Operanden (kid.neg).
+  // Verknüpfung vor einem Operanden: UND / ODER / UND NICHT / ODER NICHT – gilt nur für dieses eine Glied
+  //  (kid.conj), NICHT verneint das folgende Glied (kid.neg). UND bindet stärker als ODER.
   function grConjSel(node, kid, onChange, depth) {
     const conj = grEl('div', 'vaf-gr-conj' + (kid.neg ? ' neg' : ''));
     const sel = grEl('select', 'vaf-gr-op');
     sel.innerHTML = '<option value="and">UND</option><option value="or">ODER</option><option value="andnot">UND NICHT</option><option value="ornot">ODER NICHT</option>';
-    sel.value = (node.op === 'or' ? 'or' : 'and') + (kid.neg ? 'not' : '');
+    const i = node.kids.indexOf(kid);
+    sel.value = grConjOf(node, i) + (kid.neg ? 'not' : '');
     sel.addEventListener('change', () => {
-      const v = sel.value; const op = v.startsWith('or') ? 'or' : 'and';
-      // Wechsel UND→ODER auf oberster Ebene: bisherige gemeinsame Begründung an die neuen Hauptgruppen weitergeben
-      if (depth === 0 && node.op !== 'or' && op === 'or' && node.reason) for (const k of node.kids || []) if (!k.reason) k.reason = node.reason;
-      node.op = op; kid.neg = v.endsWith('not'); onChange();
+      const v = sel.value; const c = v.startsWith('or') ? 'or' : 'and';
+      // oberste Ebene: aus einem neuen ODER-Abschnitt wird eine eigene Hauptgruppe – Begründung des Abschnitts davor mitgeben
+      if (depth === 0 && c === 'or' && grConjOf(node, i) !== 'or' && !kid.reason) {
+        const runs = grRuns(node); const prev = runs.find((r) => r.includes(i));
+        const r0 = node.kids[prev[0]]; if (r0 && r0.reason) kid.reason = r0.reason;
+      }
+      if (depth === 0 && c === 'and' && grConjOf(node, i) === 'or') delete kid.reason;   // verschmilzt mit dem Abschnitt davor
+      kid.conj = c; kid.neg = v.endsWith('not'); onChange();
     });
     conj.appendChild(sel);
     return conj;
@@ -6801,47 +7055,126 @@
     return b;
   }
 
+  // ---------- Verschiebe-Pfeile je Glied: ⇐ ⇑ ⇓ ⇒  ↑ ↓ ----------
+  //  ↑/↓  Glied mit seiner Verknüpfung eine Stelle nach oben/unten
+  //  ⇒    Bedingung in eine neue Gruppe nur mit ihr (Logik unverändert)
+  //  ⇐    Glied aus seiner Gruppe heraus in die Eltern-Gruppe, direkt unter die bisherige Gruppe
+  //  ⇑/⇓  Glied in die Gruppe direkt darüber/darunter (nur wenn dort eine Gruppe steht; nie von Gruppe zu Gruppe)
+  function grMoveKid(parentOf, node, i, how) {
+    const kids = node.kids; const kid = kids[i];
+    const carryReason = (from, to) => { if (from && from.reason && to && !to.reason) { to.reason = from.reason; } if (from) delete from.reason; };
+    if (how === 'up' || how === 'down') {
+      const j = how === 'up' ? i - 1 : i + 1; if (j < 0 || j >= kids.length) return false;
+      const a = Math.min(i, j), b = Math.max(i, j);
+      if (a === 0) { const ca = kids[a].conj, cb = kids[b].conj; kids[a].conj = cb; kids[b].conj = ca; }
+      [kids[i], kids[j]] = [kids[j], kids[i]];
+      delete kids[0].conj; return true;
+    }
+    if (how === 'wrap') {
+      if (!kid.field) return false;
+      const ng = { kids: [kid] };
+      if (kid.conj) { ng.conj = kid.conj; delete kid.conj; }
+      carryReason(kid, ng);
+      kids[i] = ng; return true;
+    }
+    if (how === 'into-up' || how === 'into-down') {
+      const j = how === 'into-up' ? i - 1 : i + 1;
+      const tg = kids[j]; if (!grIsGroup(tg)) return false;
+      kids.splice(i, 1);
+      if (how === 'into-up') {
+        if (!tg.kids.length) delete kid.conj; else if (!kid.conj) kid.conj = 'and';
+        tg.kids.push(kid);
+      } else {
+        // Gruppe übernimmt die Verknüpfung des Glieds nach vorn; das bisher erste Glied der Gruppe die der Gruppe
+        const gConj = tg.conj, kConj = kid.conj;
+        if (tg.kids[0]) tg.kids[0].conj = gConj || 'and';
+        if (kConj) tg.conj = kConj; else delete tg.conj;
+        delete kid.conj; carryReason(kid, tg);
+        tg.kids.unshift(kid);
+      }
+      delete (node.kids[0] || {}).conj;
+      return true;
+    }
+    if (how === 'out') {
+      const par = parentOf.get(node); if (!par) return false;
+      let conj = kid.conj || (kids[1] && kids[1].conj) || 'and';
+      if (i === 0 && kids[1]) delete kids[1].conj;
+      kids.splice(i, 1); delete kid.conj;
+      const gi = par.kids.indexOf(node);
+      kid.conj = conj;
+      par.kids.splice(gi + 1, 0, kid);
+      if (!node.kids.length) {                          // leere Gruppe entfällt, ihr Platz (und ihre Verknüpfung) geht an das Glied
+        par.kids.splice(gi, 1);
+        if (node.conj) kid.conj = node.conj; else delete kid.conj;
+        carryReason(node, kid);
+      }
+      delete par.kids[0].conj;
+      return true;
+    }
+    return false;
+  }
+  function grArrows(parentOf, node, i, depth, onChange) {
+    const kids = node.kids; const kid = kids[i];
+    const box = grEl('span', 'vaf-gr-arrows');
+    const mk = (sym, how, ok, title) => {
+      const b = grEl('b', ok ? '' : 'off', sym); b.title = title;
+      if (ok) b.addEventListener('click', () => { if (grMoveKid(parentOf, node, i, how)) onChange(); });
+      box.appendChild(b);
+    };
+    mk('⇐', 'out', depth > 0, 'aus der Gruppe heraus (unter die Gruppe)');
+    mk('⇑', 'into-up', i > 0 && grIsGroup(kids[i - 1]), 'in die Gruppe darüber');
+    mk('⇓', 'into-down', i < kids.length - 1 && grIsGroup(kids[i + 1]), 'in die Gruppe darunter');
+    mk('⇒', 'wrap', !!kid.field, 'in eine neue Gruppe');
+    box.appendChild(grEl('i', 'gap'));
+    mk('↑', 'up', i > 0, 'nach oben');
+    mk('↓', 'down', i < kids.length - 1, 'nach unten');
+    return box;
+  }
+
   // einen Baum (node) rekursiv rendern; onChange nach jeder Änderung; g = Geschlecht des Blocks.
   //  Kästen (oben/links/unten, rechts offen): je UND-Strecke einer Ebene ein Kasten, ein ODER beginnt einen neuen.
-  //  inBox = der Elternteil hat für genau diesen Knoten schon einen Kasten angelegt (kein Doppelkasten).
-  function grRenderNode(node, g, onChange, depth, inBox) {
+  //  Besteht eine Strecke nur aus einer Gruppe, zeichnet die Gruppe ihre Kästen selbst (kein Doppelkasten).
+  //  Oberste Ebene: jede ODER-Strecke ist eine Hauptgruppe mit eigener Begründung (am ersten Glied gespeichert).
+  function grRenderNode(node, g, onChange, depth, parentOf) {
+    parentOf = parentOf || new Map();
     const wrap = grEl('div', 'vaf-gr-group' + (depth === 0 ? ' root' : ''));
-    const kids = node.kids || [];
-    const isOr = node.op === 'or';
-    const perBranch = depth === 0 && isOr;              // bei Top-ODER: je Hauptgruppe eine Begründung
-    const andBox = !isOr && kids.length ? (inBox ? wrap : wrap.appendChild(grEl('div', 'vaf-gr-box'))) : null;
-    kids.forEach((kid, i) => {
-      let target;
-      if (isOr) {
-        if (i > 0) wrap.appendChild(grConjSel(node, kid, onChange, depth));
-        target = wrap.appendChild(grEl('div', 'vaf-gr-box'));
-      } else {
-        target = andBox;
-        if (i > 0) target.appendChild(grConjSel(node, kid, onChange, depth));
-      }
-      const el = kid.field ? grRenderLeaf(kid, node, g, onChange) : grRenderNode(kid, g, onChange, depth + 1, isOr);
-      if (i === 0) {
-        const chip = grNegChip(kid, onChange);
-        if (kid.field) el.insertBefore(chip, el.firstChild);
-        else {                                          // ganze Gruppe verneinen: Schalter in deren Aktionszeile
-          chip.textContent = kid.neg ? 'Gruppe verneint' : 'Gruppe verneinen';
-          const addRow = el.querySelector(':scope > .vaf-gr-add'); (addRow || el).appendChild(chip);
+    const kids = node.kids || (node.kids = []);
+    grRuns(node).forEach((run, r) => {
+      if (r > 0) wrap.appendChild(grConjSel(node, kids[run[0]], onChange, depth));
+      const single = run.length === 1 && grIsGroup(kids[run[0]]) && !kids[run[0]].neg;
+      const box = single ? wrap : wrap.appendChild(grEl('div', 'vaf-gr-box'));
+      run.forEach((i, j) => {
+        const kid = kids[i];
+        if (j > 0) box.appendChild(grConjSel(node, kid, onChange, depth));
+        let el;
+        if (kid.field) el = grRenderLeaf(kid, node, g, onChange);
+        else { parentOf.set(kid, node); el = grRenderNode(kid, g, onChange, depth + 1, parentOf); }
+        const arrows = grArrows(parentOf, node, i, depth, onChange);
+        if (kid.field) { const rm = el.querySelector(':scope > .vaf-gr-rm'); el.insertBefore(arrows, rm); }
+        else { const addRow = el.querySelector(':scope > .vaf-gr-add'); (addRow || el).appendChild(arrows); }
+        if (i === 0) {
+          const chip = grNegChip(kid, onChange);
+          if (kid.field) el.insertBefore(chip, el.firstChild);
+          else {                                        // ganze Gruppe verneinen: Schalter in deren Aktionszeile
+            chip.textContent = kid.neg ? 'Gruppe verneint' : 'Gruppe verneinen';
+            const addRow = el.querySelector(':scope > .vaf-gr-add'); (addRow || el).insertBefore(chip, arrows);
+          }
         }
-      }
-      target.appendChild(el);
-      if (perBranch) target.appendChild(grReasonRow(kid));
+        box.appendChild(el);
+      });
+      if (depth === 0) box.appendChild(grReasonRow(kids[run[0]]));
     });
-    if (depth === 0 && !isOr && andBox) andBox.appendChild(grReasonRow(node));   // eine Begründung für die ganze Hauptgruppe
     const add = grEl('div', 'vaf-gr-add');
+    const lastReason = () => { const runs = grRuns(node); const l = runs[runs.length - 1]; return l && kids[l[0]] ? kids[l[0]].reason : ''; };
+    const push = (k) => {
+      if (kids.length) k.conj = depth === 0 ? 'or' : 'and';
+      if (depth === 0 && kids.length && lastReason()) k.reason = lastReason();   // neue Hauptgruppe erbt einmalig die Begründung davor
+      kids.push(k); onChange();
+    };
     const bCond = grEl('button', 'vaf-gr-addbtn', '+ Bedingung');
-    bCond.addEventListener('click', () => { const l = newLeaf(g); if (perBranch && kids.length && kids[kids.length - 1].reason) l.reason = kids[kids.length - 1].reason; node.kids.push(l); onChange(); });
+    bCond.addEventListener('click', () => push(newLeaf(g)));
     const bGrp = grEl('button', 'vaf-gr-addbtn', '+ Gruppe');
-    bGrp.addEventListener('click', () => {
-      const ng = { op: 'and', kids: [newLeaf(g)] };
-      // neue Hauptgruppe erbt einmalig die Begründung der Gruppe davor (danach frei änderbar)
-      if (perBranch && kids.length && kids[kids.length - 1].reason) ng.reason = kids[kids.length - 1].reason;
-      node.kids.push(ng); onChange();
-    });
+    bGrp.addEventListener('click', () => push({ kids: [newLeaf(g)] }));
     add.appendChild(bCond); add.appendChild(bGrp);
     if (depth > 0) { const rm = grEl('button', 'vaf-gr-rm', '✕ Gruppe'); rm.addEventListener('click', () => { node.__remove = true; onChange(); }); add.appendChild(rm); }
     wrap.appendChild(add);
@@ -6926,11 +7259,25 @@
     x.addEventListener('click', () => { delete draft[g]; renderAll(); });
     head.appendChild(x);
     el.appendChild(head);
-    const prune = (n) => { if (!n || !n.kids) return; n.kids = n.kids.filter((k) => !k.__remove); n.kids.forEach(prune); };
+    const prune = (n) => {
+      if (!n || !n.kids) return;
+      const was0 = n.kids[0];
+      n.kids = n.kids.filter((k) => !k.__remove);
+      if (n.kids[0] && n.kids[0] !== was0) { if (was0 && was0.reason && !n.kids[0].reason && n.kids[0].conj !== 'or') n.kids[0].reason = was0.reason; delete n.kids[0].conj; }
+      n.kids.forEach(prune);
+    };
+    // Begründung gehört ans erste Glied jeder Hauptgruppe (ODER-Abschnitt der obersten Ebene)
+    const fixReasons = (n) => {
+      for (const run of grRuns(n)) {
+        const first = n.kids[run[0]];
+        if (!first.reason) { const w = run.map((i) => n.kids[i]).find((k) => k.reason); if (w) first.reason = w.reason; }
+        for (const i of run.slice(1)) delete n.kids[i].reason;
+      }
+    };
     for (const [key, title, cls] of [['accept', 'Automatisch annehmen, wenn', 'acc'], ['reject', 'Automatisch ablehnen, wenn', 'rej']]) {
       el.appendChild(grEl('div', 'vaf-gr-tt ' + cls, esc(title)));
       block[key] = block[key] || newTree();
-      const onChange = () => { prune(block[key]); renderAll(); };
+      const onChange = () => { prune(block[key]); fixReasons(block[key]); renderAll(); };
       el.appendChild(grRenderNode(block[key], g, onChange, 0));
     }
     return el;
@@ -6990,7 +7337,7 @@
     // im poppen-Formular: Enter in unseren Feldern darf nichts abschicken
     wrap.addEventListener('keydown', (e) => { if (e.key === 'Enter' && /^(INPUT|SELECT)$/.test(e.target.tagName)) e.preventDefault(); });
     if (place.after) place.after.after(wrap); else place.before.before(wrap);
-    grEditorDraft = clone(grRules()[cms] || {});
+    grEditorDraft = grNormRules(clone(grRules()[cms] || {}));
     renderGrEditor(wrap, cms);
   }
 
@@ -7016,7 +7363,7 @@
       const names = G.get('groupnames', {});
       const sel = grEl('select', 'vaf-gr-vsel'); sel.innerHTML = '<option value="">Regeln übernehmen aus …</option>' + other.map((c) => `<option value="${c}">${esc(names[c] || 'Gruppe ' + c)}</option>`).join('');
       const bCopy = grEl('button', 'vaf-gr-btn', 'Übernehmen');
-      bCopy.addEventListener('click', () => { if (sel.value) { grEditorDraft = clone(grRules()[sel.value] || {}); renderAll(); toast('Regeln übernommen – noch nicht gespeichert.'); } });
+      bCopy.addEventListener('click', () => { if (sel.value) { grEditorDraft = grNormRules(clone(grRules()[sel.value] || {})); renderAll(); toast('Regeln übernommen – noch nicht gespeichert.'); } });
       foot.appendChild(sel); foot.appendChild(bCopy);
     }
     const status = grEl('span', 'vaf-gr-status');
@@ -7146,7 +7493,7 @@
       if (pr && pr.trait) await grEnrich(cms, pr, rules).catch(() => {});
       const ctx = pr && pr.trait ? pr : null;
       const d = ctx ? grDecide(cms, ctx, rules) : { verdict: 'manual', reason: 'keine Angaben' };
-      list.push({ nick, verdict: d.verdict, reason: d.reason || '', note: (u && typeof u.note === 'string') ? u.note : '', meta: ctx ? await grMetaLine(cms, ctx, rules) : (pr && pr.error) || '' });
+      list.push({ nick, uid: String(u.uid || ''), avatar: u.avatar || '', verdict: d.verdict, reason: d.reason || '', note: (u && typeof u.note === 'string') ? u.note : '', meta: ctx ? await grMetaLine(cms, ctx, rules) : (pr && pr.error) || '' });
     }
     const vn = { accept: ['annehmen', 'v-acc'], reject: ['ablehnen', 'v-rej'], manual: ['liegen lassen', 'v-man'] };
     m.body.querySelector('.vaf-gr-prev').innerHTML = list.map((r) => `<div class="vaf-gr-req"><div class="vaf-gr-reqtx"><b>${esc(r.nick)}</b><span>${esc(r.meta)}</span></div><span class="vaf-gr-verdict ${vn[r.verdict][1]}">${vn[r.verdict][0]}</span></div>`).join('') || '<div>Keine prüfbaren Anfragen.</div>';
@@ -7157,7 +7504,7 @@
         const cur = grEl('div', 'vaf-cur', 'Wende an …'); m.body.appendChild(cur);
         const vis = await Vis.guard('Das Anwenden der Regeln'); if (!vis) { m.closable = true; return; }
         let done = 0;
-        for (const r of list) { if (r.verdict === 'accept' || r.verdict === 'reject') { cur.textContent = `${r.nick}: ${r.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`; try { const out = await decideRequest(r.nick, r.verdict === 'accept'); if (out === 'ok') await grWriteDecisionNote(cms, r.nick, r.verdict, r.reason, r.note); done++; } catch (e) { warn('Anwenden', e); } await sleep(rand(1200, 2500)); } }
+        for (const r of list) { if (r.verdict === 'accept' || r.verdict === 'reject') { cur.textContent = `${r.nick}: ${r.verdict === 'accept' ? 'annehmen' : 'ablehnen'} …`; try { await grWriteDecisionNote(cms, r.nick, r.verdict, r.reason, r.note); const out = await decideRequest(r.nick, r.verdict === 'accept'); if (out === 'ok') { GrDone.put(cms, { uid: r.uid, nick: r.nick, avatar: r.avatar, verdict: r.verdict, reason: r.reason, by: 'auto' }); done++; } } catch (e) { warn('Anwenden', e); } await sleep(rand(1200, 2500)); } }
         Vis.restore(vis);
         cur.textContent = `Fertig – ${done} Anfrage${done === 1 ? '' : 'n'} bearbeitet.`;
         m.closable = true; m.buttons([{ label: 'Schließen', focus: true, primary: true, fn: () => m.close() }]);
@@ -7242,6 +7589,12 @@
     .vaf-gr-field option{color:#e8e8e8;font-weight:400}
     .vaf-gr-conj{margin:3px 0}.vaf-gr-conj .vaf-gr-op{background:none;border:0;color:#a6a6a6;font-weight:700;font-size:12px}
     .vaf-gr-rm{background:none;border:0;color:#a6a6a6;cursor:pointer;font-size:13px}
+    .vaf-gr-arrows{display:inline-flex;align-items:center;gap:1px;margin-left:4px}
+    .vaf-gr-arrows b{cursor:pointer;color:#a6a6a6;font-weight:400;padding:0 3px;font-size:14px;user-select:none}
+    .vaf-gr-arrows b:hover{color:#ffc21a}
+    .vaf-gr-arrows b.off{opacity:.25;cursor:default}.vaf-gr-arrows b.off:hover{color:#a6a6a6}
+    .vaf-gr-arrows i.gap{display:inline-block;width:10px}
+    .vaf-gr-add .vaf-gr-arrows{margin-left:8px}
     .vaf-gr-add{margin:6px 0}.vaf-gr-addbtn{background:none;border:1px dashed #3a3a3a;border-radius:8px;padding:4px 10px;color:#a6a6a6;font-size:12.5px;cursor:pointer;margin-right:6px}
     .vaf-gr-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08)}
     .vaf-gr-btn{border:1px solid #3a3a3a;background:#2a2a2a;color:#e8e8e8;border-radius:9px;padding:8px 16px;font-weight:600;cursor:pointer}
@@ -7435,6 +7788,521 @@
   }
 
   // =====================================================================================
+  // Beitrittsanfragen automatisch bearbeiten
+  //  - im Hintergrund, ausgelöst durch die Glocke („… möchte deiner Gruppe … beitreten“) oder durch
+  //    offene Anfragen in verwalteten Gruppen (höchstens alle 15 Minuten je Gruppe)
+  //  - Notiz wird VOR dem Annehmen/Ablehnen geschrieben
+  //  - „Bearbeitete Beitrittsanfragen“: eigener Menüpunkt unter „Beitrittsanfragen“ (mit Papierkorb)
+  //  - die Original-Knöpfe „Akzeptieren“/„Ablehnen“ schreiben zuerst die Notiz und merken die Entscheidung
+  // =====================================================================================
+  const GA_MIN_GAP = 15 * 60000;
+  const gaGroupName = (cms) => (G.get('groupnames', {}) || {})[cms] || ('Gruppe ' + cms);
+
+  // ---------- Liste der bearbeiteten Anfragen ----------
+  const GrDone = {
+    all: () => G.get('grp_done', {}) || {},
+    key: (e) => (e.uid && /^\d+$/.test(String(e.uid)) ? String(e.uid) : 'n:' + norm(e.nick || '')),
+    list(cms) { return Object.entries(this.all()[cms] || {}).map(([k, e]) => ({ ...e, key: k })).sort((a, b) => b.at - a.at); },
+    find(cms, uid, nick) {
+      const m = this.all()[cms] || {};
+      if (uid && m[String(uid)]) return m[String(uid)];
+      return Object.values(m).find((e) => nick && norm(e.nick) === norm(nick)) || null;
+    },
+    put(cms, e) {
+      const a = this.all(); const m = a[cms] = a[cms] || {};
+      const k = this.key(e);
+      if (k !== 'n:' + norm(e.nick || '')) delete m['n:' + norm(e.nick || '')];
+      m[k] = { uid: e.uid || '', nick: e.nick, avatar: e.avatar || '', verdict: e.verdict, reason: e.reason || '', by: e.by || 'auto', at: now() };
+      G.set('grp_done', a); Bus.emit('grpdone', cms);
+    },
+    del(cms, key) { const a = this.all(); if (a[cms]) { delete a[cms][key]; G.set('grp_done', a); Bus.emit('grpdone', cms); } },
+  };
+
+  // ---------- Notizen ----------
+  const gaSegs = (note) => String(note || '').split(' / ').map((s) => s.trim()).filter(Boolean);
+  // gehört ein Notiz-Abschnitt zum Skript (Ignorieren, Whitelist, Entscheidung, Entfernen)?
+  const gaRelated = (seg) => !!parseNote(seg) || GR_DECISION_RE.test(seg) || /^Entfernt aus "/.test(seg) || /whitelist/i.test(seg);
+  // Notiz aus dem Notizfeld bei manueller Entscheidung: Fremder Text wird zur Begründung
+  function gaSplitNote(note) {
+    const segs = gaSegs(note);
+    return { reason: segs.filter((s) => !gaRelated(s)).join(' / '), keep: segs.filter(gaRelated).join(' / ') };
+  }
+  const gaIsDecisionFor = (cms, seg) => GR_DECISION_RE.test(seg) && seg.includes(`in "${gaGroupName(cms)}"`);
+  function gaRemovedNote(cms, note) {
+    const segs = gaSegs(note).filter((s) => !gaIsDecisionFor(cms, s));
+    return [...segs, `Entfernt aus "${gaGroupName(cms)}" am ${deDate(new Date())}`].join(' / ');
+  }
+  async function gaSetNote(cms, nick, note) {
+    if (dry()) return;
+    await apiPost('group/attendee/note', { cms_id: cms, nickname: nick, note }, { _version: 2 });
+  }
+
+  // ---------- offene Anfragen über die Schnittstelle ----------
+  async function gaPending(cms) {
+    const out = []; let page = 1;
+    for (let guard = 0; guard < 50; guard++) {
+      const d = await apiGet('group/attendee/specific/pending/list', { _version: 2, cms_id: cms, page, limit: 100, sort: 'last_joined' });
+      const l = (d && d.users) || [];
+      out.push(...l);
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+    }
+    return out;
+  }
+  async function gaWhitelist(cms, u) {
+    if (S().managedWhitelist[cms] === false || !u || !/^\d+$/.test(String(u.uid || ''))) return;
+    await seen(u, 'Gruppenanfrage', { images: false });
+    await Members.update(String(u.uid), (x) => { x.auto = x.auto || {}; x.auto.grp = x.auto.grp || {}; x.auto.grp[cms] = now(); });
+  }
+
+  // ---------- Hintergrund-Bearbeitung ----------
+  const gaQueued = new Set(), gaRunning = new Set();
+  function gaKick(cmsList, why) {
+    if (!ON_POPPEN || !isOn()) return;
+    const rules = grRules();
+    for (const cms of cmsList || []) {
+      if (!rules[cms] || !Object.keys(rules[cms]).length || gaQueued.has(cms)) continue;
+      const last = (G.get('ga_last', {}) || {})[cms] || 0;
+      const wait = Math.max(0, last + GA_MIN_GAP - now());
+      gaQueued.add(cms);
+      setTimeout(() => { gaQueued.delete(cms); gaProcessGroup(cms, why).catch((e) => warn('Beitrittsanfragen automatisch', e)); }, wait + 3000);
+    }
+  }
+  async function gaProcessGroup(cms, why = '') {
+    const rules = grRules();
+    if (!rules[cms] || !isOn()) return null;
+    if (now() - ((G.get('ga_last', {}) || {})[cms] || 0) < GA_MIN_GAP) return null;
+    if (isGroupRequestsPage() && reqCms() === cms && groupRun) return null;        // Prüfung läuft schon sichtbar
+    if (gaRunning.has(cms)) return null;
+    if (!(await Lock.take('ga_' + cms, why))) return null;
+    if (gaRunning.has(cms)) return null;
+    gaRunning.add(cms);
+    const res = { accept: 0, reject: 0, manual: 0, fail: 0, list: [] };
+    try {
+      G.set('ga_last', { ...(G.get('ga_last', {}) || {}), [cms]: now() });
+      const pend = await gaPending(cms);
+      for (const u of pend) {
+        const nick = u.nickname || u.name; const uid = String(u.uid || '');
+        if (!nick || !/^\d+$/.test(uid)) continue;
+        let verdict = 'manual', reason = '';
+        const prev = GrDone.find(cms, uid, nick);
+        if (prev) { verdict = prev.verdict; reason = prev.reason || ''; }     // schon bearbeitet → wie in der Liste
+        else {
+          const pr = await grProbe(nick, { decideOnly: true, photos: grUsesField(cms, 'photos') ? 50 : 1 }).catch(() => null);
+          if (pr && pr.trait) { await grEnrich(cms, pr).catch(() => {}); const d = grDecide(cms, pr); verdict = d.verdict; reason = d.reason || ''; }
+        }
+        if (verdict !== 'accept' && verdict !== 'reject') { res.manual++; continue; }
+        if (dry()) { res[verdict]++; res.list.push(`${nick}: ${verdict} (Testmodus)`); continue; }
+        try {
+          await grWriteDecisionNote(cms, nick, verdict, reason, typeof u.note === 'string' ? u.note : '');   // Notiz zuerst
+          await apiPost('group/attendee/' + (verdict === 'accept' ? 'approve' : 'deny'), { cms_id: cms, uid });
+          GrDone.put(cms, { uid, nick, avatar: u.avatar, verdict, reason, by: 'auto' });
+          if (verdict === 'accept') await gaWhitelist(cms, u).catch(() => {});
+          res[verdict]++; res.list.push(`${nick}: ${verdict === 'accept' ? 'angenommen' : 'abgelehnt'}${reason ? ' wegen ' + reason : ''}`);
+        } catch (e) { res.fail++; warn('Beitrittsanfrage', nick, e); }
+        await sleep(rand(1500, 3000));
+      }
+      if (res.accept || res.reject) {
+        log(`Beitrittsanfragen „${gaGroupName(cms)}“ (${why}):`, res.list.join('; '));
+        toast(`Beitrittsanfragen „${esc(gaGroupName(cms))}“: ${res.accept} angenommen, ${res.reject} abgelehnt${res.manual ? `, ${res.manual} zur manuellen Prüfung` : ''}.`, 10000);
+        refreshPending(true).catch(() => {});
+      }
+      // Benachrichtigung löschen, wenn nichts mehr manuell zu prüfen ist: Schnittstelle noch unbekannt
+      // (wird nachgerüstet, sobald der Rekorder ein echtes Löschen mitgeschnitten hat).
+      return res;
+    } finally { gaRunning.delete(cms); Lock.release('ga_' + cms); }
+  }
+  // Glocke: „<nick> möchte deiner Gruppe <Gruppe> beitreten“
+  function gaInstallHooks() {
+    onApi(/^notification\/msg\/list$/, (d) => {
+      const l = (d && (d.msg_list || d.list)) || [];
+      const cmsList = [];
+      for (const n of l) {
+        if (!n || n.msg_type !== 'cms_private_request_group') continue;
+        const dd = n.data || {};
+        const m = /\/(\d+)\/?$/.exec(dd.link_to_request_page || '') || /\/(\d+)\/?$/.exec(dd.link || '');
+        if (m) cmsList.push(m[1]);
+      }
+      if (cmsList.length) gaKick([...new Set(cmsList)], 'Glocke');
+    });
+    Bus.on('pending', () => { const p = G.get('pending', null); if (p && p.groups) gaKick(p.groups.map((g) => g.cms), 'offene Anfragen'); });
+  }
+
+  // ---------- Original-Knöpfe „Akzeptieren“/„Ablehnen“ einhaken ----------
+  async function gaUidOf(cms, nick) {
+    try { const l = await gaPending(cms); const u = l.find((x) => norm(x.nickname || '') === norm(nick)); return u ? String(u.uid) : ''; } catch { return ''; }
+  }
+  // Notiz schreiben + merken (manuell). note = aktueller Inhalt des Notizfelds.
+  async function gaManualDecision(cms, it, accept) {
+    const verdict = accept ? 'accept' : 'reject';
+    const { reason, keep } = gaSplitNote(it.note ? it.note.value : '');
+    await grWriteDecisionNote(cms, it.name, verdict, reason, keep);
+    const uid = uidFromAvatar(it.avatar) || await gaUidOf(cms, it.name);
+    if (!dry()) GrDone.put(cms, { uid, nick: it.name, avatar: it.avatar, verdict, reason, by: 'manual' });
+    return { verdict, reason };
+  }
+  function gaHookButtons() {
+    if (window.__vafGaHook) return;
+    window.__vafGaHook = true;
+    document.addEventListener('click', (e) => {
+      if (!isGroupRequestsPage() || location.hash === '#bearbeitet') return;
+      const btn = e.target && e.target.closest ? e.target.closest('main button') : null;
+      if (!btn || btn.closest('.vaf-ov, #vaf-gr-editor, #vaf-ga-view')) return;
+      const t = norm(btn.textContent);
+      if (t !== 'akzeptieren' && t !== 'ablehnen') return;
+      if (btn.__vafPass) { btn.__vafPass = false; return; }
+      const it = findRequestItems().find((x) => x.accept === btn || x.reject === btn);
+      if (!it) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (btn.__vafBusy) return;
+      btn.__vafBusy = true;
+      gaManualDecision(reqCms(), it, t === 'akzeptieren')
+        .catch((err) => warn('Notiz vor Entscheidung', err))
+        .finally(() => { btn.__vafBusy = false; btn.__vafPass = true; btn.click(); });
+    }, true);
+  }
+
+  // ---------- Menüpunkt + Seite „Bearbeitete Beitrittsanfragen“ ----------
+  const gaViewOn = () => isGroupRequestsPage() && location.hash === '#bearbeitet';
+  function gaMenuLink() {
+    const m = /^\/groups\/(\d+)\//.exec(location.pathname);
+    if (!m) return;
+    const cms = m[1];
+    const req = document.querySelector(`a[href="/groups/${cms}/requests"]`);
+    if (!req || !req.parentElement) return;
+    let a = req.parentElement.querySelector('a.vaf-ga-link');
+    const base = req.classList[0] || '';
+    const sibs = [...req.parentElement.querySelectorAll('a[href]')].filter((x) => x !== a && (!base || x.classList.contains(base)));
+    const counts = {}; sibs.forEach((x) => x.classList.forEach((c) => { counts[c] = (counts[c] || 0) + 1; }));
+    const activeCls = Object.keys(counts).find((c) => counts[c] === 1 && sibs.length > 2) || '';
+    const plain = sibs.find((x) => !x.classList.contains(activeCls) && x !== req) || req;
+    if (!a) {
+      a = document.createElement('a');
+      a.className = [...plain.classList].filter((c) => c !== activeCls).join(' ') + ' vaf-ga-link';
+      a.href = `/groups/${cms}/requests#bearbeitet`;
+      a.innerHTML = '<span data-type="label">Bearbeitete Beitrittsanfragen</span>';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (isGroupRequestsPage()) { location.hash = 'bearbeitet'; gaView(); }
+        else location.href = a.href;
+      });
+      req.after(a);
+    }
+    const on = gaViewOn();
+    if (activeCls) {
+      a.classList.toggle(activeCls, on);
+      if (on) req.classList.remove(activeCls);
+      else if (isGroupRequestsPage() && !sibs.some((x) => x !== req && x.classList.contains(activeCls))) req.classList.add(activeCls);
+    }
+  }
+  function gaView() {
+    const main = document.querySelector('main');
+    let view = document.getElementById('vaf-ga-view');
+    if (!gaViewOn() || !main) {
+      if (view) { view.remove(); if (main) for (const c of main.children) if (c.dataset.vafGaHidden) { c.style.display = ''; delete c.dataset.vafGaHidden; } }
+      return;
+    }
+    if (view && view.isConnected) return;
+    ensureGaStyle();
+    for (const c of main.children) if (c.id !== 'vaf-ga-view' && c.style.display !== 'none') { c.dataset.vafGaHidden = '1'; c.style.display = 'none'; }
+    view = document.createElement('div'); view.id = 'vaf-ga-view';
+    main.appendChild(view);
+    gaRender(view, reqCms());
+  }
+  function gaRender(view, cms) {
+    const list = GrDone.list(cms);
+    view.innerHTML = `<h2 class="vaf-ga-h">Bearbeitete Beitrittsanfragen</h2>
+      <div class="vaf-ga-sub">${list.length ? `${list.length} bearbeitete Anfrage${list.length === 1 ? '' : 'n'} in „${esc(gaGroupName(cms))}“. Wer hier steht, wird bei einer neuen Anfrage wieder so entschieden.` : 'Noch keine bearbeiteten Anfragen.'}</div>
+      <div class="vaf-ga-list"></div>`;
+    const box = view.querySelector('.vaf-ga-list');
+    for (const e of list) {
+      const it = document.createElement('div'); it.className = 'vaf-ga-item';
+      const acc = e.verdict === 'accept';
+      it.innerHTML = `<div class="vaf-ga-top"><img class="vaf-ga-av" alt="" src="${esc(e.avatar || '/v2-static/client/image/avatar-man.c502eddd.svg')}">
+        <div class="vaf-ga-who"><a href="${esc(profileUrl(e.nick))}" target="_blank" rel="noopener">${esc(e.nick)}</a>
+        <span class="vaf-ga-v ${acc ? 'acc' : 'rej'}">${acc ? 'angenommen' : 'abgelehnt'}</span></div>
+        <button type="button" class="vaf-ga-del" title="${acc ? 'Aus der Gruppe entfernen' : 'Aus der Liste nehmen (darf erneut anfragen)'}">${GA_TRASH}</button></div>
+        <div class="vaf-ga-note">${esc(`${acc ? 'Angenommen' : 'Abgelehnt'}${e.reason ? ' wegen ' + e.reason : ''} am ${deDate(new Date(e.at))}`)}<span>${e.by === 'manual' ? 'von Hand' : 'automatisch'}</span></div>`;
+      it.querySelector('.vaf-ga-del').addEventListener('click', () => gaTrash(cms, e, () => gaRender(view, cms)));
+      box.appendChild(it);
+    }
+  }
+  const GA_TRASH = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path d="M21 6h-5V4.33A2.42 2.42 0 0 0 13.5 2h-3A2.42 2.42 0 0 0 8 4.33V6H3a1 1 0 1 0 0 2h1v11a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V8h1a1 1 0 1 0 0-2M10 16a1 1 0 1 1-2 0v-4a1 1 0 1 1 2 0zm0-11.67c0-.16.21-.33.5-.33h3c.29 0 .5.17.5.33V6h-4zM16 16a1 1 0 0 1-2 0v-4a1 1 0 0 1 2 0z"></path></svg>';
+  // aktuelle Notiz eines (ehemaligen) Bewerbers/Mitglieds lesen
+  async function gaCurrentNote(cms, nick) {
+    try {
+      const d = await apiPost('group/attendee/manage/list', { cms_id: cms, limit: 10, keyword: nick, sort: 'last_joined' }, { _version: 2 });
+      const u = ((d && d.users) || []).find((x) => norm(x.nickname || '') === norm(nick));
+      if (u && typeof u.note === 'string') return u.note;
+    } catch {}
+    return null;
+  }
+  async function gaTrash(cms, e, redraw) {
+    const acc = e.verdict === 'accept';
+    const v = await ask(acc ? 'Aus der Gruppe entfernen?' : 'Ablehnung zurücknehmen?',
+      acc ? `<b>${esc(e.nick)}</b> wird aus „${esc(gaGroupName(cms))}“ entfernt. Die Notiz wird zu „Entfernt aus "${esc(gaGroupName(cms))}" am ${deDate(new Date())}“.`
+        : `<b>${esc(e.nick)}</b> wird aus der Liste genommen, die Ablehnungs-Notiz gelöscht. Danach kann ${esc(e.nick)} erneut anfragen.`,
+      [{ label: acc ? 'Entfernen' : 'Zurücknehmen', value: 'ok', primary: true }, { label: 'Abbrechen', value: '', focus: true, cancel: true }]);
+    if (v !== 'ok') return;
+    try {
+      const cur = await gaCurrentNote(cms, e.nick);
+      if (acc) {
+        await gaSetNote(cms, e.nick, gaRemovedNote(cms, cur || ''));
+        if (!dry()) await apiPost('group/attendee/kick', { cms_id: cms, nickname: e.nick }, { _version: 2 });
+        toast(`${esc(e.nick)} aus „${esc(gaGroupName(cms))}“ entfernt.`);
+      } else {
+        if (cur != null) await gaSetNote(cms, e.nick, gaSegs(cur).filter((s) => !gaIsDecisionFor(cms, s)).join(' / '));
+        else await gaSetNote(cms, e.nick, '').catch(() => {});
+        // Erneutes Anfragen freischalten: Schnittstelle noch unbekannt (wird nachgerüstet, sobald mitgeschnitten)
+        toast(`${esc(e.nick)} aus der Liste genommen.`);
+      }
+      if (!dry()) GrDone.del(cms, e.key);
+    } catch (err) { toast('Fehlgeschlagen: ' + esc(err.message || String(err))); }
+    redraw();
+  }
+  function ensureGaStyle() {
+    if (document.getElementById('vaf-ga-style')) return;
+    const st = document.createElement('style'); st.id = 'vaf-ga-style';
+    st.textContent = `
+      #vaf-ga-view{color:#e8e8e8;font-size:14px;padding:4px 0 40px}
+      .vaf-ga-h{color:#fff;font-size:20px;margin:6px 0 4px}
+      .vaf-ga-sub{color:#a6a6a6;font-size:13px;margin-bottom:14px}
+      .vaf-ga-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+      .vaf-ga-item{background:#1f1f1f;border-radius:16px;padding:14px}
+      .vaf-ga-top{display:flex;align-items:center;gap:12px}
+      .vaf-ga-av{width:48px;height:48px;border-radius:50%;object-fit:cover;background:#3a3a3a;flex:none}
+      .vaf-ga-who{flex:1;min-width:0;display:flex;flex-direction:column}
+      .vaf-ga-who a{color:#fff;font-weight:600;text-decoration:none}.vaf-ga-who a:hover{text-decoration:underline}
+      .vaf-ga-v{font-size:12px}.vaf-ga-v.acc{color:#49d17a}.vaf-ga-v.rej{color:#ff8a80}
+      .vaf-ga-del{width:32px;height:32px;border-radius:50%;border:1px solid #4a4a4a;background:transparent;color:#e8e8e8;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;flex:none}
+      .vaf-ga-del:hover{border-color:#ffc21a;color:#ffc21a}
+      .vaf-ga-note{margin-top:10px;background:#141414;border:1px solid #3a3a3a;border-radius:10px;padding:8px 12px;font-size:13px;display:flex;justify-content:space-between;gap:10px}
+      .vaf-ga-note span{color:#6a6a6a;white-space:nowrap}`;
+    document.head.appendChild(st);
+  }
+  function gaTick() {
+    try { gaMenuLink(); gaView(); } catch (e) { warn('Bearbeitete Beitrittsanfragen', e); }
+  }
+  function initGroupAuto() {
+    gaInstallHooks();
+    gaHookButtons();
+    gaTick();
+    setInterval(gaTick, 1000);
+    W.addEventListener('hashchange', gaTick);
+    Bus.on('grpdone', (cms) => { const v = document.getElementById('vaf-ga-view'); if (v && reqCms() === cms) gaRender(v, cms); });
+    // nach dem Start einmal die offenen Anfragen aller verwalteten Gruppen mit Regeln prüfen
+    setTimeout(() => { const p = G.get('pending', null); if (p && p.groups) gaKick(p.groups.map((g) => g.cms), 'Start'); }, 20000);
+  }
+
+  // =====================================================================================
+  // Von poppen gesperrte Profile / Profile in Echtheitsprüfung
+  //  Die Profilseite zeigt dann statt des Profils „Blockiertes Profil“ bzw. „Popster verifizieren“.
+  //  Solche Mitglieder werden im Gedächtnis markiert (mit Datum), kommen bei neuen Einträgen ans Ende der
+  //  Warteliste (schon eingereihte bleiben, wo sie sind) und tragen in Listen einen Vermerk. Der Vermerk
+  //  verschwindet von selbst, sobald das Profil wieder normal zu sehen ist.
+  // =====================================================================================
+  const PSTATE = { gesperrt: 'von poppen gesperrt', pruefung: 'in Echtheitsprüfung' };
+  const pstateNote = (m) => (m && m.pstate && PSTATE[m.pstate.k] ? ' · ' + PSTATE[m.pstate.k] : '');
+  function pstateOfDoc(doc = document) {
+    const r = doc.querySelector('main .ant-result-info .ant-result-title');
+    if (!r) return '';
+    const t = norm(r.textContent || '');
+    if (t.includes('blockiertes profil')) return 'gesperrt';
+    if (t.includes('popster verifizieren')) return 'pruefung';
+    return '';
+  }
+  async function pstateSet(nick, k) {
+    if (!nick) return;
+    const m = await Members.byNick(nick);
+    const map = { ...(G.get('pstate_nicks', {}) || {}) };
+    if (k) map[norm(nick)] = { k, at: now() }; else delete map[norm(nick)];
+    G.set('pstate_nicks', map);
+    if (!m) return;
+    await Members.update(m.uid, (x) => {
+      if (k) { if (!x.pstate || x.pstate.k !== k) x.pstate = { k, at: now() }; }
+      else delete x.pstate;
+    });
+  }
+  // Profilseite /p/<nick>: Zustand erkennen bzw. Vermerk wieder entfernen
+  async function profileStateUi() {
+    const nick = decodeURIComponent((/^\/p\/([^/]+)/.exec(location.pathname) || [])[1] || '');
+    if (!nick || profileStateUi.path === location.pathname) return;
+    profileStateUi.path = location.pathname;
+    const k = await waitFor(() => pstateOfDoc() || (document.querySelector('main h1, main [data-type="profile-header"], main .ant-avatar, main img[alt]') && document.querySelector('main') && document.querySelector('main').textContent.length > 200 ? 'normal' : ''), 10000);
+    if (!k) return;
+    if (k === 'normal') {
+      const m = await Members.byNick(nick);
+      if ((m && m.pstate) || (G.get('pstate_nicks', {}) || {})[norm(nick)]) { await pstateSet(nick, ''); log(`${nick}: Profil wieder sichtbar – Vermerk entfernt`); }
+      return;
+    }
+    await pstateSet(nick, k);
+    log(`${nick}: ${PSTATE[k]}`);
+  }
+
+  // =====================================================================================
+  // ID → Nickname (messenger/group/item/p2p mit group_id = uid)
+  //  poppens eigene Profilseite benutzt diese Abfrage; sie liefert { uid, nickname, age, gender, avatar,
+  //  payclass, user_status } – auch ohne bestehenden Chat. Genutzt wird sie erst, wenn der eingebaute
+  //  Selbsttest an bekannten Profilen bestanden ist (einmal automatisch, sonst per Knopf in den Experten-Einstellungen).
+  // =====================================================================================
+  const IDRES_GAP = 1800;                 // ms zwischen zwei Abfragen
+  const Resolver = (() => {
+    let last = 0, chain = Promise.resolve();
+    const cache = () => G.get('idres_cache', {}) || {};
+    async function raw(uid) {
+      const wait = last + IDRES_GAP - now(); if (wait > 0) await sleep(wait);
+      last = now();
+      const d = await apiPost('messenger/group/item/p2p', { group_id: String(uid), nickname: '' });
+      return d || null;
+    }
+    const passed = () => { const t = G.get('idres_test', null); return !!(t && t.ok); };
+    async function ensureTested() {
+      const t = G.get('idres_test', null);
+      if (t) return !!t.ok;
+      await idresSelfTest({ silent: true }).catch((e) => warn('ID-Auflösung: Selbsttest', e));
+      return passed();
+    }
+    // eine ID auflösen (gedrosselt, je ID nur einmal); Ergebnis landet auch im Gedächtnis
+    function resolve(uid) {
+      uid = String(uid || '');
+      if (!/^\d+$/.test(uid)) return Promise.resolve(null);
+      const c = cache()[uid];
+      if (c && (c.nick || now() - c.at < DAY)) return Promise.resolve(c);
+      const p = chain.then(async () => {
+        if (!(await ensureTested())) return null;
+        const c2 = cache()[uid]; if (c2 && (c2.nick || now() - c2.at < DAY)) return c2;
+        let res = { nick: '', st: null, at: now() };
+        try {
+          const d = await raw(uid);
+          const gd = d && d.group_data;
+          if (gd && String(gd.uid) === uid) {
+            res = { nick: gd.nickname || '', st: gd.user_status != null ? gd.user_status : null, at: now() };
+            if (gd.user_status !== 1) log(`ID-Auflösung: ${uid} (${gd.nickname || '?'}) user_status=${gd.user_status}`);
+            if (gd.nickname && !DELETED_NICK.test(gd.nickname)) await seen({ uid, nickname: gd.nickname, gender: gd.gender, age: gd.age, avatar: gd.avatar, payclass: gd.payclass }, 'ID-Auflösung', { images: false }).catch(() => {});
+          }
+        } catch (e) { res.err = e.message || String(e); }
+        G.set('idres_cache', { ...cache(), [uid]: res });
+        return res;
+      });
+      chain = p.catch(() => {});
+      return p;
+    }
+    return { resolve, raw, passed, ensureTested, cache };
+  })();
+
+  // ---------- Selbsttest ----------
+  async function idresChatUids(pages = 8) {
+    const out = new Set(); let offset = 0;
+    for (let i = 0; i < pages; i++) {
+      const d = await apiPost('messenger/group/list', { offset, filter: 0 });
+      const l = (d && d.list) || [];
+      for (const c of l) if (c && c.group_data && c.group_data.uid) out.add(String(c.group_data.uid));
+      if (!l.length) break;
+      offset += l.length;
+    }
+    return out;
+  }
+  async function idresSelfTest({ silent = false, only = null } = {}) {
+    if (!(await Lock.take('idres_test', 'Selbsttest'))) return G.get('idres_test', null);
+    const det = { at: new Date().toISOString(), known: [], states: {}, sideEffect: null, errors: [] };
+    let ok = false;
+    try {
+      // 1) bekannte Mitglieder: Nick (ohne Groß/Klein), Geschlecht, Alter (±1 wegen Geburtstag)
+      const cand = [];
+      await Members.each((m) => {
+        if (cand.length >= 40) return;
+        if (only && !only.includes(String(m && m.uid))) return;
+        if (!m || !/^\d+$/.test(String(m.uid)) || !m.nick || !(m.ages || []).length || !(m.g || []).length || m.pstate) return;
+        if (!m.ageAt || m.ageAt < isoDay(new Date(now() - 60 * DAY))) return;
+        cand.push(m);
+      });
+      const pick = cand.sort(() => Math.random() - 0.5).slice(0, 10);
+      for (const m of pick) {
+        let d = null;
+        try { d = await Resolver.raw(m.uid); } catch (e) { det.errors.push(`${m.uid}: ${e.message}`); }
+        const gd = d && d.group_data;
+        const nickOk = !!gd && norm(gd.nickname || '') === norm(m.nick);
+        const gOk = !!gd && (gd.gender || []).join(',') === (m.g || []).join(',');
+        const aOk = !!gd && (gd.age || []).length === (m.ages || []).length && (gd.age || []).every((a, i) => Math.abs(a - m.ages[i]) <= 1);
+        det.known.push({ uid: m.uid, nick: m.nick, got: gd ? gd.nickname : null, nickOk, gOk, aOk, st: gd ? gd.user_status : null });
+      }
+      // 2) bekannte gelöschte / gesperrte / in Prüfung: user_status je Art festhalten
+      const cats = { gesperrt: [], pruefung: [], geloescht: [] };
+      await Members.each((m) => { if (m && m.pstate && cats[m.pstate.k] && cats[m.pstate.k].length < 20 && /^\d+$/.test(String(m.uid))) cats[m.pstate.k].push(m.uid); });
+      let chats = new Set(), chatList = null;
+      try {
+        const d = await apiPost('messenger/group/list', { offset: 0, filter: 0 });
+        chatList = (d && d.list) || [];
+        for (const c of chatList) { const gd = c.group_data || {}; if (DELETED_NICK.test(gd.nickname || '') && gd.uid && cats.geloescht.length < 20) cats.geloescht.push(String(gd.uid)); }
+      } catch (e) { det.errors.push('Chatliste: ' + e.message); }
+      for (const [k, ids] of Object.entries(cats)) {
+        det.states[k] = [];
+        for (const uid of ids) {
+          try { const d = await Resolver.raw(uid); const gd = d && d.group_data; det.states[k].push({ uid, nick: gd ? gd.nickname : null, st: gd ? gd.user_status : null }); }
+          catch (e) { det.states[k].push({ uid, err: e.message }); }
+        }
+      }
+      // 3) Nebenwirkung: entsteht beim Auflösen einer ID ohne Chat ein leerer Chat?
+      try {
+        chats = await idresChatUids();
+        const free = pick.map((m) => String(m.uid)).find((u) => !chats.has(u));
+        let probe = free;
+        if (!probe) { const extra = cand.map((m) => String(m.uid)).find((u) => !chats.has(u)); probe = extra; }
+        if (probe) {
+          const d = await Resolver.raw(probe);
+          await sleep(1500);
+          const after = await idresChatUids();
+          const looksNew = !!(d && d.group_id && /-/.test(String(d.group_id)));   // echte Chats haben eine UUID
+          det.sideEffect = { uid: probe, chatAppeared: after.has(probe), uuid: looksNew, before: chats.size, after: after.size };
+        } else det.sideEffect = { skipped: 'keine ID ohne Chat gefunden' };
+      } catch (e) { det.errors.push('Nebenwirkung: ' + e.message); }
+      const n = det.known.length;
+      const good = det.known.filter((k) => k.nickOk && k.gOk && k.aOk).length;
+      const side = det.sideEffect && !det.sideEffect.skipped && (det.sideEffect.chatAppeared || det.sideEffect.uuid);
+      ok = n >= 3 && good >= Math.ceil(n * 0.9) && !side && !!det.sideEffect && !det.sideEffect.skipped;
+      det.summary = `${good}/${n} bekannte Profile korrekt` + (side ? ' · FEHLER: leerer Chat entstanden' : det.sideEffect && det.sideEffect.skipped ? ' · Nebenwirkung nicht prüfbar' : ' · keine Nebenwirkung') +
+        Object.entries(det.states).filter(([, l]) => l.length).map(([k, l]) => ` · ${k}: user_status ${[...new Set(l.map((x) => x.st))].join('/')}`).join('');
+    } catch (e) { det.errors.push(e.message || String(e)); det.summary = 'abgebrochen: ' + (e.message || e); }
+    finally { Lock.release('idres_test'); }
+    const res = { ok, at: now(), details: det };
+    G.set('idres_test', res);
+    log('ID-Auflösung Selbsttest:', ok ? 'bestanden' : 'NICHT bestanden', det);
+    if (!silent || !ok) toast(`ID-Auflösung: Selbsttest ${ok ? '<b>bestanden</b>' : '<b>nicht bestanden</b> – die Auflösung bleibt aus'}<br>${esc(det.summary || '')}`, 12000);
+    return res;
+  }
+
+  // ---------- Anwendung: fehlende Nicknames nachtragen ----------
+  async function resolveMissing(max = 150) {
+    if (!(await Lock.take('idres', 'Nicknames nachtragen'))) return 0;
+    let n = 0;
+    try {
+      const ids = new Set();
+      for (const uid of G.get('evil_ids', []) || []) if (!(evilNames()[uid])) ids.add(String(uid));                    // Blockierende Popsters ohne Namen
+      for (const e of S().expert.evil || []) if (/^\d+$/.test(String(e).trim())) ids.add(String(e).trim());           // Besonders böse Popsters (IDs)
+      for (const q of await Queue.list()) if (/^\d+$/.test(String(q.uid)) && !q.nick) ids.add(String(q.uid));          // Warteliste ohne Nick
+      await Members.each((m) => { if (ids.size < max * 2 && m && /^\d+$/.test(String(m.uid)) && !m.nick) ids.add(String(m.uid)); });
+      const cache = Resolver.cache();
+      const todo = [...ids].filter((u) => !(cache[u] && (cache[u].nick || now() - cache[u].at < DAY))).slice(0, max);
+      if (!todo.length) return 0;
+      if (!(await Resolver.ensureTested())) return 0;
+      for (const uid of todo) {
+        const r = await Resolver.resolve(uid);
+        if (r && r.nick) {
+          n++;
+          const q = await DB.get('queue', uid).catch(() => null);
+          if (q && !q.nick) { q.nick = r.nick; await DB.put('queue', q); }
+        }
+      }
+      if (n) { log(`ID-Auflösung: ${n} Nicknames nachgetragen`); syncEvilNames().catch(() => {}); Queue.changed(); }
+    } finally { Lock.release('idres'); }
+    return n;
+  }
+  function initResolver() {
+    setTimeout(() => resolveMissing().catch((e) => warn('ID-Auflösung', e)), 90000);
+    setInterval(() => resolveMissing().catch(() => {}), 6 * 3600000);
+  }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
@@ -7454,6 +8322,7 @@
     if (/^\/p\/[^/]+\/?$/.test(location.pathname)) {
       blockedProfileUi().catch((e) => warn('Geblocktes Profil', e));
       profilePage().catch((e) => warn('Profil', e));
+      profileStateUi().catch((e) => warn('Profil-Zustand', e));
     }
     if (location.pathname === '/setting/profile') readSecondHomeFromPage();
   }
@@ -7462,12 +8331,16 @@
     ensureStyle();
     await migrateV1().catch((e) => warn('Umstellung', e));
     if (await handleSpecialPage()) return;
-    loadMe().then(() => { headerButton(); return loadSecondHome(); }).catch(() => {});
+    loadMe().then(() => { headerButton(); ageWithMe().catch((e) => warn('Grenzen altern', e)); return loadSecondHome(); }).catch(() => {});
+    setInterval(() => loadMe().then(() => ageWithMe()).catch(() => {}), 3 * 3600000);
     checkReblock().catch((e) => warn('Wiedersperren', e));
     hookTrash();
     leaveGuard();
     initListPages();
     initFigur();
+    SearchGuard.start();
+    initGroupAuto();
+    initResolver();
     initGroupRequests();
     Etappe.start();
     Scan.startTimer();
@@ -7536,7 +8409,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

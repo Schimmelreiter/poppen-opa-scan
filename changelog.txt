@@ -1,6 +1,26 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.29 (28.10.2026)
+- Einstellungen: neue Zeile „Global“ (übernimmt anfangs die Werte von „Interaktionen“) und Experten-Schalter „Gemeinsame Grenzen für alle Quellen“ (Standard an, direkt unter „Rangfolge der Quellen“). An: eine Regler-Zeile über die volle Breite, die Quellen-Beschriftungen und „Werte der ersten Zeile …“ entfallen; bei getrenntem Alter je eine Zeile für Frau und Mann. Aus: Grenzen wie bisher je Quelle
+- Neue Schalter „Grenzen altern mit mir“ (visuelle Einstufung) und „Grenze altert mit mir“ (Ignorieren) je Gruppe: am eigenen Geburtstag (sonst, sobald das höhere eigene Alter bemerkt wird) steigen die Grenzen um ein Jahr. Dadurch wird nie jemand entsperrt – entsperrt wird nur, wen eine von Hand nach oben geschobene Grenze freigibt
+- Alle Schieberegler 18–99; 99 ist ein offenes Ende (schließt auch 100-Jährige ein). Die Mitgliedersuche prüft jetzt auch 99-Jährige; „Alter unklar (99)“ ist überall entfernt
+- Layout: Beschriftung „Schalter“ und die Kopfzeilen „Quelle …“ entfernt; Bezeichnungen (Beschreibung „Oben Einzahl, unten Mehrzahl“, gleichmäßig breitere Felder), Profiltypen, Paar-Regel und Getrenntes Alter beginnen genau unter dem Visuell-Regler bzw. dem Schalter „Visuelle Einstufung“ und rücken bei gemeinsamen Grenzen mit nach vorn
+- Versionsnummer rechts neben dem Titel „Opa-Schutz“; „Warteliste“ steht direkt rechts neben „Derzeit blockiert“
+- Experten-Einstellung „Gruppenanfragen: Gruppen“ entfernt
+- Mitgliedersuche: Hintergrund-Suchen pausieren, solange die Suchseite in irgendeinem Tab offen ist, und laufen erst 5 Minuten nach dem Verlassen weiter (Fortschritt bleibt). Die eigene Suche wird gemerkt, beim Laden der Suchseite wiederhergestellt und nach jedem Hintergrundlauf auf dem Server zurückgeschrieben
+- Figur-Badges ohne Suche: Größe und Gewicht kommen aus den Profilangaben jeder sichtbaren Trefferkarte (gedrosselt, im Gedächtnis gemerkt)
+- Regel-Editor: jede Verknüpfung gilt nur noch für ihr eigenes Glied (vorher wechselten alle derselben Ebene mit); UND bindet stärker als ODER, Kästen = UND-Strecken, Hauptgruppen = ODER-Abschnitte der obersten Ebene
+- Regel-Editor: verneinte Operatoren entfallen („ist nicht“, „enthält keine von“, „enthält nicht“, „ist ungleich“, „hat Angabe“) – das erledigt „… NICHT“; bestehende Regeln werden beim Öffnen gleichwertig umgestellt. Ethnische Zugehörigkeit: „keine Angabe“ ist ein Wert-Chip wie die übrigen
+- Regel-Editor: Pfeile je Glied ⇐ ⇑ ⇓ ⇒ und ↑ ↓ (aus der Gruppe heraus, in die Gruppe darüber/darunter, in eine neue Gruppe, verschieben – jeweils mit Verknüpfung)
+- Beitrittsanfragen: die Notiz wird jetzt VOR dem Annehmen/Ablehnen geschrieben (vorher fehlte sie)
+- Beitrittsanfragen im Hintergrund: Glocke „… möchte deiner Gruppe … beitreten“ bzw. offene Anfragen verwalteter Gruppen mit Regeln lösen die Bearbeitung aus (höchstens alle 15 Minuten je Gruppe); bereits Bearbeitete werden wieder so entschieden
+- Neuer Menüpunkt „Bearbeitete Beitrittsanfragen“ unter „Beitrittsanfragen“: alle Entscheidungen mit Papierkorb (abgelehnt → aus der Liste samt Ablehnungs-Notiz; angenommen → Notiz „Entfernt aus "<Gruppe>" am …“, dann aus der Gruppe entfernen)
+- Original-Knöpfe „Akzeptieren“/„Ablehnen“: schreiben zuerst die Notiz („Angenommen|Abgelehnt in "<Gruppe>" [wegen …] am …“, eigener Text im Notizfeld wird zur Begründung) und merken die Entscheidung
+- Von poppen gesperrte Profile („Blockiertes Profil“) und Profile in Echtheitsprüfung („Popster verifizieren“) werden erkannt, mit Datum gemerkt, bei neuen Einträgen ans Ende der Warteliste gestellt und in Listen mit Vermerk angezeigt; der Vermerk verschwindet, sobald das Profil wieder sichtbar ist
+- ID-Auflösung (Mitglieds-ID → Nickname) mit eingebautem Selbsttest an bekannten Profilen (inkl. Prüfung, dass kein leerer Chat entsteht); ergänzt Platzhalter bei „Blockierende Popsters“, „Besonders böse Popsters“, im Gedächtnis und auf der Warteliste. Ergebnis des Selbsttests steht im Rekorder-Export
+- API-Rekorder: Kennungen (msg_id, uid, group_id …) werden nicht mehr als Telefonnummer geschwärzt
+
 2.28 (27.10.2026)
 - Regel-Editor jetzt auch auf der Bearbeiten-Seite der Gruppe (/groups/<id>/edit), direkt über „Lokale Gruppe“; dort sicher im poppen-Formular (keine versehentlichen Absende-Klicks, Enter schickt nichts ab)
 - Experten-Einstellungen aufgeräumt: „Typ annehmen“, „Typ ablehnen“, „Ohne Typ/Bild & nur Deutsch ablehnen“ und „Fotos in der Prüfung“ entfallen – das erledigt der Regel-Editor

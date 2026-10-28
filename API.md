@@ -354,3 +354,17 @@ Vor dem Speichern wird geschwärzt:
 - beim Geburtstag alles außer dem Jahr
 
 Unbekannte Endpunkte werden markiert. So lassen sich neue Funktionen einmal von Hand auslösen und danach nachbauen.
+
+## Ergänzungen 2.29
+
+### `POST messenger/group/item/p2p` (ID → Nickname) ✅
+Body `{ group_id: "<uid>", nickname: "" }` → `data.group_data { uid, nickname, age[], gender[], avatar, payclass, user_status }`. poppens Profilseite ruft das selbst auf; funktioniert ohne bestehenden Chat (dann `group_id` = uid, `last_message: null`). Das Skript nutzt es erst nach bestandenem Selbsttest (Nick/Geschlecht/Alter bekannter Profile, kein leerer Chat), gedrosselt und je ID nur einmal.
+
+### `GET user/search/detailed/arguments` ✅
+Liefert die auf dem Server gemerkte letzte Suche (dieselben Felder wie der Body von `user/search`, dazu `lat`, `lon`, `is_default`). Jede `user/search`-Abfrage überschreibt sie – auch Hintergrund-Suchen. Das Skript schreibt die Antwort auf den gemerkten Nutzer-Stand um, solange eine eigene Hintergrund-Suche den Server-Stand verändert hat, und stellt ihn danach per Mini-Suche (`limit: 1`) wieder her.
+
+### `POST group/attendee/approve` / `POST group/attendee/deny` ✅
+Body `{ cms_id, uid }`. Annehmen bzw. Ablehnen einer Beitrittsanfrage (Hintergrund-Bearbeitung).
+
+### `POST notification/msg/list` – `msg_type: "cms_private_request_group"`
+`data { name, sender, link, link_to_request_page: "/groups/jreqs/<cms>", nicknames }`. Auslöser der Hintergrund-Bearbeitung. Löschen einer Benachrichtigung: Schnittstelle noch nicht mitgeschnitten.

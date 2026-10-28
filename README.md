@@ -34,7 +34,9 @@ Das Mitglieder-Gedächtnis kann mit Gruppen-Scans weit über 100.000 Einträge g
 
 ## Regeln: Wer wird blockiert?
 
-Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** und **Paare**. Jede Gruppe hat je **Quelle** (Interaktionen, Profilbesucher, Gruppen, Mitgliedersuche) eigene Altersgrenzen. Partygäste gibt es auf poppen.de nicht; die Zeile ist ausgeblendet und übernimmt intern die Werte der Profilbesucher.
+Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** und **Paare**. Standardmäßig gelten für eine Gruppe **gemeinsame Grenzen für alle Quellen** (Zeile „Global“). Schaltet man das in den Experten-Einstellungen ab, hat jede Gruppe je **Quelle** (Interaktionen, Profilbesucher, Gruppen, Mitgliedersuche) eigene Altersgrenzen. Partygäste gibt es auf poppen.de nicht; die Zeile ist ausgeblendet und übernimmt intern die Werte der Profilbesucher. Alle Schieberegler reichen von 18 bis 99; **99 ist ein offenes Ende** (schließt auch 100-Jährige ein).
+
+- **„Grenzen altern mit mir“:** je Gruppe ein Schalter für die visuelle Einstufung und einer für „Ignorieren ab“. An deinem Geburtstag (Geburtsdatum aus dem eigenen Profil; sonst, sobald das Skript das höhere Alter bemerkt) steigen die Grenzen um ein Jahr. Dadurch wird **niemand entsperrt** – entsperrt wird nur, wen eine von Hand nach oben geschobene Grenze freigibt.
 
 - **Visuelle Einstufung** in drei Stufen (zwei Grenzen): bis zur ersten Grenze Stufe 1 (grün), bis zur zweiten Stufe 2 (orange), darüber Stufe 3 (rot).
 - **Ignorieren ab** einem Alter.
@@ -48,7 +50,6 @@ Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** un
 - **Profiltypen** von poppen.de: Mann (`m`), Frau (`w`), Paar (`p`), Trans (`ts`), Nicht-binär (`tv`). Jeder Typ gehört zu höchstens einer Gruppe; nicht zugeordnete Typen werden nicht bearbeitet.
 - **Paare:** Paar-Regel „einer über der Grenze“ oder „beide über der Grenze“; auf Wunsch getrennte Grenzen für Frau und Mann. **Sugar Daddy** und **Sugar Mom** (großer Altersabstand) mit eigenem Schalter.
 - **Warnalter:** Ein Jahr vor der Grenze wird ein Mitglied dunkelorange markiert und **vorgemerkt**. Sobald es laut Geburtszeitraum sicher über der Grenze ist, kommt es auf die Warteliste.
-- **Alter 99** gilt als **unklar** (meist ein Platzhalter): nicht blockieren, nur markieren; die Profiladressen lassen sich als Textdatei exportieren.
 
 ### Nie blockiert
 
@@ -97,7 +98,8 @@ Scans **lesen** komplett und legen Treffer auf eine **Warteliste**. Geblockt wir
 - nur ein Tab arbeitet; wird er geschlossen, übernimmt ein anderer poppen.de-Tab, sobald dieser seit einer Minute offen ist,
 - nach mehreren Fehlschlägen hintereinander 5 Minuten Pause,
 - Reihenfolge nach der **Rangfolge der Quellen**, innerhalb einer Quelle die Ältesten zuerst,
-- vor jeder Sperre: Whitelist, Mitarbeiter, Freund, Favorit, verwaltete Gruppe, Alter 99 und aktuelle Grenzen erneut prüfen.
+- vor jeder Sperre: Whitelist, Mitarbeiter, Freund, Favorit, verwaltete Gruppe und aktuelle Grenzen erneut prüfen.
+- Von poppen.de **gesperrte Profile** („Blockiertes Profil“) und Profile **in Echtheitsprüfung** („Popster verifizieren“) werden beim Aufruf erkannt, im Gedächtnis mit Datum markiert und bei neuen Einträgen ans Ende der Warteliste gestellt (schon eingereihte bleiben, wo sie sind). In Listen stehen sie mit Vermerk „· von poppen gesperrt“ bzw. „· in Echtheitsprüfung“; der Vermerk verschwindet, sobald das Profil wieder zu sehen ist.
 
 **Jetzt abarbeiten** (Experten-Einstellungen bzw. Opa-Scan) arbeitet die Warteliste in diesem Tab bis zum Ende ab – auch bei ausgeschaltetem Schalter.
 
@@ -113,12 +115,12 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
 
-- Kopfzeile: derzeit blockiert, nach Anwenden der neuen Einstellungen (derzeit blockiert − fallen weg + kommen dazu, aus dem Gedächtnis berechnet), Warteliste. Damit die Zahl stimmt, liest das Skript nach jedem Update und danach wöchentlich die Blockierliste still ins Gedächtnis ein (ohne etwas zu ändern).
-- Je Gruppe: Schalter, Grenzen je Quelle (Schieberegler), „Werte der ersten Zeile übernehmen“, Bezeichnungen, Profiltypen; bei Paaren Paar-Regel, getrenntes Alter, Sugar Daddy/Mom.
+- Titel mit Versionsnummer. Kopfzeile: derzeit blockiert, Warteliste, nach Anwenden der neuen Einstellungen (derzeit blockiert − fallen weg + kommen dazu, aus dem Gedächtnis berechnet), Warteliste. Damit die Zahl stimmt, liest das Skript nach jedem Update und danach wöchentlich die Blockierliste still ins Gedächtnis ein (ohne etwas zu ändern).
+- Je Gruppe: Schalter „Visuelle Einstufung“/„Ignorieren aktiv“, darunter „Grenzen altern mit mir“, Grenzen (eine Zeile „Global“ bzw. je Quelle mit „Werte der ersten Zeile übernehmen“), Bezeichnungen (oben Einzahl, unten Mehrzahl), Profiltypen; bei Paaren Paar-Regel, getrenntes Alter (je eine Zeile für Frau und Mann), Sugar Daddy/Mom.
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
-- Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen nicht auf der Seite; sie gelten intern weiter (Quelltext bzw. Datensicherung).
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, Datensicherung, Gedächtnis-Export/-Import, 99-Jährige, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
+- Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen im Regel-Editor der jeweiligen Gruppe (Anfragen- bzw. Bearbeiten-Seite).
+- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), **Gemeinsame Grenzen für alle Quellen**, Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, **ID-Auflösung** (Selbsttest), Datensicherung, Gedächtnis-Export/-Import, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
 - Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
@@ -151,13 +153,16 @@ Alle 30 Minuten liest das Skript die Liste der Popsters, die dich blockieren (`i
 
 Die Zuordnung User-ID → Nickname liegt dauerhaft im Tampermonkey-Speicher und überlebt so das Löschen der poppen.de-Browserdaten; das Profilgedächtnis dient nur als Rückfallebene. Geänderte Nicknames (gleiche ID) werden nach jedem Whitelist-Scan und einmal täglich nachgeführt. Entfernt wird anhand der ID, nicht des Namens.
 
-Angezeigt wird die Liste unter *Datenschutzeinstellungen → **Blockierende Popsters*** (auf `/setting/privacy/home`, direkt über „Wer kann was sehen“). Die Ansicht ist **nicht änderbar**: bekannte Mitglieder mit Bild, Name (Link zum Profil) und „Geschlecht · Alter · Ort“, sonst ein Platzhalter mit der ID.
+Angezeigt wird die Liste unter *Datenschutzeinstellungen → **Blockierende Popsters*** (auf `/setting/privacy/home`, direkt über „Wer kann was sehen“). Die Ansicht ist **nicht änderbar**: bekannte Mitglieder mit Bild, Name (Link zum Profil) und „Geschlecht · Alter · Ort“, sonst ein Platzhalter mit der ID. Platzhalter werden über die **ID-Auflösung** nachgetragen (`messenger/group/item/p2p`, gedrosselt, je ID einmal) – aber erst, wenn deren Selbsttest an bekannten Profilen bestanden ist (Nick, Geschlecht, Alter; zudem darf beim Auflösen kein leerer Chat entstehen). Dieselbe Auflösung ergänzt fehlende Nicknames bei „Besonders böse Popsters“, im Gedächtnis und auf der Warteliste.
 
 ## Gruppen-Beitrittsanfragen
 
-Auf `/groups/<Nummer>/requests` prüft **Automatische Annahme/Ablehnung** jedes Profil über die Schnittstellen (`user/info`, Galerie) statt mit einem unsichtbaren Profilaufruf; der Typ kommt als Zahl und wird über die Übersetzungen der Seite (`i18n/pull`) benannt, sonst prüft das Skript wie bisher über das Profil. Typ in der Annehmen-Liste → annehmen, in der Ablehnen-Liste → ablehnen; sonst **manuell prüfen** mit Angaben, bis zu 6 Fotos (Großansicht beim Darüberfahren) und Notizfeld.
+Je Gruppe gibt es einen **Regel-Editor** (Anfragen- und Bearbeiten-Seite der Gruppe) mit je einem Block pro Geschlecht: „Automatisch annehmen, wenn …“ und „Automatisch ablehnen, wenn …“. Jedes Glied hat seine eigene Verknüpfung davor (UND / ODER / UND NICHT / ODER NICHT); **UND bindet stärker als ODER**. Jede UND-Strecke steht in einem eigenen Kasten, jeder ODER-Abschnitt der obersten Ebene ist eine Hauptgruppe mit eigener **Begründung**. Pfeile je Glied: ⇐ aus der Gruppe heraus, ⇑/⇓ in die Gruppe darüber/darunter, ⇒ in eine neue Gruppe, ↑/↓ verschieben. Verneinte Operatoren gibt es nicht (das macht „… NICHT“); bei der ethnischen Zugehörigkeit ist „keine Angabe“ ein eigener Wert-Chip.
 
-Die **Regeln** (Gruppen-Muster, Annehmen-/Ablehnen-Liste, Zusatzregel, Fotozahl) stehen nicht im Quelltext, sondern nur in den eigenen gespeicherten Einstellungen: *Opa-Schutz → Experten-Einstellungen → Gruppenanfragen*. Ist kein Gruppen-Muster eingetragen, ist die automatische Annahme/Ablehnung aus.
+- **Im Hintergrund:** Meldet die Glocke „… möchte deiner Gruppe … beitreten“ oder hat eine verwaltete Gruppe mit Regeln offene Anfragen, bearbeitet das Skript sie über die Schnittstellen (`group/attendee/approve`/`deny`), höchstens alle 15 Minuten je Gruppe. Wer schon unter „Bearbeitete Beitrittsanfragen“ steht, wird wieder so entschieden.
+- **Notiz zuerst:** Vor jedem Annehmen/Ablehnen wird die Notiz geschrieben: `Angenommen|Abgelehnt in "<Gruppe>" [wegen <Begründung>] am TT.MM.JJJJ`. Das gilt auch für die Original-Knöpfe der Seite: ein eigener Text im Notizfeld wird zur Begründung, Ignorier-/Whitelist-Notizen bleiben erhalten.
+- **Bearbeitete Beitrittsanfragen** (Menüpunkt unter „Beitrittsanfragen“): alle Entscheidungen mit Papierkorb. Abgelehnte: aus der Liste nehmen und Ablehnungs-Notiz löschen. Angenommene: Notiz wird zu `Entfernt aus "<Gruppe>" am TT.MM.JJJJ`, dann Rauswurf aus der Gruppe.
+- Der Knopf **Automatische Annahme/Ablehnung** auf der Anfragenseite prüft alle offenen Anfragen sichtbar; nicht Entscheidbares geht in die manuelle Prüfung (Angaben, Fotos, Notizfeld).
 
 ---
 
@@ -218,11 +223,17 @@ Eigene Textbausteine (bis **100**, je bis **8000 Zeichen**), gespeichert im Tamp
 ## Mitgliedersuche: Figur
 
 - Überall heißt „Kurvig“ jetzt **„Mollig“** und „Plus-size“ **„Mastschwein“**. In der Suche gibt es zusätzlich **„Qualle“** (sucht ebenfalls „Plus-size“).
-- Bei Mollig, Mastschwein und Qualle **vermisst** das Skript die Treffer über die Größen- und Gewichtsfilter der Suche (je Größe ein Mindestgewicht für BMI 30/35/40, danach ganzzahlige BMI-Bänder) – ohne Profilaufrufe.
+- Bei Mollig, Mastschwein und Qualle liest das Skript für **jede sichtbare Trefferkarte** ohne gültige Messung einmal die Profilangaben (`user/info`, gedrosselt) und merkt sich Größe und Gewicht. Hintergrund-Suchen gibt es dafür nicht mehr.
 - **Badges:** ab BMI 30 „mollig“, ab 35 „Mastschwein“, ab 40 „Qualle“, z. B. „Mastschwein · BMI 37“.
 - **Ausblenden:** bei Mastschwein unter BMI 35, bei Qualle unter BMI 40; bei Mollig niemand.
 - **Sortierung:** absteigend nach BMI, bei Gleichstand nach Gewicht. Fehlende Angaben zählen als niedrigster BMI der Suche und 0 kg („UNKNOWN“).
 - Messungen bleiben **90 Tage** gültig, „UNKNOWN“ wird nach **30 Tagen** neu geprüft. Paare lassen sich so nicht vermessen.
+
+---
+
+## Mitgliedersuche: deine Suche bleibt deine
+
+poppen.de merkt sich die zuletzt abgeschickte Suche auf dem Server. Damit der Teilscan „Mitgliedersuche“ sie nicht überschreibt: Hintergrund-Suchen **pausieren**, solange `/search` in irgendeinem Tab offen ist, und laufen erst **5 Minuten** nach dem Verlassen weiter (der Fortschritt bleibt). Deine Suche wird gemerkt, beim Laden der Suchseite wiederhergestellt und nach jedem Hintergrundlauf auf dem Server zurückgeschrieben.
 
 ---
 
@@ -238,7 +249,6 @@ Wartung (neuer Versuch nach 15 Minuten), Werbe-Zwischenseiten (werden übersprun
 |---|---|
 | Alle Daten sichern / wiederherstellen | Einstellungen, Gedächtnis, Bilder, Archiv, Warteliste; die Fickliste verschlüsselt mit dem Nick |
 | Gedächtnis exportieren / importieren (mischen) | nur das Wissen über andere Mitglieder (z. B. für ein zweites Konto); Geburtszeiträume werden geschnitten, neuere Messungen gewinnen |
-| 99-Jährige exportieren | Textdatei, eine Profiladresse pro Zeile |
 
 ### API-Rekorder
 
