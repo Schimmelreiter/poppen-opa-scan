@@ -224,14 +224,26 @@ Eigene Textbausteine (bis **100**, je bis **8000 Zeichen**), gespeichert im Tamp
 
 Alle Figur-Funktionen greifen nur, wenn in den Einstellungen **„Benutzer ist Moppel-Liebhaber“** an ist (Standard: aus). Dort lassen sich drei BMI-Grenzen (Regler 25–60, farbig von rot nach grün), die Bezeichnungen der Stufen (Standard: Kurvig · Üppig · XXL; darunter poppens „Plus-Size“), der Suchradius und die Profiltypen einstellen.
 
-### Mitgliedersuche: Figur (bisherige Beschreibung, Stufen jetzt einstellbar)
+### Mitgliedersuche
 
-- Überall heißt „Kurvig“ jetzt **„Mollig“** und „Plus-size“ **„Mastschwein“**. In der Suche gibt es zusätzlich **„Qualle“** (sucht ebenfalls „Plus-size“).
-- Bei Mollig, Mastschwein und Qualle liest das Skript für **jede sichtbare Trefferkarte** ohne gültige Messung einmal die Profilangaben (`user/info`, gedrosselt) und merkt sich Größe und Gewicht. Hintergrund-Suchen gibt es dafür nicht mehr.
-- **Badges:** ab BMI 30 „mollig“, ab 35 „Mastschwein“, ab 40 „Qualle“, z. B. „Mastschwein · BMI 37“.
-- **Ausblenden:** bei Mastschwein unter BMI 35, bei Qualle unter BMI 40; bei Mollig niemand.
-- **Sortierung:** absteigend nach BMI, bei Gleichstand nach Gewicht. Fehlende Angaben zählen als niedrigster BMI der Suche und 0 kg („UNKNOWN“).
-- Messungen bleiben **90 Tage** gültig, „UNKNOWN“ wird nach **30 Tagen** neu geprüft. Paare lassen sich so nicht vermessen.
+- poppens „Kurvig“ heißt „Mollig“; „Plus-size“ bleibt. Der Figur-Filter bekommt die Zusatzoptionen der eigenen Stufen (Standard: Kurvig, Üppig, XXL). Sie suchen „Plus-size“ und blenden nur aus, wer nach berechnetem BMI darunter liegt; Mitglieder ohne Größe/Gewicht bleiben.
+- **Badges** in Stufenfarbe (z. B. „XXL · BMI 46“), Stufe 0 „Plus-Size“ nur bei entsprechender Profilangabe.
+- **Sortierung „BMI“** (zwischen „Entfernung“ und „Alter“): absteigend, ohne Angaben ans Ende. Umsortiert wird nur bei „BMI“.
+- **Vermessung:** Für jede sichtbare Trefferkarte ohne gültige Messung liest das Skript einmal die Profilangaben (`user/info`, gedrosselt). Messungen bleiben 90 Tage gültig, „UNKNOWN“ wird nach 30 Tagen neu geprüft.
+
+### Paare
+
+Bei Paaren lassen sich „Paar (Frau)“ und „Paar (Mann)“ getrennt anhaken; vermessen wird, wer angehakt ist. Angezeigt wird ein Wert – je nach eigenem Profil: Mann/Trans (Hetero, Bi, keine Angabe) → Frau, Mann Gay → Mann, Frau (Hetero, Bi, keine Angabe) → Mann, Frau Gay → Frau, eigenes Paar → Frau (Männer-Paar → Mann), Nicht-binär → Frau, wenn „Paar (Frau)“ angehakt ist. Ist diese Person nicht angehakt, gilt die angehakte. Gleichgeschlechtliche Paare folgen dem Haken ihres Geschlechts, angezeigt wird der höhere Wert.
+
+### XXL-Suche und XXL-Seite
+
+- **XXL-Suche** (letzte Quelle im Opa-Scan; beim ersten Öffnen an, wenn „Moppel-Liebhaber“ an ist): je ausgewähltem Profiltyp ab 18 aufsteigend jedes Alter bis unter die Ignorier-Grenze, im eingestellten Radius (75 km = Suche mit 100 km, Rest verworfen), Figur „Plus-size“. Jeder Treffer wird vermessen; BMI, Figur-Angabe, Entfernung, Anmeldedatum u. a. kommen ins Gedächtnis.
+- **Menüpunkt unter „Entdecken“** nach „Popsters“, benannt nach der Mehrzahl der höchsten Stufe (Standard „XXL“), mit Frau- bzw. Mann-Symbol je nach eigener Suche.
+- **Seite** wie die Mitgliedersuche, aber aus dem Gedächtnis (ab „Plus-Size“): Filter Geschlecht, Alter, Radius, mit Bildern, jetzt online, nur verifiziert, Figur (Plus-Size + eigene Stufen), „auch unklarer BMI“, „nur anschreibbare“ (ungeprüfte bleiben und werden im Hintergrund geprüft), Suche nach, Sternzeichen, Raucher, Sexualität, Größe, Gewicht. Sortierung: Entfernung, BMI (Standard), Alter, letzter Login, Anmeldedatum.
+
+### Anschreibbar
+
+Ob ein Mitglied Nachrichten filtert („Du kannst nur einen Sticker senden“, `messenger/p2p/permission` → Code 20903), merkt sich das Skript je eigenem Profil: passiv bei jedem „Nachricht senden“, aktiv gedrosselt für Mitglieder ab „Plus-Size“ ohne Ignorier-Kriterien, erneut nach 30 Tagen. Nutzbar als Filter auf der XXL-Seite und als Feld „Anschreibbar“ im Regel-Editor. Beim Gedächtnis-Import nur aus dem eigenen Profil übernommen.
 
 ---
 

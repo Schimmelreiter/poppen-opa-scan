@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.30
+// @version      2.31
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.30';
+  const VERSION = '2.31';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
@@ -1081,6 +1081,8 @@
     if ((!bd || now() - bd.at > 30 * DAY) && me.nick) {
       try {
         const d = await apiGet('user/info/' + encodeURIComponent(me.nick), { _version: 2 });
+        const st = d && d.user_trait && d.user_trait.sex_type;   // eigene Orientierung (für die Moppel-Regeln bei Paaren)
+        if (st != null) G.set('my_sextype', (Array.isArray(st) ? st : [st]).map(Number));
         const b = d && d.userInfo && d.userInfo.birthday;
         const first = String((Array.isArray(b) ? b[0] : b) || '');
         bd = { d: /^\d{4}-\d{2}-\d{2}/.test(first) ? first.slice(0, 10) : '', at: now() };
@@ -1759,10 +1761,25 @@
     if (!m || !tr) return m;
     try { grNoteUnknownCodes(tr); } catch {}   // neue/unbekannte Profil-Codes nebenbei erfassen (Punkt 18)
     const g = Array.isArray(tr.gender) ? tr.gender : [];
-    const h = +((tr.size || [])[0] || 0), w = +((tr.weight || [])[0] || 0);
-    if (g.length <= 1 && h >= 120 && h <= 230 && w >= 30 && w <= 350) {
-      await Members.update(m.uid, (x) => { x.body = [{ h, wlo: w, whi: w, at: now(), src: 'Profil', fig: (tr.figure_name || [])[0] || 0 }]; delete x.bodyUnk; });
+    const arr = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
+    const sizes = arr(tr.size), weights = arr(tr.weight), figs = arr(tr.figure_name);
+    // je Person (Einzelprofil: eine, Paar: in der Reihenfolge von gender) Größe/Gewicht/BMI; fehlende Angaben → null
+    const n = Math.max(1, g.length);
+    const body = [];
+    for (let i = 0; i < n; i++) {
+      const h = +(sizes[i] || 0), w = +(weights[i] || 0);
+      body.push(h >= 120 && h <= 230 && w >= 30 && w <= 350 ? { h, wlo: w, whi: w, bmi: Math.round(w / ((h / 100) ** 2) * 10) / 10, at: now(), src: 'Profil', fig: +figs[i] || 0 } : null);
     }
+    const am = d.aboutMe || {};
+    await Members.update(m.uid, (x) => {
+      x.figc = figs.map((f) => +f || 0);                                   // Figur-Angabe je Person (6 = Plus-size)
+      if (body.some(Boolean)) { x.body = body; delete x.bodyUnk; }
+      // Profil-Angaben für die Filter der XXL-Seite
+      x.tr = { smoker: arr(tr.smoker), sex: arr(tr.sex_type), zodiac: arr(tr.zodiac), eth: arr(tr.ethnicity) };
+      if (Array.isArray(am.lookingFor)) x.lf = am.lookingFor.map((y) => (Array.isArray(y) ? String(y[1]) : String(y))).filter(Boolean);
+      if (Array.isArray(am.interested)) x.interested = am.interested.map(String);
+      if (ui.fakecheck != null) x.fake = String(ui.fakecheck);
+    });
     return m;
   }
 
@@ -2942,8 +2959,9 @@
     { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
     { k: 'gruppen_bl', src: 'gruppen', title: 'Gruppen (Blacklist)', sub: 'Mitglieder deiner Gruppen nach den Regeln prüfen', fn: scanGroupsBlack, def: false },
     { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
+    { k: 'xxl', title: 'XXL-Suche', sub: 'Figur ab „Plus-Size“ im eingestellten Radius, ab 18 aufwärts vermessen', fn: scanXxl, def: () => mopOn() },
   ];
-  const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : sc.def !== false; return o; };
+  const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : typeof sc.def === 'function' ? !!sc.def() : sc.def !== false; return o; };
   const scanActive = () => { const s = G.get('scan_state', null); return !!(s && s.running); };
 
   function statsHtml(total) {
@@ -2951,7 +2969,9 @@
       `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
       `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
       (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
-      (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '');
+      (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '') +
+      (total.xxlFound ? `<span>${esc(xxlName())}-Suche: gefunden / neu vermessen</span><b>${fmtN(total.xxlFound)} / ${fmtN(total.xxlMeasured || 0)}</b>` +
+        `<span>${esc(mopLabel(1))} · ${esc(mopLabel(2))} · ${esc(mopLabel(3))}</span><b>${fmtN(total.xxl1 || 0)} · ${fmtN(total.xxl2 || 0)} · ${fmtN(total.xxl3 || 0)}</b>` : '');
   }
 
   async function statusLine() {
@@ -3036,11 +3056,12 @@
     const rows = SCANS.map((sc) => {
       let sub = sc.sub;
       if (sc.k === 'gruppen_wl' && groups) sub = `${groups.attended.length + groups.managed.length} Gruppen, ${groups.managed.length} verwaltet`;
+      if (sc.k === 'xxl') sub = mopOn() ? sub : 'nur für Moppel-Liebhaber (Einstellungen)';
       if (sc.k === 'gruppen_bl' && groups) sub = groups.attended.length === 1 ? '1 Gruppe, in der du Mitglied bist' : `${groups.attended.length} Gruppen, in denen du Mitglied bist`;
       const on = sc.fn && sel[sc.k];
       return `<label class="vaf-scanrow${sc.fn ? '' : ' vaf-scanrow-off'}">
         <input type="checkbox" data-sel="${sc.k}" ${on ? 'checked' : ''} ${sc.fn ? '' : 'disabled'}>
-        <span class="vaf-scanrow-tx"><b>${esc(sc.title)}</b><span>${esc(sub)}</span></span></label>`;
+        <span class="vaf-scanrow-tx"><b>${esc(sc.k === 'xxl' ? xxlName() + '-Suche' : sc.title)}</b><span>${esc(sub)}</span></span></label>`;
     }).join('');
     m.body.innerHTML = `<p class="vaf-sub">${await statusLine()}</p><div class="vaf-scanlist">${rows}</div>`;
     m.body.querySelectorAll('[data-sel]').forEach((c) => c.addEventListener('change', () => { const st = { ...G.get('scan_sel', {}) }; st[c.dataset.sel] = c.checked; G.set('scan_sel', st); }));
@@ -5360,15 +5381,50 @@
 
   // ---------- Körpermaße im Gedächtnis ----------
   const bmiOf = (h, w) => w / ((h / 100) ** 2);
-  function bodyInfo(m, s = S()) {
-    if (!m || !m.body || !m.body[0]) return null;
-    const b = m.body[0];
-    if (now() - b.at > s.expert.bodyValidDays * DAY) return null;
+  const bodyOne = (b, s) => {
+    if (!b || !(b.h > 0) || now() - b.at > s.expert.bodyValidDays * DAY) return null;
     const lo = bmiOf(b.h, b.wlo), hi = bmiOf(b.h, b.whi);
     return { h: b.h, wlo: b.wlo, whi: b.whi, bmi: lo, exact: b.wlo === b.whi, lo, hi };
+  };
+  // Wen sucht das eigene Profil bei einem gemischten Paar (bzw. als Symbol)? → 'w' | 'm'
+  //  Mann/Trans: Hetero/Bi/keine Angabe → Frau, Gay → Mann · Frau: Hetero/Bi/keine Angabe → Mann, Gay → Frau
+  //  Paar (Frau+Mann / Frau+Frau) → Frau · Männer-Paar → Mann · Nicht-binär → Frau, wenn „Paar (Frau)“ angehakt, sonst Mann
+  function mopSeek(s = S()) {
+    const me = Me.get(); const g = (me && me.g) || [];
+    if (g.length >= 2) return g.every((x) => x === 'm') ? 'm' : 'w';
+    const st = (G.get('my_sextype', []) || [])[0];
+    const gay = st === 1;
+    const t = g[0];
+    if (t === 'w') return gay ? 'w' : 'm';
+    if (t === 'tv') return mop(s).types.includes('pw') ? 'w' : 'm';
+    return gay ? 'm' : 'w';                       // Mann, Trans, unbekannt
   }
-  // Profiltyp eines Mitglieds für die Moppel-Regeln (Einzelprofile; Paare folgen in der XXL-Suche)
-  const mopTypeOk = (m, s = S()) => { const g = (m && m.g) || []; return g.length === 1 && mop(s).types.includes(g[0]); };
+  // Welche Person(en) eines Mitglieds werden eingestuft? → { idx: [..], show: Index | 'max' } oder null
+  function mopPick(m, s = S()) {
+    const g = (m && m.g) || [];
+    const ty = mop(s).types;
+    if (g.length <= 1) return g.length && ty.includes(g[0]) ? { idx: [0], show: 0 } : (g.length ? null : { idx: [0], show: 0 });
+    const iw = g.indexOf('w'), im = g.indexOf('m');
+    if (iw >= 0 && im >= 0) {                     // gemischtes Paar
+      const idx = []; if (ty.includes('pw')) idx.push(iw); if (ty.includes('pm')) idx.push(im);
+      if (!idx.length) return null;
+      const want = mopSeek(s) === 'w' ? iw : im;
+      return { idx, show: idx.includes(want) ? want : idx[0] };
+    }
+    // gleichgeschlechtliches Paar: Haken des Geschlechts entscheidet, angezeigt wird der höhere Wert
+    return ty.includes(g[0]) ? { idx: g.map((_, i) => i), show: 'max' } : null;
+  }
+  function bodyInfo(m, s = S()) {
+    if (!m || !m.body) return null;
+    const pk = mopPick(m, s);
+    if (!pk) return null;
+    if (pk.show === 'max') { const all = pk.idx.map((i) => bodyOne(m.body[i], s)).filter(Boolean); return all.sort((a, b) => b.lo - a.lo)[0] || null; }
+    return bodyOne(m.body[pk.show], s);
+  }
+  // Profiltyp eines Mitglieds für die Moppel-Regeln
+  const mopTypeOk = (m, s = S()) => !!mopPick(m, s);
+  // hat sich (eine eingestufte Person) selbst als „Plus-size“ eingetragen?
+  const mopPlusDeclared = (m, s = S()) => { const pk = mopPick(m, s); return !!(pk && m.figc && pk.idx.some((i) => m.figc[i] === 6)); };
 
   // ---------- Suchantworten filtern / umsortieren ----------
   let lastFig = null;   // { stage }
@@ -5401,7 +5457,7 @@
       for (const u of users || []) {
         if (!u || !validUid(u) || !u.nickname) continue;
         const g = Array.isArray(u.gender) ? u.gender : [];
-        if (g.length === 1 && !mop().types.includes(g[0])) continue;
+        if (!mopPick({ g })) continue;
         this.q.set(String(u.uid), u.nickname);
       }
       if (this.q.size) setTimeout(() => this.pump(), 300);
@@ -5452,7 +5508,7 @@
       // ausgefilterte Treffer komplett entfernen (kein leerer Platzhalter im Raster)
       if (st && bi && bi.lo < lim) { try { (x.card.closest('[data-index]') || x.card).remove(); } catch {} continue; }
       const stage = bi ? mopStage(bi.lo) : -1;
-      if (!bi || stage < 0 || (m && m.g && m.g.length === 1 && !mopTypeOk(m))) { if (b) b.remove(); continue; }
+      if (!bi || stage < 0 || !mopTypeOk(m) || (stage === 0 && !mopPlusDeclared(m))) { if (b) b.remove(); continue; }   // Stufe 0 nur bei „Plus-size“-Angabe
       if (!b) { b = document.createElement('div'); b.className = 'vaf-fig vaf-mark'; (x.host || x.card).prepend(b); }
       b.textContent = `${mopLabel(stage)} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}`;
       b.title = `${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg`;
@@ -5516,7 +5572,7 @@
   function msgMaybeQueue(m) {
     if (!m || !m.nick || msgFresh(m) || !mopOn()) return;
     const bi = bodyInfo(m);
-    const plus = (bi && mopStage(bi.lo) >= 0) || (m.body && m.body[0] && m.body[0].fig === 6);
+    const plus = (bi && mopStage(bi.lo) >= 1) || mopPlusDeclared(m);
     if (!plus) return;
     try { if (classify(m, 'suche').ignore) return; } catch { return; }
     MsgQ.want(m.uid, m.nick);
@@ -8544,6 +8600,272 @@
   }
 
   // =====================================================================================
+  // XXL: Hintergrund-Suche (letzte Quelle im Opa-Scan) und eigene Seite unter „Entdecken“
+  //  Beides nur bei „Benutzer ist Moppel-Liebhaber“.
+  // =====================================================================================
+  const XXL_ICON = { w: '<mask id="__ID__"><rect width="64" height="64" fill="#fff"/> <path d="M11.5 31.5 C14 36 22 37 28.5 34.5 C31 33.5 33 32 39.5 31.5" stroke="#000" stroke-width="1.6" fill="none" stroke-linecap="round"/> <path d="M13.5 47.8 Q24 52 37 48.4" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/> <path d="M22.8 23 C23.8 26 24.2 30 23.6 33.5" stroke="#000" stroke-width="0.9" fill="none" stroke-linecap="round"/> <path d="M31.7 52.5 L31.7 61" stroke="#000" stroke-width="1.2" stroke-linecap="round"/> <circle cx="21.5" cy="41" r="1" fill="#000"/> </mask> <path d="M30.5 4.5 C33.5 1 39.5 1.5 41 6 C42 9.5 41 12.5 43 15.5 C44.8 18 44.5 21.5 42.5 23.5 C42 20.5 40 18.5 38 17.5 C39.5 14 38.5 10 36 8.5 C34 7.3 31.5 7.2 30.5 4.5Z"/> <path d="M30.2 5.5 C33.5 4 37.5 5.5 38 9.5 C38.4 12.5 36.5 15 34 15.3 C31.5 15.6 29.5 14 29 11.5 C28.6 9.5 28.8 7 30.2 5.5Z"/> <path d="M31.8 14.8 L36 14.8 L36.6 18 L31.2 18Z"/> <path d="M41 19.5 C44.5 22 45.6 27 45.3 32 C45 36 44.5 39.5 42.5 42.5" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round"/> <g mask="url(#__ID__)"> <path d="M26 18 C31 16.6 37 16.8 40 18.5 C41.8 20 42 23 41.6 26.5 C41.3 29 40.5 30.5 39.5 31.5 C34 32 31 33.5 28.5 35 C22 38 13.5 37 11 33 C9.5 30 10.5 25.5 13.5 22.5 C16 19.5 21 18.5 26 18Z"/> <path d="M14 34 C20 36.5 26 36 30 34 L40.5 31.5 C42.5 35 43 40 41.5 44 C40.5 47 38.5 48.8 36 49.5 C30 51.5 18.5 51 13 48 C8.5 45.5 7.5 40 9.5 37 C10.8 35 12 34.2 14 34Z"/> <path d="M19 49.5 C18.5 53.5 19.8 57.5 21.5 61.5 L41 61.5 C41.8 57.5 42 53.5 40.5 48.5Z"/> </g> <path d="M21 62 L30 62 L29.5 63.6 L21.5 63.6Z"/><path d="M33.5 62 L41.5 62 L41 63.6 L33.5 63.6Z"/>', m: '<mask id="__ID__"><rect width="64" height="64" fill="#fff"/> <path d="M20.5 27 C23.5 30.5 28 30.8 31 28.5 M33 28.5 C36 30.8 40.5 30.5 43.5 27" stroke="#000" stroke-width="1.1" fill="none" stroke-linecap="round"/> <path d="M14.5 46 C22 51 42 51 49.5 46" stroke="#000" stroke-width="1.6" fill="none" stroke-linecap="round"/> <circle cx="32" cy="41" r="1.1" fill="#000"/> <path d="M28.3 13.5 C30 15 34 15 35.7 13.5" stroke="#000" stroke-width="0.7" fill="none" stroke-linecap="round"/> <path d="M32 50.5 L32 61.5" stroke="#000" stroke-width="1.3" stroke-linecap="round"/> </mask> <path mask="url(#__ID__)" d="M27 8.5 C26.3 4.5 28.8 2.2 32 2.2 C35.2 2.2 37.7 4.5 37 8.5 C37.6 9.6 37.6 11 37 12 C36.8 15 34.8 17.3 32 17.3 C29.2 17.3 27.2 15 27 12 C26.4 11 26.4 9.6 27 8.5Z"/> <path d="M29.5 16 L34.5 16 L35 18.5 L29 18.5Z"/> <path d="M14 22.5 C10.5 26.5 9.5 33 10 39 C10.3 42.5 11 45 12 47" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/> <path d="M50 22.5 C53.5 26.5 54.5 33 54 39 C53.7 42.5 53 45 52 47" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/> <g mask="url(#__ID__)"> <path d="M22 18.5 C27 17.2 37 17.2 42 18.5 C46.5 19.8 49 22.5 49 26.5 C49 29 48.5 31 49 33 C51.5 37 52 42.5 49.5 46.5 C46.5 50.5 39 51.8 32 51.8 C25 51.8 17.5 50.5 14.5 46.5 C12 42.5 12.5 37 15 33 C15.5 31 15 29 15 26.5 C15 22.5 17.5 19.8 22 18.5Z"/> <path d="M16 48 C21 51.5 43 51.5 48 48 C48.5 52.5 47.5 57.5 46.5 62 L17.5 62 C16.5 57.5 15.5 52.5 16 48Z"/> </g>' };
+  let xxlIconN = 0;
+  const xxlIconSvg = (g) => { const id = 'vaf-xxlm' + (xxlIconN++); return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="1em" height="1em" fill="currentColor" aria-hidden="true">${XXL_ICON[g === 'm' ? 'm' : 'w'].replace(/__ID__/g, id)}</svg>`; };
+  const xxlName = () => mopLabel(3, true) || 'XXL';
+
+  // ---------- Hintergrund-Suche ----------
+  // Umgekehrt zum Ignorier-Scan: je ausgewähltem Profiltyp ab 18 AUFSTEIGEND jedes Alter bis unter die Grenze,
+  // ab der dieser Typ ignoriert würde, im eingestellten Radius (75 km = Suche mit 100 km, Rest verworfen).
+  // Gesucht wird „Plus-size“; jeder Treffer wird gedrosselt über seine Profilangaben vermessen (BMI im Gedächtnis).
+  async function scanXxl(ctx) {
+    const res = newRes();
+    if (!mopOn()) { ctx.notes && ctx.notes.push('XXL-Suche übersprungen: „Benutzer ist Moppel-Liebhaber“ ist aus.'); return res; }
+    const s = S(), mp = mop(s);
+    const r = +mp.radius || 0;
+    const dist = r === 75 ? 100 : r;
+    const base = { ...searchBase(), figure: [6] };
+    const geo = G.get('mygeo', null);
+    if (dist > 0 && geo) { base.location = { ...geo, distance: dist, distance_unit: 'km' }; base.distance = dist; }
+    const genders = [...new Set(mp.types.map((t) => (t === 'pw' || t === 'pm' ? 'p' : t)))];
+    const plan = [];
+    for (const t of genders) {
+      const gk = groupOf(t === 'p' ? ['w', 'm'] : [t], s);
+      let lim = AGE_MAX + 1;
+      if (gk && s.groups[gk].ignore) {
+        const L = gk === 'p' && s.groups.p.separate ? Math.min(limitsOf('p', 'suche', 0, s)[2], limitsOf('p', 'suche', 1, s)[2]) : limitsOf(gk, 'suche', -1, s)[2];
+        lim = Math.min(lim, L);
+      }
+      if (lim > 18) plan.push({ t, to: lim - 1 });
+    }
+    const steps = plan.reduce((a, p) => a + (p.to - 18 + 1), 0);
+    let done = 0, found = 0, measured = 0;
+    const stageN = [0, 0, 0, 0];
+    try {
+      for (const p of plan) {
+        for (let age = 18; age <= p.to && !ctx.stop(); age++) {
+          ctx.outer && ctx.outer(done++, steps);
+          ctx.phase && ctx.phase(`${TYPE_NAMES[p.t] || p.t} · ${age} Jahre`);
+          const hits = [];
+          await searchAll({ ...base, genders: [p.t], age_min: age, age_max: age }, ctx, async (users) => {
+            for (const u of users) {
+              if (r === 75 && typeof u.distance === 'number' && u.distance > 75) continue;
+              res.total++;
+              const m = await seen(u, 'XXL-Suche', { images: false });
+              if (m) hits.push(m);
+            }
+          }, `${TYPE_NAMES[p.t] || p.t}, ${age} Jahre`);
+          for (const m0 of hits) {
+            if (ctx.stop()) break;
+            let m = await Members.get(m0.uid);
+            if (!m || !mopTypeOk(m)) continue;
+            found++;
+            if (!bodyInfo(m) && !(m.bodyUnk && now() - m.bodyUnk < s.expert.bodyUnknownDays * DAY)) {
+              ctx.step && ctx.step(0, 0, `vermesse ${m.nick} …`);
+              try {
+                const d = await apiGet('user/info/' + encodeURIComponent(m.nick), { _version: 2 });
+                await ingestUserInfo(d);
+                m = await Members.get(m.uid);
+                if (m && !bodyInfo(m)) await Members.update(m.uid, (x) => { x.bodyUnk = now(); });
+                measured++;
+              } catch (e) { ctx.error && ctx.error(`Vermessung ${m.nick}`, e); }
+              await sleep(1500 + Math.random() * 1500);
+            }
+            m = await Members.get(m.uid);
+            const bi = bodyInfo(m);
+            if (bi) { const st = mopStage(bi.lo); if (st >= 0) stageN[st]++; }
+            msgMaybeQueue(m);
+          }
+        }
+      }
+    } finally { await SearchGuard.restore(); }
+    res.xxlFound = found; res.xxlMeasured = measured; res.xxl1 = stageN[1]; res.xxl2 = stageN[2]; res.xxl3 = stageN[3];
+    ctx.outer && ctx.outer(steps, steps);
+    return res;
+  }
+
+  // ---------- Menüpunkt unter „Entdecken“ (nach „Popsters“) ----------
+  const XXL_HASH = 'xxl';
+  const XXL_PATH = '/search/member';
+  function xxlMenuLink() {
+    const on = mopOn();
+    for (const old of document.querySelectorAll('a.vaf-xxl-link')) if (!on) old.remove();
+    if (!on) return;
+    for (const el of document.querySelectorAll('a')) {
+      const lab = el.querySelector('[data-type="label"]');
+      if (!lab || norm(lab.textContent) !== 'popsters' || el.classList.contains('vaf-xxl-link')) continue;
+      let a = el.nextElementSibling && el.nextElementSibling.classList && el.nextElementSibling.classList.contains('vaf-xxl-link') ? el.nextElementSibling : null;
+      const seek = mopSeek();
+      if (!a) {
+        a = el.cloneNode(true);
+        a.removeAttribute('id'); a.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
+        a.classList.add('vaf-xxl-link');
+        for (const n of [a, ...a.querySelectorAll('*')]) { if (n.removeAttribute) { n.removeAttribute('aria-current'); n.removeAttribute('data-active'); } if (n.classList) for (const c of [...n.classList]) if (/active|selected|current/i.test(c)) n.classList.remove(c); }
+        const ref = [...el.parentElement.querySelectorAll('a')].find((x) => x !== el && x.querySelector('[data-type="label"]') && !x.classList.contains('vaf-xxl-link') && (x.getAttribute('href') || '') !== location.pathname);
+        if (ref) { a.className = ref.className + ' vaf-xxl-link'; for (const sel of ['[data-type="label"]', '[data-type="icon"]']) { const r0 = ref.querySelector(sel), x = a.querySelector(sel); if (r0 && x) x.className = r0.className; } }
+        a.setAttribute('href', XXL_PATH + '#' + XXL_HASH);
+        const badge = a.querySelector('[data-type="badge"]'); if (badge) badge.remove();
+        a.addEventListener('click', (e) => { e.preventDefault(); if (location.pathname.startsWith(XXL_PATH)) { location.hash = XXL_HASH; xxlRoute(); } else location.href = XXL_PATH + '#' + XXL_HASH; });
+        el.after(a);
+      }
+      const lab2 = a.querySelector('[data-type="label"]'); if (lab2 && lab2.textContent !== xxlName()) lab2.textContent = xxlName();
+      const ic = a.querySelector('[data-type="icon"]'); if (ic && ic.dataset.g !== seek) { ic.innerHTML = xxlIconSvg(seek); ic.dataset.g = seek; }
+    }
+  }
+
+  // ---------- Seite (aus dem Gedächtnis, sieht aus wie die Mitgliedersuche) ----------
+  const xxlOn = () => mopOn() && location.pathname.startsWith(XXL_PATH) && location.hash === '#' + XXL_HASH;
+  const XXL_SORTS = [['dist', 'Entfernung'], ['bmi', 'BMI'], ['age', 'Alter'], ['login', 'Nach letzter Login'], ['signup', 'Nach Anmeldedatum']];
+  const XXL_ZODIAC = [['1', 'Steinbock'], ['2', 'Wassermann'], ['3', 'Fische'], ['4', 'Widder'], ['5', 'Stier'], ['6', 'Zwillinge'], ['7', 'Krebs'], ['8', 'Löwe'], ['9', 'Jungfrau'], ['10', 'Waage'], ['11', 'Skorpion'], ['12', 'Schütze']];
+  const XXL_SEX = [['2', 'Hetero'], ['1', 'Gay'], ['3', 'Bi'], ['4', 'bi-interessiert']];
+  const xxlDefaults = () => ({ g: ['m', 'w', 'p', 'ts', 'tv'].filter((t) => (t === 'p' ? mop().types.some((x) => x === 'pw' || x === 'pm') : mop().types.includes(t))), age: [18, 99], radius: mop().radius, pics: false, online: false, verified: false,
+    stage: 0, unclear: false, msgok: false, lf: [], zod: '', smoker: '', sex: '', size: [130, 220], weight: [0, 300], sort: 'bmi' });
+  const xxlF = () => ({ ...xxlDefaults(), ...(G.get('xxl_filter', {}) || {}) });
+  let xxlCache = null;          // { at, list: [members] }
+  async function xxlLoad(force = false) {
+    if (!force && xxlCache && now() - xxlCache.at < 60000) return xxlCache.list;
+    await Members.flush();
+    const list = [];
+    await Members.each((m) => {
+      if (!m || !/^\d+$/.test(String(m.uid)) || !m.nick || (m.blk && !m.unblk) || m.del) return;
+      if (!mopTypeOk(m)) return;
+      const bi = bodyInfo(m);
+      const st = bi ? mopStage(bi.lo) : -1;
+      const plus = mopPlusDeclared(m);
+      if (!(st >= 1 || plus)) return;            // ab poppens „Plus-Size“ aufwärts
+      list.push(m);
+    });
+    xxlCache = { at: now(), list };
+    return list;
+  }
+  const xxlAge = (m) => { const a = m.birth && m.birth.length ? m.birth.map((b) => ageToday(b)) : (m.ages || []); return a.filter((x) => x > 0); };
+  function xxlFilter(list, f) {
+    const cut = mop().bmi;
+    const out = [];
+    for (const m of list) {
+      const t = typeCode(m.g); if (!f.g.includes(t)) continue;
+      const ages = xxlAge(m); if (ages.length && !ages.some((a) => a >= f.age[0] && (f.age[1] >= 99 || a <= f.age[1]))) continue;
+      if (f.radius > 0) { if (m.dist && m.dist.km > f.radius) continue; }
+      if (f.pics && isPlaceholderAvatar(m.avatar)) continue;
+      if (f.online && !(m.lastLogin && now() - m.lastLogin < 15 * 60000)) continue;
+      if (f.verified && m.fake !== 'done') continue;
+      const bi = bodyInfo(m);
+      if (!bi) { if (!f.unclear) continue; }
+      else {
+        const st = mopStage(bi.lo);
+        if (st < f.stage || (st === 0 && !mopPlusDeclared(m))) continue;
+        if (bi.h < f.size[0] || (f.size[1] < 220 && bi.h > f.size[1])) continue;
+        if (bi.wlo < f.weight[0] || (f.weight[1] < 300 && bi.wlo > f.weight[1])) continue;
+      }
+      if (f.msgok) { const r = msgOf(m); if (r && !r.ok) continue; if (!r) MsgQ.want(m.uid, m.nick); }
+      if (f.lf.length && !(m.lf || []).some((c) => f.lf.includes(String(c)))) continue;
+      const tr = m.tr || {};
+      if (f.zod && !(tr.zodiac || []).map(String).includes(f.zod)) continue;
+      if (f.smoker && !(tr.smoker || []).map(String).includes(f.smoker)) continue;
+      if (f.sex && !(tr.sex || []).map(String).includes(f.sex)) continue;
+      out.push({ m, bi, ages });
+    }
+    const key = { dist: (x) => (x.m.dist ? x.m.dist.km : 1e9), bmi: (x) => (x.bi ? -x.bi.lo : 1e9), age: (x) => (x.ages[0] || 999), login: (x) => -(x.m.lastLogin || 0), signup: (x) => -(x.m.signup || 0) }[f.sort] || ((x) => 0);
+    out.sort((a, b) => key(a) - key(b) || (b.bi ? b.bi.wlo : 0) - (a.bi ? a.bi.wlo : 0));
+    void cut;
+    return out;
+  }
+  function xxlRoute() {
+    const main = document.querySelector('main');
+    let view = document.getElementById('vaf-xxl-view');
+    if (!xxlOn() || !main) {
+      if (view) { view.remove(); if (main) for (const c of main.children) if (c.dataset.vafXxlHidden) { c.style.display = ''; delete c.dataset.vafXxlHidden; } }
+      return;
+    }
+    if (view && view.isConnected) return;
+    xxlStyle();
+    for (const c of main.children) if (c.id !== 'vaf-xxl-view' && c.style.display !== 'none') { c.dataset.vafXxlHidden = '1'; c.style.display = 'none'; }
+    view = document.createElement('div'); view.id = 'vaf-xxl-view'; view.className = 'vaf-xxl';
+    main.appendChild(view);
+    xxlRender(view).catch((e) => warn('XXL-Seite', e));
+  }
+  function xxlStyle() {
+    if (document.getElementById('vaf-xxl-style')) return;
+    const st = document.createElement('style'); st.id = 'vaf-xxl-style';
+    st.textContent = SETTINGS_CSS.replace(/#vaf-set/g, '.vaf-xxl') + `
+      .vaf-xxl{display:flex;gap:24px;align-items:flex-start;color:#e8e8e8;font-size:14px;padding:16px 0 40px}
+      .vaf-xxl .xf{flex:0 0 300px;background:#1f1f1f;border-radius:16px;padding:16px;position:sticky;top:80px;max-height:calc(100vh - 100px);overflow:auto}
+      .vaf-xxl .xf h3{margin:0 0 10px;font-size:18px;color:#fff}
+      .vaf-xxl .xf .fl{color:#a6a6a6;font-size:12.5px;margin:12px 0 5px;font-weight:600}
+      .vaf-xxl .xf .chips{display:flex;flex-wrap:wrap;gap:6px}
+      .vaf-xxl .xf .chip{border:1.5px solid #3a3a3a;background:#2a2a2a;color:#e8e8e8;border-radius:999px;padding:3px 11px;font-size:13px;cursor:pointer}
+      .vaf-xxl .xf .chip.on{border-color:#ffc21a;color:#ffc21a;background:rgba(255,194,26,.12)}
+      .vaf-xxl .xf .ln{display:flex;align-items:center;gap:8px;margin:7px 0}
+      .vaf-xxl .xf select{width:100%}
+      .vaf-xxl .xf .rng{display:flex;gap:6px;align-items:center}.vaf-xxl .xf .rng input{width:70px}
+      .vaf-xxl .xr{flex:1;min-width:0}
+      .vaf-xxl .xr .sorts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center}
+      .vaf-xxl .xr .sorts .chip{border:1px solid #3a3a3a;background:#1f1f1f;color:#e8e8e8;border-radius:8px;padding:5px 12px;font-size:13px;cursor:pointer}
+      .vaf-xxl .xr .sorts .chip.on{background:#ffc21a;color:#141414;border-color:#ffc21a;font-weight:600}
+      .vaf-xxl .xr .cnt{color:#a6a6a6;font-size:13px;margin-left:auto}
+      .vaf-xxl .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
+      .vaf-xxl .card{background:#1f1f1f;border-radius:14px;overflow:hidden;color:#e8e8e8;text-decoration:none;display:flex;flex-direction:column}
+      .vaf-xxl .card .pic{aspect-ratio:1/1;background:#2a2a2a center/cover no-repeat;position:relative;display:flex;align-items:center;justify-content:center;font-size:42px;color:#555}
+      .vaf-xxl .card .bd{position:absolute;left:8px;top:8px;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700;color:#fff}
+      .vaf-xxl .card .tx{padding:9px 11px}.vaf-xxl .card b{display:block;color:#fff;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .vaf-xxl .card span{color:#a6a6a6;font-size:12.5px}
+      .vaf-xxl .more{margin:16px auto;display:block}`;
+    document.head.appendChild(st);
+  }
+  async function xxlRender(view) {
+    let f = xxlF();
+    const save = () => { G.set('xxl_filter', f); };
+    view.innerHTML = '<div class="xf"></div><div class="xr"><div class="sorts"></div><div class="grid"></div></div>';
+    const fx = view.querySelector('.xf'), sorts = view.querySelector('.sorts'), grid = view.querySelector('.grid');
+    let shown = 120;
+    let list = [];
+    const draw = () => {
+      for (const old of view.querySelectorAll('.more')) old.remove();
+      const rows = xxlFilter(list, f);
+      sorts.innerHTML = XXL_SORTS.map(([k, n]) => `<span class="chip${f.sort === k ? ' on' : ''}" data-sort="${k}">${esc(n)}</span>`).join('') + `<span class="cnt">${fmtN(rows.length)} Treffer</span>`;
+      sorts.querySelectorAll('[data-sort]').forEach((c) => c.addEventListener('click', () => { f.sort = c.dataset.sort; save(); shown = 120; draw(); }));
+      grid.innerHTML = rows.slice(0, shown).map(({ m, bi, ages }) => {
+        const st = bi ? mopStage(bi.lo) : -1;
+        const badge = bi ? `<span class="bd" style="background:${MOP_COLORS[Math.max(0, st)]}">${esc(mopLabel(Math.max(0, st)))} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}</span>` : '<span class="bd" style="background:#555">BMI unklar</span>';
+        const pic = !isPlaceholderAvatar(m.avatar) ? ` style="background-image:url('${esc(m.avatar)}')"` : '';
+        const meta = [(m.g || []).map((c) => TYPE_NAMES[c] || c).join(' & ') || '', ages.length ? ages.join('/') + ' Jahre' : '', m.dist ? Math.round(m.dist.km) + ' km' : (m.city || '')].filter(Boolean).join(' · ');
+        return `<a class="card" href="${esc(pathOfName(m.nick))}"><div class="pic"${pic}>${pic ? '' : esc((m.nick || '?')[0].toUpperCase())}${badge}</div><div class="tx"><b>${esc(m.nick)}</b><span>${esc(meta)}</span></div></a>`;
+      }).join('') || '<div style="color:#a6a6a6">Keine Treffer. Die XXL-Suche im Opa-Scan füllt diese Liste.</div>';
+      if (rows.length > shown) { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn more'; b.textContent = `Weitere ${fmtN(Math.min(120, rows.length - shown))} anzeigen`; b.addEventListener('click', () => { shown += 120; draw(); }); grid.after(b); }
+    };
+    const chip = (on, label) => `<span class="chip${on ? ' on' : ''}">${esc(label)}</span>`;
+    const buildFilters = () => {
+      const sel = (opts, cur, ph) => `<select>${ph ? `<option value="">${esc(ph)}</option>` : ''}${opts.map(([v, n]) => `<option value="${esc(v)}"${String(cur) === String(v) ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+      fx.innerHTML = `<h3>Suchfilter</h3>
+        <div class="fl">Geschlecht</div><div class="chips" data-k="g">${[['m', 'Mann'], ['w', 'Frau'], ['p', 'Paar'], ['ts', 'Trans'], ['tv', 'Nicht-binär']].map(([v, n]) => `<span class="chip${f.g.includes(v) ? ' on' : ''}" data-v="${v}">${n}</span>`).join('')}</div>
+        <div class="fl">Alter</div><div class="rng" data-k="age"><input class="vaf-num" type="number" min="18" max="99" value="${f.age[0]}"> bis <input class="vaf-num" type="number" min="18" max="99" value="${f.age[1]}"></div>
+        <div class="fl">Radius</div><div data-k="radius">${sel(MOP_RADII.map((r) => [r, r ? r + ' km' : 'Weltweit']), f.radius)}</div>
+        <div class="ln" data-k="pics"><button type="button" class="vaf-sw${f.pics ? ' on' : ''}"></button>Mit Bildern</div>
+        <div class="ln" data-k="online"><button type="button" class="vaf-sw${f.online ? ' on' : ''}"></button>Jetzt online</div>
+        <div class="ln" data-k="verified"><button type="button" class="vaf-sw${f.verified ? ' on' : ''}"></button>Nur verifiziert</div>
+        <div class="fl">Figur</div><div data-k="stage">${sel([[0, MOP_STAGE0], [1, mopLabel(1)], [2, mopLabel(2)], [3, mopLabel(3)]], f.stage)}</div>
+        <label class="ln"><input type="checkbox" data-k="unclear"${f.unclear ? ' checked' : ''}> auch unklarer BMI</label>
+        <label class="ln"><input type="checkbox" data-k="msgok"${f.msgok ? ' checked' : ''}> nur anschreibbare</label>
+        <div class="fl">Suche nach</div><div class="chips" data-k="lf">${SEARCHING_VALS.map(([v, n]) => `<span class="chip${f.lf.includes(v) ? ' on' : ''}" data-v="${v}">${esc(n)}</span>`).join('')}</div>
+        <div class="fl">Sternzeichen</div><div data-k="zod">${sel(XXL_ZODIAC, f.zod, 'Beliebig')}</div>
+        <div class="fl">Raucher</div><div data-k="smoker">${sel([['1', 'Ja'], ['0', 'Nein']], f.smoker, 'Keine Angabe')}</div>
+        <div class="fl">Sexualität</div><div data-k="sex">${sel(XXL_SEX, f.sex, 'Keine Angabe')}</div>
+        <div class="fl">Größe (cm)</div><div class="rng" data-k="size"><input class="vaf-num" type="number" min="130" max="220" value="${f.size[0]}"> bis <input class="vaf-num" type="number" min="130" max="220" value="${f.size[1]}"></div>
+        <div class="fl">Gewicht (kg)</div><div class="rng" data-k="weight"><input class="vaf-num" type="number" min="0" max="300" value="${f.weight[0]}"> bis <input class="vaf-num" type="number" min="0" max="300" value="${f.weight[1]}"></div>
+        <div class="ln" style="margin-top:14px"><button type="button" class="vaf-btn" data-reset>Zurücksetzen</button></div>`;
+      const upd = () => { save(); shown = 120; draw(); };
+      fx.querySelectorAll('.chips[data-k] .chip').forEach((c) => c.addEventListener('click', () => { const k = c.parentElement.dataset.k; const v = c.dataset.v; f[k] = f[k].includes(v) ? f[k].filter((x) => x !== v) : [...f[k], v]; c.classList.toggle('on'); upd(); }));
+      fx.querySelectorAll('.rng[data-k]').forEach((r) => r.querySelectorAll('input').forEach((i, n) => i.addEventListener('change', () => { f[r.dataset.k] = [...f[r.dataset.k]]; f[r.dataset.k][n] = +i.value; upd(); })));
+      fx.querySelectorAll('div[data-k] > select').forEach((s0) => s0.addEventListener('change', () => { const k = s0.parentElement.dataset.k; f[k] = k === 'radius' || k === 'stage' ? +s0.value : s0.value; upd(); }));
+      fx.querySelectorAll('.ln[data-k] .vaf-sw').forEach((b) => b.addEventListener('click', () => { const k = b.parentElement.dataset.k; f[k] = !f[k]; b.classList.toggle('on', f[k]); upd(); }));
+      fx.querySelectorAll('input[type=checkbox][data-k]').forEach((c) => c.addEventListener('change', () => { f[c.dataset.k] = c.checked; upd(); }));
+      fx.querySelector('[data-reset]').addEventListener('click', () => { f = xxlDefaults(); save(); buildFilters(); draw(); });
+    };
+    buildFilters();
+    grid.innerHTML = '<div style="color:#a6a6a6">Lese das Gedächtnis …</div>';
+    list = await xxlLoad();
+    draw();
+    // Ergebnisse der Hintergrund-Prüfungen (anschreibbar, Vermessung) einfließen lassen
+    const iv = setInterval(async () => { if (!view.isConnected) { clearInterval(iv); return; } if (f.msgok) draw(); }, 8000);
+  }
+  function xxlTick() { try { xxlMenuLink(); xxlRoute(); } catch (e) { warn('XXL', e); } }
+  function initXxl() { xxlTick(); setInterval(xxlTick, 1000); W.addEventListener('hashchange', xxlTick); }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
@@ -8582,6 +8904,7 @@
     SearchGuard.start();
     initGroupAuto();
     initResolver();
+    initXxl();
     initGroupRequests();
     Etappe.start();
     Scan.startTimer();
@@ -8650,7 +8973,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

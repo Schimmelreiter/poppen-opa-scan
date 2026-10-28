@@ -1,6 +1,14 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.31 (28.10.2026)
+- XXL-Suche als letzte Quelle im Opa-Scan (Standard nach „Moppel-Liebhaber“): je Profiltyp ab 18 aufsteigend bis unter die Ignorier-Grenze, im eingestellten Radius (75 km virtuell), Figur „Plus-size“; jeder Treffer wird vermessen und samt BMI, Figur-Angabe, Entfernung und Anmeldedatum im Gedächtnis gespeichert; Anschreibbar-Prüfung für passende Treffer
+- Neuer Menüpunkt unter „Entdecken“ (nach „Popsters“): benannt nach der höchsten Stufe (Standard „XXL“), Symbol Frau oder Mann je nach eigener Suche
+- XXL-Seite wie die Mitgliedersuche, aus dem Gedächtnis ab „Plus-Size“: alle sinnvollen Filter inkl. Figur, „auch unklarer BMI“ und „nur anschreibbare“; Sortierung Entfernung, BMI (Standard), Alter, letzter Login, Anmeldedatum
+- Paare: „Paar (Frau)“ / „Paar (Mann)“ getrennt; angezeigt wird ein Wert nach eigenem Profiltyp und eigener Orientierung; gleichgeschlechtliche Paare folgen dem Haken ihres Geschlechts (höherer Wert)
+- Profilangaben je Person (auch Paare): Größe, Gewicht, BMI, Figur, Rauchen, Sexualität, Sternzeichen, Sucht nach, Verifizierung
+- Badge „Plus-Size“ (Stufe 0) nur noch bei entsprechender Profilangabe
+
 2.30 (28.10.2026)
 - Profil-Menü: Schalter heißt nur noch „Opa-Schutz“ bzw. „Oma-Schutz“; Symbol Opa/Oma im Kreis – aus als Umriss, an gefüllt mit Schrägstrich (statt des Augen-Symbols von „Unsichtbar“)
 - Oma-Symbol (wie im JOYclub-Skript) überall, wo die Bezeichnung „Oma“ lautet: Kopfleiste, Profil-Menü, Einstellungen
