@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.32
+// @version      2.33
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.32';
+  const VERSION = '2.33';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
@@ -6346,7 +6346,7 @@
   // Beim Speichern einer Vorlage: Metadaten setzen und über den Briefkasten senden (falls aktiv)
   function saveTemplate(list, t, isNew) {
     if (typeof tplEnsureMeta === 'function') tplEnsureMeta(t);
-    t.updatedAt = now(); t.updatedBy = { platform: 'poppen', account: (Me.get() || {}).nick || '' };
+    t.updatedAt = now(); t.updatedBy = { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' };
     setTpls(list);
     try { if (typeof bkSendTemplate === 'function') bkSendTemplate({ id: t.id, name: t.name, text: t.text, updatedAt: t.updatedAt, updatedBy: t.updatedBy, deletedAt: null }); } catch {}
   }
@@ -6694,7 +6694,7 @@
   function tplEnsureMeta(t) {
     if (!t.id) t.id = uuid();
     if (!t.updatedAt) t.updatedAt = now();
-    if (!t.updatedBy) t.updatedBy = { platform: 'poppen', account: (Me.get() || {}).nick || '' };
+    if (!t.updatedBy) t.updatedBy = { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' };
     return t;
   }
   async function tplHash(text) { return (await sha256hex(stripSmileys(text || ''))).slice(0, 16); }
@@ -6742,7 +6742,7 @@
         const fragT = translateSmileys(frag, 'joyclub', 'poppen').text;
         L.text = (rr.startsWith(a) ? L.text + fragT : fragT + L.text).slice(0, TPL_LEN);
       } else {
-        const keep = W.confirm(`„${L.name}“ wurde auf beiden Seiten geändert.\nZuletzt: ${deDateTime(R.updatedAt || now())} auf ${R.updatedBy && R.updatedBy.platform === 'joyclub' ? 'JOYclub' : 'der anderen Seite'}.\n\nOK = andere übernehmen, Abbrechen = eigene behalten.`);
+        const keep = W.confirm(`„${L.name}“ wurde auf beiden Seiten geändert.\nZuletzt: ${deDateTime(R.updatedAt || now())} auf ${R.updatedBy && (R.updatedBy.pf || R.updatedBy.platform) === 'joyclub' ? 'JOYclub' : 'der anderen Seite'}.\n\nOK = andere übernehmen, Abbrechen = eigene behalten.`);
         if (keep) { L.text = Rtext; L.updatedAt = R.updatedAt || now(); L.updatedBy = R.updatedBy; applyName(L, R); }
       }
     }

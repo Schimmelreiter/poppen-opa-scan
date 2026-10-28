@@ -1,6 +1,10 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.33 (28.10.2026)
+- Textvorlagen: „zuletzt geändert von“ einheitlich als { pf, ver, acc } wie in der Fickliste (älteres { platform, account } wird weiter gelesen)
+- FORMAT.md ergänzt (Rückfragen aus dem JOYclub-Chat): IDs j:<JOYclub-Profil-ID>, feste Plattform-Codes, vollständige Feldlisten der Fickliste samt veralteter Felder, genaue Fallliste für den Import einer fremden Fickliste
+
 2.32 (28.10.2026)
 - Mitglieder-Gedächtnis, Warteliste, Bilder und Profil-Archiv liegen jetzt verschlüsselt (AES-GCM) in einer unauffällig benannten Datenbank – poppen.de sieht nur unlesbare Daten. Schlüssel im Tampermonkey-Speicher und als Kopie im Briefkasten. Der Altbestand wird beim ersten Start umgezogen und nach 14 Tagen gelöscht
 - Fickliste und Textvorlagen liegen als EIN gemeinsamer Bestand im Briefkasten (für alle Skripte); Schreiben mit Versionszähler, gleichzeitige Änderungen werden zusammengeführt statt überschrieben; Löschmarken statt Löschen; Formatdefinition in FORMAT.md. Der bisherige Abgleich mit dem JOYclub-Skript läuft weiter, bis es umgestellt ist
