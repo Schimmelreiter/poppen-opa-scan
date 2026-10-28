@@ -34,7 +34,7 @@ Das Mitglieder-Gedächtnis kann mit Gruppen-Scans weit über 100.000 Einträge g
 
 ## Regeln: Wer wird blockiert?
 
-Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** und **Paare**. Standardmäßig gelten für eine Gruppe **gemeinsame Grenzen für alle Quellen** (Zeile „Global“). Schaltet man das in den Experten-Einstellungen ab, hat jede Gruppe je **Quelle** (Interaktionen, Profilbesucher, Gruppen, Mitgliedersuche) eigene Altersgrenzen. Partygäste gibt es auf poppen.de nicht; die Zeile ist ausgeblendet und übernimmt intern die Werte der Profilbesucher. Alle Schieberegler reichen von 18 bis 99; **99 ist ein offenes Ende** (schließt auch 100-Jährige ein).
+Die Mitglieder werden in drei **Gruppen** eingeteilt: **Männer**, **Frauen** und **Paare**. Standardmäßig gelten für eine Gruppe **gemeinsame Grenzen für alle Quellen** (Zeile „Global“). Schaltet man das in den Experten-Einstellungen ab, hat jede Gruppe je **Quelle** (Interaktionen, Profilbesucher, Gruppen, Mitgliedersuche) eigene Altersgrenzen. Die Quelle **Partygäste** sind poppens Events („Gehe“ und „Vielleicht“); ihre Grenzen starten mit den Werten der Profilbesucher. Alle Schieberegler reichen von 18 bis 99; **99 ist ein offenes Ende** (schließt auch 100-Jährige ein).
 
 - **„Grenzen altern mit mir“:** je Gruppe ein Schalter für die visuelle Einstufung und einer für „Ignorieren ab“. An deinem Geburtstag (Geburtsdatum aus dem eigenen Profil; sonst, sobald das Skript das höhere Alter bemerkt) steigen die Grenzen um ein Jahr. Dadurch wird **niemand entsperrt** – entsperrt wird nur, wen eine von Hand nach oben geschobene Grenze freigibt.
 
@@ -70,7 +70,7 @@ Die Notiz auf der Blockierliste lautet z. B. `Opa (Likes) geblockt am 24.10.2026
 
 ## Quellen und Scans
 
-Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von poppen.de (`/v2-api/…`), ohne Profilaufrufe.
+Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von poppen.de (`/v2-api/…`), ohne Profilaufrufe. Automatische Abfragen von Profilangaben (`user/info`) zählen bei poppen als **Profilbesuch** und laufen deshalb nur noch unsichtbar (Gruppenregeln: vorher still unsichtbar schalten, 90 Sekunden nach der letzten Abfrage zurück); vermessen wird ganz ohne Profilaufruf über die Suchfilter.
 
 | Quelle | Woher | Notiz-Quelle |
 |---|---|---|
@@ -79,11 +79,11 @@ Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von popp
 | Gruppen (Whitelist) | Leitung aller Gruppen, Mitglieder verwalteter Gruppen (`group/attendee/manage/list`, siehe Whitelist); entfernt besonders böse Popsters aus verwalteten Gruppen; bei „Alle Scans“ standardmäßig an | Gruppen |
 | Gruppen (Blacklist) | Mitglieder der Gruppen, in denen du Mitglied bist (`group/attendee/list`), nach den Regeln; bei „Alle Scans“ standardmäßig aus, Auswahl wird gemerkt | Gruppen |
 | Mitgliedersuche | ganz Deutschland, Alter für Alter ab der Grenze (`user/search`) | Suche |
-| Partygäste | gibt es auf poppen.de nicht (ausgeblendet) | – |
+| Partygäste (Events) | alle Events weltweit (`event/search`), je Liste „Gehe“ (`event/attendee/list`) und „Vielleicht“ (`event/bookmark/list`); Veranstalter kommen auf die Whitelist | Events |
 
 **Opa-Scan** (Profil-Menü → *Opa-Scan*): Popup mit allen Scans, zwei Fortschrittsbalken, Statistik und Zusammenfassung.
 
-**Auf den Seiten selbst** (Besucher, Likes, Sticker, Posteingang, Suche, Gruppen-Mitglieder) werden die Karten markiert. Ist der Schalter *Opa-Schutz* an und die Automatik der Seite eingeschaltet, kommen Treffer auf die Warteliste.
+**Auf den Seiten selbst** (Besucher, Likes, Sticker, Posteingang, Suche, Gruppen-Mitglieder, Event-Teilnehmer) werden die Karten markiert. Ist der Schalter *Opa-Schutz* an und die Automatik der Seite eingeschaltet, kommen Treffer auf die Warteliste.
 
 Nebenbei merkt sich das Skript zu jedem Mitglied uid, Nick (und frühere Nicks), Alter, Geschlecht, Geburtszeitraum (aus Alter, Geburtsjahr und Sternzeichen) und – bei Likes, Stickern, Nachrichten, Besuchern und selbst geöffneten Profilen – eine kleine Kopie des Profilbilds.
 
@@ -113,6 +113,16 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 - **Profil-Menü** (Klick auf das eigene Profilbild): *Fickliste* und *Opa-Scan* (vor „Profil bearbeiten“), *Opa-Schutz* (danach, Opa mit Stift; öffnet die Einstellungen) und der Schalter **Opa-Schutz aktiv** (vor „Unsichtbar“) für die Automatik.
 - **Einstellungen:** In der linken Spalte stehen **Meine Fickliste** (nach „Meine Kontaktanzeigen“) und **Opa-Schutz** (vor „Privatsphäre“).
 
+### Events
+
+- **Veranstalter** eines Events stehen automatisch auf der Whitelist („Event-Veranstalter: …“), bis 30 Tage nach Event-Ende; der Scan entsperrt sie, falls der Opa-Schutz sie geblockt hatte.
+- Die Listen **„Gehe“** und **„Vielleicht“** werden wie Gruppenlisten gekennzeichnet und im Opa-Scan als Quelle *Partygäste* geprüft.
+- Auf jeder Event-Seite: **„Als Treffen in die Fickliste …“** – trägt das Event bei einer Person der Fickliste ein (Was = Event, Wo = Ort/Straße bzw. „Online“, Datum, Uhrzeit, Link); ein Treffen am selben Tag wird ergänzt.
+
+### Kontobindung
+
+Die Daten in einem Browser-Profil gehören genau **einem poppen-Konto**. Beim ersten Start mit vorhandenen Daten fragt das Skript einmal: „Gehören die vorhandenen Opa-Schutz-Daten zu <Nick>?“ Ist ein anderes Konto angemeldet (z. B. versehentlich im falschen Browser-Profil), bleibt das Skript **komplett aus** – keine Scans, kein Schreiben, kein Briefkasten – und zeigt nur einen roten Hinweis. Übergeben lassen sich die Daten nur bewusst: Experten-Einstellungen › **Kontobindung** › „Daten an anderes Konto übergeben“ (das nächste andere Konto wird innerhalb von 7 Tagen gefragt). „Wiederherstellen“ lehnt Sicherungen eines anderen Kontos ab.
+
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
 
 - Titel mit Versionsnummer. Kopfzeile: derzeit blockiert, Warteliste, nach Anwenden der neuen Einstellungen (derzeit blockiert − fallen weg + kommen dazu, aus dem Gedächtnis berechnet), Warteliste. Damit die Zahl stimmt, liest das Skript nach jedem Update und danach wöchentlich die Blockierliste still ins Gedächtnis ein (ohne etwas zu ändern).
@@ -120,7 +130,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
 - Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen im Regel-Editor der jeweiligen Gruppe (Anfragen- bzw. Bearbeiten-Seite).
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), **Gemeinsame Grenzen für alle Quellen**, Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, **ID-Auflösung** (Selbsttest), Datensicherung, Gedächtnis-Export/-Import, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
+- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), **Gemeinsame Grenzen für alle Quellen**, Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, **ID-Auflösung** (Selbsttest), **Kontobindung**, Datensicherung, Gedächtnis-Export/-Import, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
 - Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
@@ -219,17 +229,20 @@ Eigene Textbausteine (bis **100**, je bis **8000 Zeichen**), gespeichert im Tamp
 - **Termine-Bereich:** Enthält der Name „Termin“, erscheinen im Bearbeiten-Fenster die nächsten 5 Termine aus der Termin-Datei; „Alle übernehmen“ ersetzt den Text. 
 - **Termin-Kurzform:** Beim Einfügen wird eine Zeile `wann - wo - Link` ohne „was“ anhand der Termin-Datei wieder zur vollen Zeile ausgeschrieben.
 - **Export/Import** per Datei oder Zwischenablage, in derselben verschlüsselten Hülle wie die Fickliste (`templates` statt `persons`). Beim Import werden Smileys zwischen JOYclub, poppen.de und Unicode übersetzt (Tabelle fest im Skript); gleiche Vorlagen bleiben unverändert, nur vorne/hinten verlängerte werden ergänzt, sonst Rückfrage. Nicht übersetzbare Smileys stehen im Bericht.
+- **Gemeinsamer Bestand** (gemeinsames Regelwerk mit dem JOYclub-Skript, siehe [FORMAT.md](FORMAT.md)): Die Vorlagen liegen im Briefkasten in JOYclub-Schreibweise und werden hier beim Anzeigen/Einfügen übersetzt. Schreiben zwei Stellen gleichzeitig: Ist die andere Fassung unverändert, wird geschrieben; sind es nur Ergänzungen, werden beide zusammengeführt (die ältere zuerst); sonst gewinnt die gerade gespeicherte Fassung und die andere kommt für **30 Tage in den Papierkorb**. Neue Vorlagen bekommen IDs `x:<zufall>`; Felder des JOYclub-Skripts (`pfIds`, `owner`) bleiben erhalten. Gehört der Bestand laut `owner` einem anderen Konto, wird nicht abgeglichen.
+- **Gedächtnis-Import:** Datei des eigenen Kontos (auch über die „Ich“-Profile erkannt) → Vorlagen ohne Rückfrage abgleichen, einschließlich Löschungen (nur, wenn die Vorlage hier seit dem letzten Import unverändert ist). Datei eines anderen Kontos → Schalter **„Auch Textvorlagen migrieren“** (Standard aus): aus = Vorlagen bleiben unberührt; an = abgleichen ohne Löschen, „Termine“ wird nie übernommen. Beim ersten Import ohne gemeinsamen Stand werden nur neue Namen angelegt und gleiche Texte verknüpft. Danach zeigt ein Bericht je Vorlage, was passiert ist.
 
 ## Moppel-Liebhaber (Figur)
 
-Alle Figur-Funktionen greifen nur, wenn in den Einstellungen **„Benutzer ist Moppel-Liebhaber“** an ist (Standard: aus). Dort lassen sich drei BMI-Grenzen (Regler 25–60, farbig von rot nach grün), die Bezeichnungen der Stufen (Standard: Kurvig · Üppig · XXL; darunter poppens „Plus-Size“), der Suchradius und die Profiltypen einstellen.
+Alle Figur-Funktionen greifen nur, wenn in den Einstellungen **„Benutzer ist Moppel-Liebhaber“** an ist (Standard: aus). Dort lassen sich drei BMI-Grenzen (Regler 25–60, farbig von rot nach grün), die Bezeichnungen der Stufen (Standard: Kurvig · Üppig · XXL; darunter poppens „Plus-Size“), der Suchradius (Schieberegler wie poppens Radius: 5 km … 450 km, Weltweit, dazu 75 km) und die Profiltypen einstellen.
 
 ### Mitgliedersuche
 
 - poppens „Kurvig“ heißt „Mollig“; „Plus-size“ bleibt. Der Figur-Filter bekommt die Zusatzoptionen der eigenen Stufen (Standard: Kurvig, Üppig, XXL). Sie suchen „Plus-size“ und blenden nur aus, wer nach berechnetem BMI darunter liegt; Mitglieder ohne Größe/Gewicht bleiben.
 - **Badges** in Stufenfarbe (z. B. „XXL · BMI 46“), Stufe 0 „Plus-Size“ nur bei entsprechender Profilangabe.
 - **Sortierung „BMI“** (zwischen „Entfernung“ und „Alter“): absteigend, ohne Angaben ans Ende. Umsortiert wird nur bei „BMI“.
-- **Vermessung:** Für jede sichtbare Trefferkarte ohne gültige Messung liest das Skript einmal die Profilangaben (`user/info`, gedrosselt). Messungen bleiben 90 Tage gültig, „UNKNOWN“ wird nach 30 Tagen neu geprüft.
+- **Vermessung ohne Profilbesuch:** Profilangaben (`user/info`) zählen bei poppen als Besuch. Deshalb grenzt die XXL-Suche Größe und Gewicht nur über die Suchfilter ein: zuerst die genaue Größe (Bereiche halbieren, leere überspringen), dann je Größe das Gewicht in Bändern an den BMI-Stufengrenzen, bis auf etwa 1 BMI-Punkt. Wer in zwei getrennten Bändern auftaucht (Angabe fehlt), gilt als „ohne Gewicht“. Schon genau vermessene Zellen werden nicht erneut geteilt. Profile, die du selbst öffnest, werden weiter genau gelesen. Messungen bleiben 90 Tage gültig.
+- Die **Figur-Klappliste** passt ihre Höhe bei jedem Neuzeichnen an, damit alle Zusatzstufen erreichbar bleiben.
 
 ### Paare
 
@@ -237,9 +250,9 @@ Bei Paaren lassen sich „Paar (Frau)“ und „Paar (Mann)“ getrennt anhaken;
 
 ### XXL-Suche und XXL-Seite
 
-- **XXL-Suche** (letzte Quelle im Opa-Scan; beim ersten Öffnen an, wenn „Moppel-Liebhaber“ an ist): je ausgewähltem Profiltyp ab 18 aufsteigend jedes Alter bis unter die Ignorier-Grenze, im eingestellten Radius (75 km = Suche mit 100 km, Rest verworfen), Figur „Plus-size“. Jeder Treffer wird vermessen; BMI, Figur-Angabe, Entfernung, Anmeldedatum u. a. kommen ins Gedächtnis.
+- **XXL-Suche** (letzte Quelle im Opa-Scan; beim ersten Öffnen an, wenn „Moppel-Liebhaber“ an ist): je ausgewähltem Profiltyp von 18 bis unter die Ignorier-Grenze, im eingestellten Radius (75 km = Suche mit 100 km, Rest verworfen), Figur „Plus-size“, vermessen über die Suchfilter (siehe oben, grob 2 Suchabfragen je Person). Paare: Größe/Gewicht gehören zu einem der beiden (angezeigt als „einer von beiden“). BMI, Figur-Angabe, Entfernung, Anmeldedatum u. a. kommen ins Gedächtnis.
 - **Menüpunkt unter „Entdecken“** nach „Popsters“, benannt nach der Mehrzahl der höchsten Stufe (Standard „XXL“), mit Frau- bzw. Mann-Symbol je nach eigener Suche.
-- **Seite** wie die Mitgliedersuche, aber aus dem Gedächtnis (ab „Plus-Size“): Filter Geschlecht, Alter, Radius, mit Bildern, jetzt online, nur verifiziert, Figur (Plus-Size + eigene Stufen), „auch unklarer BMI“, „nur anschreibbare“ (ungeprüfte bleiben und werden im Hintergrund geprüft), Suche nach, Sternzeichen, Raucher, Sexualität, Größe, Gewicht. Sortierung: Entfernung, BMI (Standard), Alter, letzter Login, Anmeldedatum.
+- **Seite** (`/search/member#xxl`) wie die Mitgliedersuche, aber aus dem Gedächtnis (ab „Plus-Size“). poppens eigene Suche wird auf dieser Seite unterdrückt (keine echte Suche, deine gespeicherten Suchfilter bleiben unverändert); der Menüpunkt ist hervorgehoben. Die Filter ersetzen poppens Suchfilter in der linken Leiste, im poppen-Design (Klapplisten, Schieberegler, Kästchen): Geschlecht, Alter, Radius, mit Bildern, jetzt online, nur verifiziert, Figur (Plus-Size + eigene Stufen), „auch unklarer BMI“, „nur anschreibbare“ (ungeprüfte bleiben und werden im Hintergrund geprüft), Suche nach, Beziehungsstatus (aus selbst geöffneten Profilen, unbekannt bleibt drin), Sternzeichen, Raucher, Sexualität, Größe 130–220, Gewicht 0–300. Die Ergebnisse nutzen die ganze restliche Breite. Sortierung: Entfernung, BMI (Standard), Alter, letzter Login, Anmeldedatum. Neue Messungen aus einem Scan in einem anderen Tab erscheinen von selbst.
 
 ### Anschreibbar
 
@@ -249,7 +262,7 @@ Ob ein Mitglied Nachrichten filtert („Du kannst nur einen Sticker senden“, `
 
 ## Mitgliedersuche: deine Suche bleibt deine
 
-poppen.de merkt sich die zuletzt abgeschickte Suche auf dem Server. Damit der Teilscan „Mitgliedersuche“ sie nicht überschreibt: Hintergrund-Suchen **pausieren**, solange `/search` in irgendeinem Tab offen ist, und laufen erst **5 Minuten** nach dem Verlassen weiter (der Fortschritt bleibt). Deine Suche wird gemerkt, beim Laden der Suchseite wiederhergestellt und nach jedem Hintergrundlauf auf dem Server zurückgeschrieben.
+poppen.de merkt sich die zuletzt abgeschickte Suche auf dem Server. (Die XXL-Seite zählt nicht als Suchseite.) Damit der Teilscan „Mitgliedersuche“ sie nicht überschreibt: Hintergrund-Suchen **pausieren**, solange `/search` in irgendeinem Tab offen ist, und laufen erst **5 Minuten** nach dem Verlassen weiter (der Fortschritt bleibt). Deine Suche wird gemerkt, beim Laden der Suchseite wiederhergestellt und nach jedem Hintergrundlauf auf dem Server zurückgeschrieben.
 
 ---
 

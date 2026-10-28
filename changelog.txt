@@ -1,6 +1,17 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.34 (28.10.2026)
+- WICHTIG: Profilangaben (user/info) zählen bei poppen als Profilbesuch. Die Vermessung für Figur/XXL läuft deshalb ganz ohne Profilaufruf über die Suchfilter Größe/Gewicht (genaue Größe × Gewichtsbänder an den BMI-Stufen, bis etwa 1 BMI-Punkt; grob 2 Suchabfragen je Person). Die Vermessung sichtbarer Suchtreffer über user/info entfällt; Gruppenregeln fragen Profile nur noch unsichtbar ab (still unsichtbar schalten, danach zurück)
+- XXL-Seite: poppens eigene Suche wird dort unterdrückt (keine echte Suche, gespeicherte Suchfilter bleiben); Filter ersetzen poppens Suchfilter in der linken Leiste, im poppen-Design (Klapplisten, Schieberegler für Alter, Radius, Größe 130–220, Gewicht 0–300, Kästchen); neuer Filter Beziehungsstatus; Ergebnisse über die volle Breite; Menüpunkt hervorgehoben statt „Popsters“; neue Messungen aus einem Scan in einem anderen Tab erscheinen von selbst; die XXL-Seite blockiert Hintergrund-Suchen nicht mehr
+- Moppel-Liebhaber: Suchradius als Schieberegler im poppen-Design
+- Behoben: Figur-Klappliste der Suche wieder abgeschnitten (Höhe wird jetzt bei jedem Neuzeichnen nachgezogen)
+- Events: Veranstalter automatisch auf der Whitelist (bis 30 Tage nach Event-Ende), „Gehe“/„Vielleicht“ werden gekennzeichnet und im Opa-Scan als Quelle „Partygäste (Events)“ geprüft (alle Events weltweit); Knopf „Als Treffen in die Fickliste …“ auf jeder Event-Seite
+- Textvorlagen nach dem gemeinsamen Regelwerk mit dem JOYclub-Skript: Ablage in JOYclub-Schreibweise (einmalige Umstellung), neue IDs x:…, pfIds/owner bleiben erhalten, gleichzeitiges Schreiben (unverändert → schreiben, Ergänzungen → zusammenführen, sonst gewinnt die gespeicherte Fassung, die andere in den Papierkorb), Gedächtnis-Import Fall A/B/C mit Schalter „Auch Textvorlagen migrieren“ und Bericht, base/hash in der Sicherungsdatei
+- Kontobindung: Daten gehören genau einem poppen-Konto; bei anderem Konto bleibt das Skript komplett aus (roter Hinweis); bewusste Übergabe in den Experten-Einstellungen; „Wiederherstellen“ lehnt fremde Sicherungen ab
+- ID-Auflösung: leere Antworten von poppen gelten als „Profil nicht mehr erreichbar“ (vermutlich gesperrt), neue Versuche nach 1, 7 und 30 Tagen; Rekorder-Export mit allen ungelösten IDs samt Grund und Herkunft
+- Tampermonkey: @sandbox raw (keine Warnung mehr bei abgeschalteter JavaScript-Sandbox; Verhalten unverändert); Verschlüsselungs- und Datenbank-Funktionen werden beim Start festgehalten
+
 2.33 (28.10.2026)
 - Textvorlagen: „zuletzt geändert von“ einheitlich als { pf, ver, acc } wie in der Fickliste (älteres { platform, account } wird weiter gelesen)
 - FORMAT.md ergänzt (Rückfragen aus dem JOYclub-Chat): IDs j:<JOYclub-Profil-ID>, feste Plattform-Codes, vollständige Feldlisten der Fickliste samt veralteter Felder, genaue Fallliste für den Import einer fremden Fickliste

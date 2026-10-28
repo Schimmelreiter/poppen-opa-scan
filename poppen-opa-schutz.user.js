@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.33
+// @version      2.34
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -16,6 +16,7 @@
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @grant        GM_addValueChangeListener
+// @grant        GM_removeValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
@@ -23,15 +24,19 @@
 // @connect      poppen.de
 // @connect      img-z.poppen.de
 // @connect      schimmelreiter.github.io
-// @sandbox      JavaScript
+// @sandbox      raw
 // @run-at       document-start
 // ==/UserScript==
 
 (function () {
   'use strict';
-  const VERSION = '2.33';
+  const VERSION = '2.34';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+  // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
+  // durch Seitenskripte an crypto/indexedDB wirken so nicht mehr auf Verschlüsselung und Datenbank)
+  const SUB = (() => { const c = window.crypto, s = c && c.subtle; const b = (f) => (s && s[f] ? s[f].bind(s) : null); return { importKey: b('importKey'), deriveKey: b('deriveKey'), encrypt: b('encrypt'), decrypt: b('decrypt'), sign: b('sign'), digest: b('digest'), rnd: c && c.getRandomValues ? c.getRandomValues.bind(c) : null }; })();
+  const IDB = (() => { const i = window.indexedDB; return i ? { open: i.open.bind(i), deleteDatabase: i.deleteDatabase.bind(i), databases: i.databases ? i.databases.bind(i) : null } : null; })();
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
   const ON_POPPEN = /(^|\.)poppen\.de$/.test(HOST) && !IN_FRAME;    // volle Funktion nur auf poppen.de (kein iframe)
@@ -41,7 +46,7 @@
   // =====================================================================================
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); }));
-  async function sha256hex(str) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(str))); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
+  async function sha256hex(str) { const b = await SUB.digest('SHA-256', new TextEncoder().encode(String(str))); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
   const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
   const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase();
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -156,7 +161,7 @@
   const SOURCES = {
     interaktionen: { label: 'Interaktionen', avail: true, tip: 'Mitglieder, die dir ein Like, einen Sticker oder eine Nachricht geschickt haben' },
     besucher: { label: 'Profilbesucher', avail: true, tip: 'Mitglieder, die dein Profil besucht haben' },
-    party: { label: 'Partygäste', avail: false, tip: 'Mitglieder, die auf denselben Partys angemeldet sind wie du (gibt es auf poppen.de nicht)' },
+    party: { label: 'Partygäste', avail: true, tip: 'Mitglieder, die bei Events auf „Gehe“ oder „Vielleicht“ stehen' },
     gruppen: { label: 'Gruppen', avail: true, tip: 'Mitglieder deiner Gruppen' },
     suche: { label: 'Mitgliedersuche', avail: true, tip: 'Alle poppen.de-Mitglieder, die auf die Einstellungen passen' },
   };
@@ -164,7 +169,7 @@
   const NOTE_SOURCES = {
     Likes: 'interaktionen', Sticker: 'interaktionen', Nachrichten: 'interaktionen', Benachrichtigungen: 'interaktionen', Interaktionen: 'interaktionen',
     Besucher: 'besucher', Profilbesucher: 'besucher', Gruppen: 'gruppen', Suche: 'suche', Mitgliedersuche: 'suche',
-    Vorgemerkt: 'suche', Sync: 'sync', Profil: 'besucher', Warteliste: 'suche',
+    Vorgemerkt: 'suche', Sync: 'sync', Events: 'party', Partygäste: 'party', Profil: 'besucher', Warteliste: 'suche',
   };
   const ages3 = (a, b, c) => ({ global: [a, b, c], interaktionen: [a, b, c], besucher: [a, b, c], party: [a, b, c], gruppen: [a, b, c], suche: [a, b, c] });
 
@@ -316,9 +321,9 @@
   function openOldDb() {
     return new Promise((resolve) => {
       let created = false;
-      const rq = W.indexedDB.open(OLD_DB_NAME);
+      const rq = IDB.open(OLD_DB_NAME);
       rq.onupgradeneeded = () => { created = true; };            // gab es nicht → leer
-      rq.onsuccess = () => { const d = rq.result; if (created || !d.objectStoreNames.length) { d.close(); if (created) W.indexedDB.deleteDatabase(OLD_DB_NAME); resolve(null); } else resolve(d); };
+      rq.onsuccess = () => { const d = rq.result; if (created || !d.objectStoreNames.length) { d.close(); if (created) IDB.deleteDatabase(OLD_DB_NAME); resolve(null); } else resolve(d); };
       rq.onerror = () => resolve(null);
     });
   }
@@ -335,7 +340,7 @@
   function db() {
     if (dbP) return dbP;
     dbP = new Promise((resolve, reject) => {
-      const rq = W.indexedDB.open(DB_NAME, DB_VER);
+      const rq = IDB.open(DB_NAME, DB_VER);
       rq.onupgradeneeded = () => {
         const d = rq.result;
         for (const ps of Object.values(PHYS)) {
@@ -358,8 +363,8 @@
     const te = new TextEncoder(), td = new TextDecoder();
     async function importRaw(raw) {
       const u = B64.dec(raw);
-      aes = await crypto.subtle.importKey('raw', u.slice(0, 32), 'AES-GCM', false, ['encrypt', 'decrypt']);
-      mac = await crypto.subtle.importKey('raw', u.slice(32, 64), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      aes = await SUB.importKey('raw', u.slice(0, 32), 'AES-GCM', false, ['encrypt', 'decrypt']);
+      mac = await SUB.importKey('raw', u.slice(32, 64), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     }
     async function load() {
       let raw = GM_getValue('vaf2_dbk', null);
@@ -371,7 +376,7 @@
         const d = await db();
         const n = await reqP(d.transaction(PHYS.members).objectStore(PHYS.members).count()).catch(() => 0);
         if (n > 0) { locked = 'Schlüssel fehlt – Briefkasten nicht erreichbar'; throw new Error(locked); }
-        const u = crypto.getRandomValues(new Uint8Array(64));
+        const u = SUB.rnd(new Uint8Array(64));
         raw = B64.enc(u);
         GM_setValue('vaf2_dbk', raw);
         GM_setValue('vaf2_dbk_bk', 0);
@@ -386,7 +391,7 @@
         s = String(s);
         const c = hcache.get(s); if (c) return c;
         await this.init();
-        const sig = new Uint8Array(await crypto.subtle.sign('HMAC', mac, te.encode(s)));
+        const sig = new Uint8Array(await SUB.sign('HMAC', mac, te.encode(s)));
         const out = B64.enc(sig.subarray(0, 18)).replace(/\+/g, '-').replace(/\//g, '_');
         if (hcache.size > 60000) hcache.clear();
         hcache.set(s, out);
@@ -394,15 +399,15 @@
       },
       async enc(obj) {
         await this.init();
-        const iv = crypto.getRandomValues(new Uint8Array(12));
-        const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aes, te.encode(JSON.stringify(obj))));
+        const iv = SUB.rnd(new Uint8Array(12));
+        const ct = new Uint8Array(await SUB.encrypt({ name: 'AES-GCM', iv }, aes, te.encode(JSON.stringify(obj))));
         const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
         return out;
       },
       async dec(u8) {
         await this.init();
         const b = u8 instanceof Uint8Array ? u8 : new Uint8Array(u8);
-        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.subarray(0, 12) }, aes, b.subarray(12));
+        const pt = await SUB.decrypt({ name: 'AES-GCM', iv: b.subarray(0, 12) }, aes, b.subarray(12));
         return JSON.parse(td.decode(pt));
       },
       raw: () => GM_getValue('vaf2_dbk', null),
@@ -661,6 +666,7 @@
     const info = { method: String(method || 'GET').toUpperCase(), path, query: Object.fromEntries(u.searchParams), body: parseBody(reqBody), page: location.pathname };
     let json;
     try { json = JSON.parse(text); } catch { return null; }
+    if (!Owner.mayWrite()) return null;            // fremdes Konto angemeldet: nichts mitschreiben
     try { Recorder.add(info, json); } catch (e) { warn('Rekorder', e); }
     if (json && json.code !== 0) { for (const h of ErrHooks) if (h.re.test(path)) { try { h.fn(json, info); } catch (e) { warn('Fehler-Hook', path, e); } } }
     if (!json || json.code !== 0) return null;
@@ -673,12 +679,26 @@
     return changed ? JSON.stringify({ ...json, data }) : null;
   }
 
+  // ---------- Abfragen der Seite unterdrücken (z. B. poppens eigene Suche auf der XXL-Seite) ----------
+  //  fn(method, path) → Ersatz-Antwort ({ code, data }) oder null. Die Abfrage geht dann gar nicht erst raus.
+  const PageBlocks = [];
+  function blockPageApi(fn) { PageBlocks.push(fn); }
+  function pageBlocked(method, url) {
+    if (!PageBlocks.length) return null;
+    let path = '';
+    try { path = new URL(url, location.origin).pathname.replace(/^\/v2-api\//, ''); } catch { return null; }
+    for (const fn of PageBlocks) { try { const r = fn(String(method || 'GET').toUpperCase(), path); if (r) return r; } catch {} }
+    return null;
+  }
+
   // fetch der Seite
   if (ON_POPPEN) {
   W.fetch = async function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || String(input);
     if (!/\/v2-api\//.test(url)) return origFetch(input, init);
     let method = (init && init.method) || (input && input.method) || 'GET';
+    const fake = pageBlocked(method, url);
+    if (fake) return new Response(JSON.stringify(fake), { status: 200, headers: { 'content-type': 'application/json' } });
     let body = init && init.body;
     try { captureHeaders((init && init.headers) || (input && input.headers)); } catch {}
     if (body == null && input && typeof input.clone === 'function' && method !== 'GET') { try { body = await input.clone().text(); } catch {} }
@@ -700,6 +720,10 @@
     XO.send = function (body) {
       const inf = this.__vaf;
       if (inf && /\/v2-api\//.test(inf.u)) {
+        const fake = pageBlocked(inf.m, inf.u);
+        if (fake) {   // Ersatz-Antwort: gleiche XHR auf eine data:-Adresse umlenken (kein Netzverkehr)
+          try { xOpen.call(this, 'GET', 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(fake)), true); return xSend.call(this, null); } catch {}
+        }
         captureHeaders(inf.h);
         const xhr = this;
         let done = false, rewritten = null;
@@ -850,7 +874,7 @@
         });
       },
       async stats() { await load(); const v = Object.values(data); return { total: v.length, fresh: v.filter((x) => !x.known).length }; },
-      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} const idres = G.get('idres_test', null); const searchDistances = G.get('search_distances', null); return { version: VERSION, at: new Date().toISOString(), valuemap, idres, searchDistances, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
+      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} const idres = G.get('idres_test', null); const searchDistances = G.get('search_distances', null); let idresFailed = null; try { idresFailed = idresFails(); } catch {} return { version: VERSION, at: new Date().toISOString(), valuemap, idres, idresFailed, searchDistances, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
       async clear() { data = {}; await KV.set('recorder', {}); Bus.emit('recorder'); },
     };
   })();
@@ -945,6 +969,7 @@
     if (a.friend) return 'Freund';
     if (a.fav) return 'Favorit';
     if (a.lead && Object.keys(a.lead).length) return 'Gruppen-Leitung';
+    { const ev = evtWhite(m); if (ev) return ev; }
     const grp = Object.entries(a.grp || {}).filter(([cms]) => s.managedWhitelist[cms] !== false);
     if (grp.length) {
       const grace = s.expert.groupGraceDays * DAY;
@@ -1196,6 +1221,66 @@
       return nm;
     } catch (e) { warn('Eigenes Profil nicht lesbar', e); return me; }
   }
+  // ---------- Bindung an EIN poppen-Konto (gemeinsames Regelwerk 3.4) ----------
+  //  Die Daten im Tampermonkey-Speicher/Gedächtnis gehören einem Konto (vaf2_owner { uid, nick, seit }).
+  //  Ist ein anderes Konto (oder keins) angemeldet, bleibt das Skript komplett aus: keine Scans, kein Schreiben,
+  //  kein Briefkasten, keine Hintergrund-Rahmen – nur ein roter Hinweis. Wechsel nur bewusst über die Übergabe.
+  const Owner = {
+    state: 'unknown',        // 'unknown' | 'ok' | 'off'
+    get() { return G.get('owner', null); },
+    // vorläufig (vor der Prüfung): Gedächtnis nur, wenn der zuletzt bekannte Nutzer der Eigentümer ist
+    mayWrite() { if (this.state !== 'unknown') return this.state === 'ok'; const o = this.get(), me = Me.get(); return !o || !me || String(o.uid) === String(me.uid); },
+    mayWriteShared() { return this.state === 'ok' && this.sharedOk !== false; },
+    sharedOk: null,
+    hasData() { try { return !!(GM_getValue('vaf2_settings', null) || GM_getValue('vaf2_me', null) || (GM_listValues() || []).filter((k) => k.startsWith('vaf2_')).length > 8); } catch { return false; } },
+    bind(me) { G.set('owner', { uid: String(me.uid), nick: me.nick, seit: now() }); this.state = 'ok'; },
+    async check() {
+      const me = await loadMe(true);
+      if (!me || !me.uid) { this.state = 'off'; this.why = 'nologin'; return false; }
+      let o = this.get();
+      if (o && o.handover && String(o.uid) !== String(me.uid)) {
+        if (now() - (o.handover || 0) < 7 * DAY) {
+          const v = await ask('Opa-Schutz: Daten übernehmen?', `<p>Die Opa-Schutz-Daten von <b>${esc(o.nick)}</b> wurden zur Übergabe freigegeben.</p><p>Sollen sie ab jetzt zu <b>${esc(me.nick)}</b> gehören?</p>`,
+            [{ label: `Für ${me.nick} übernehmen`, value: 'yes', primary: true }, { label: 'Nein', value: null, cancel: true }]);
+          if (v === 'yes') { this.bind(me); log(`Daten von ${o.nick} an ${me.nick} übergeben`); return true; }
+        }
+        this.state = 'off'; this.why = 'other'; return false;
+      }
+      if (!o) {
+        if (this.hasData()) {
+          const v = await ask('Opa-Schutz', `<p>Gehören die vorhandenen Opa-Schutz-Daten in diesem Browser-Profil zu <b>${esc(me.nick)}</b>?</p><p class="vaf-mini">Die Daten werden an genau ein Konto gebunden. Bei einem anderen angemeldeten Konto bleibt der Opa-Schutz danach aus.</p>`,
+            [{ label: `Ja, zu ${me.nick}`, value: 'yes', primary: true }, { label: 'Nein', value: 'no', cancel: true }]);
+          if (v !== 'yes') { G.set('owner_refused', { uid: String(me.uid), nick: me.nick, at: now() }); this.state = 'off'; this.why = 'refused'; return false; }
+        }
+        this.bind(me); return true;
+      }
+      if (String(o.uid) !== String(me.uid)) { this.state = 'off'; this.why = 'other'; return false; }
+      if (o.nick !== me.nick) G.set('owner', { ...o, nick: me.nick });
+      this.state = 'ok';
+      return true;
+    },
+    // bewusst freigeben (vom bisherigen Konto aus): das nächste angemeldete andere Konto darf übernehmen
+    handover() { const o = this.get(); if (!o) return; G.set('owner', { ...o, handover: now() }); },
+    cancelHandover() { const o = this.get(); if (o && o.handover) { const { handover, ...rest } = o; G.set('owner', rest); } },
+    showOff() {
+      if (this.why === 'nologin') return;
+      const o = this.get(), me = Me.get();
+      const show = () => {
+        if (!document.body || document.getElementById('vaf-owner-off')) return;
+        const d = document.createElement('div'); d.id = 'vaf-owner-off';
+        d.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2147483000;background:#b71c1c;color:#fff;border-radius:14px;padding:12px 18px;font:600 15px system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);max-width:92vw;display:flex;gap:14px;align-items:center';
+        const who = o ? o.nick : '';
+        d.innerHTML = this.why === 'refused' ? `<span>Opa-Schutz aus – die Daten in diesem Browser-Profil gehören nicht zu ${esc((me && me.nick) || 'diesem Konto')}.</span>`
+          : `<span>Opa-Schutz aus – die Daten in diesem Browser-Profil gehören zu <b>${esc(who)}</b>. Falsches Konto angemeldet?</span>`;
+        const x = document.createElement('button'); x.type = 'button'; x.textContent = '×'; x.title = 'Hinweis ausblenden (bis zum nächsten Seitenaufruf)';
+        x.style.cssText = 'background:none;border:0;color:#fff;font-size:22px;cursor:pointer;line-height:1';
+        x.addEventListener('click', () => d.remove());
+        d.appendChild(x); document.body.appendChild(d);
+      };
+      if (document.body) show(); else W.addEventListener('DOMContentLoaded', show);
+    },
+  };
+
   // ---------- „Grenzen altern mit mir“ ----------
   // Eigenes Alter möglichst genau am Geburtstag (Geburtsdatum aus user/info des eigenen Profils);
   // ist das Datum nicht lesbar, gilt das Alter aus session/info (dann ab dem Tag, an dem das Skript es merkt).
@@ -1904,6 +1989,7 @@
       if (Array.isArray(am.lookingFor)) x.lf = am.lookingFor.map((y) => (Array.isArray(y) ? String(y[1]) : String(y))).filter(Boolean);
       if (Array.isArray(am.interested)) x.interested = am.interested.map(String);
       if (ui.fakecheck != null) x.fake = String(ui.fakecheck);
+      if (d.relationship !== undefined) { try { x.rel = { cats: grRelCats(d.relationship), at: now() }; } catch {} }   // Beziehungsstatus (XXL-Filter)
     });
     return m;
   }
@@ -2196,7 +2282,7 @@
     'enable_search_gender', 'enable_fakecheck_status', 'preference_conjunction', 'second_preference_conjunction',
     'size_min', 'size_max', 'weight_min', 'weight_max', 'figure', 'zodiac', 'smoker', 'searching', 'sexual_orientation'];
   const SearchGuard = (() => {
-    const onSearch = () => location.pathname.startsWith('/search');
+    const onSearch = () => location.pathname.startsWith('/search') && !xxlPageOn();   // XXL-Seite sucht nicht selbst
     let was = false;
     function beat() {
       const open = { ...(G.get('search_open', {}) || {}) };
@@ -2549,6 +2635,180 @@
     if (b.textContent !== info.text) b.textContent = info.text;
     b.style.cssText = `background:${info.color};color:${info.dark ? '#111' : '#fff'}`;
   }
+  // =====================================================================================
+  // Bausteine im poppen-Design (Suchfilter-Optik): Klappliste, Schieberegler (1–2 Griffe,
+  // auch mit festen Stufen), Kästchen, Kästchen-Gruppe, Formularzeile, Trennlinie.
+  // Eigene Klassen (vaf-pk-*), nachgebaut nach poppens Suchfiltern (Farben/Rundungen/Größen).
+  // =====================================================================================
+  const PK_CHEVRON = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a1 1 0 0 1-.71-.29l-4-4a1.003 1.003 0 1 1 1.42-1.42L12 13.1l3.3-3.18a1 1 0 1 1 1.38 1.44l-4 3.86a1 1 0 0 1-.68.28"/></svg>';
+  const PK_CSS = `
+.vaf-pk{--pk-y:#f5b800;--pk-yd:#3a2c00;--pk-f:#2b2b2b;--pk-f2:#363636;--pk-b:#3d3d3d;--pk-t:#f2f2f2;--pk-m:#9a9a9a;color:var(--pk-t);font-family:inherit}
+.vaf-pk h2.vaf-pk-h{font-size:24px;font-weight:700;margin:4px 0 18px;color:#fff}
+.vaf-pk-item{margin:0 0 20px}
+.vaf-pk-lab{display:block;font-weight:700;font-size:17px;color:#fff;margin:0 0 9px}
+.vaf-pk-div{height:1px;background:#2e2e2e;margin:4px 0 22px}
+.vaf-pk-sel{position:relative;display:flex;align-items:center;gap:8px;min-height:50px;padding:0 14px 0 16px;border-radius:14px;background:var(--pk-f);border:2px solid transparent;cursor:pointer;font-size:17px;color:var(--pk-t);user-select:none;box-sizing:border-box;transition:border-color .15s}
+.vaf-pk-sel:hover{border-color:#4a4a4a}
+.vaf-pk-sel.open,.vaf-pk-sel:focus-visible{border-color:var(--pk-y);outline:none}
+.vaf-pk-sel .v{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vaf-pk-sel.open .v{color:var(--pk-m)}
+.vaf-pk-sel .c{font-size:20px;color:var(--pk-m);display:flex;transition:transform .15s}
+.vaf-pk-sel.open .c{transform:rotate(180deg)}
+.vaf-pk-dd{position:fixed;z-index:2147483000;background:#2b2b2b;border-radius:16px;padding:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);overflow-y:auto;box-sizing:border-box;font-family:inherit}
+.vaf-pk-dd .o{padding:13px 14px;margin:2px 0;border-radius:14px;font-size:17px;font-weight:700;color:#f2f2f2;cursor:pointer;background:#353535}
+.vaf-pk-dd .o:hover,.vaf-pk-dd .o.act{background:#404040}
+.vaf-pk-dd .o.sel{background:var(--pk-yd,#3a2c00);color:#f5b800}
+.vaf-pk-sl{position:relative;height:44px;margin:0 10px;touch-action:none;cursor:pointer}
+.vaf-pk-sl .r{position:absolute;left:0;right:0;top:13px;height:4px;border-radius:2px;background:#4a4a4a}
+.vaf-pk-sl .k{position:absolute;top:13px;height:4px;border-radius:2px;background:#f5b800}
+.vaf-pk-sl .d{position:absolute;top:11px;width:8px;height:8px;margin-left:-4px;border-radius:50%;background:#2b2b2b;border:2px solid #4a4a4a;box-sizing:border-box}
+.vaf-pk-sl .d.on{border-color:#f5b800}
+.vaf-pk-sl .h{position:absolute;top:5px;width:20px;height:20px;margin-left:-10px;border-radius:50%;background:#fff;box-shadow:0 0 0 2px #f5b800;cursor:grab;outline:none}
+.vaf-pk-sl .h:focus-visible{box-shadow:0 0 0 4px rgba(245,184,0,.5)}
+.vaf-pk-sl .h .tip{position:absolute;bottom:26px;left:50%;transform:translateX(-50%);background:#111;color:#fff;border-radius:6px;padding:3px 7px;font-size:12.5px;white-space:nowrap;display:none}
+.vaf-pk-sl .h:hover .tip,.vaf-pk-sl.drag .h .tip{display:block}
+.vaf-pk-sl .m{position:absolute;top:26px;font-size:14px;color:var(--pk-m,#9a9a9a);transform:translateX(-50%);white-space:nowrap}
+.vaf-pk-sl .m.first{transform:none;margin-left:-10px}.vaf-pk-sl .m.last{transform:translateX(-100%);margin-left:10px}
+.vaf-pk-val{font-size:14px;color:var(--pk-m,#9a9a9a);margin:-2px 0 0;text-align:right}
+.vaf-pk-cb{display:inline-flex;align-items:center;gap:10px;cursor:pointer;font-size:17px;color:var(--pk-t,#f2f2f2);user-select:none;margin:0 16px 10px 0}
+.vaf-pk-cb .bx{width:20px;height:20px;border-radius:5px;border:2px solid #5a5a5a;background:#1b1b1b;box-sizing:border-box;display:flex;align-items:center;justify-content:center;flex:0 0 auto;transition:all .12s}
+.vaf-pk-cb.on .bx{background:#f5b800;border-color:#f5b800}
+.vaf-pk-cb.on .bx::after{content:"";width:5px;height:10px;border:solid #141414;border-width:0 2.5px 2.5px 0;transform:rotate(45deg) translate(-1px,-1px)}
+.vaf-pk-cbg{display:flex;flex-wrap:wrap}
+`;
+  function pkStyle() {
+    if (document.getElementById('vaf-pk-style')) return;
+    const st = document.createElement('style'); st.id = 'vaf-pk-style'; st.textContent = PK_CSS;
+    (document.head || document.documentElement).appendChild(st);
+  }
+  // Formularzeile mit Überschrift
+  function pkItem(label, ctrl) {
+    const d = document.createElement('div'); d.className = 'vaf-pk-item';
+    if (label) { const l = document.createElement('div'); l.className = 'vaf-pk-lab'; l.textContent = label; d.appendChild(l); }
+    if (ctrl) d.appendChild(ctrl);
+    return d;
+  }
+  const pkDivider = () => { const d = document.createElement('div'); d.className = 'vaf-pk-div'; return d; };
+
+  // Klappliste: opts = [[wert, text], …]
+  let pkOpenDd = null;
+  function pkCloseDd() { if (pkOpenDd) { const x = pkOpenDd; pkOpenDd = null; x.close(); } }
+  function pkSelect(opts, value, onChange) {
+    pkStyle();
+    const el = document.createElement('div'); el.className = 'vaf-pk-sel'; el.tabIndex = 0; el.setAttribute('role', 'combobox');
+    el.innerHTML = `<span class="v"></span><span class="c">${PK_CHEVRON}</span>`;
+    let cur = value;
+    const label = () => { const o = opts.find(([v]) => String(v) === String(cur)); return o ? o[1] : (opts[0] ? opts[0][1] : ''); };
+    const paint = () => { el.querySelector('.v').textContent = label(); el.title = label(); };
+    let dd = null, act = -1;
+    const close = () => { if (dd) { dd.remove(); dd = null; } el.classList.remove('open'); document.removeEventListener('pointerdown', outside, true); W.removeEventListener('scroll', place, true); W.removeEventListener('resize', place); };
+    const outside = (e) => { if (dd && !dd.contains(e.target) && !el.contains(e.target)) pkCloseDd(); };
+    const place = () => {
+      if (!dd) return;
+      const r = el.getBoundingClientRect(), vh = W.innerHeight || 800;
+      const want = Math.min(opts.length * 52 + 16, Math.round(vh * 0.6));
+      const below = vh - r.bottom - 8, above = r.top - 8;
+      const h = Math.min(want, Math.max(below, above));
+      dd.style.left = r.left + 'px'; dd.style.width = r.width + 'px'; dd.style.maxHeight = h + 'px';
+      dd.style.top = (below >= want || below >= above ? r.bottom + 6 : r.top - 6 - Math.min(want, h)) + 'px';
+    };
+    const pick = (v) => { cur = v; paint(); pkCloseDd(); try { onChange && onChange(v); } catch (e) { warn('Klappliste', e); } };
+    const open = () => {
+      pkCloseDd();
+      dd = document.createElement('div'); dd.className = 'vaf-pk-dd vaf-pk'; dd.setAttribute('role', 'listbox');
+      dd.innerHTML = opts.map(([v, n], i) => `<div class="o${String(v) === String(cur) ? ' sel' : ''}" data-i="${i}" role="option">${esc(n)}</div>`).join('');
+      dd.addEventListener('click', (e) => { const o = e.target.closest('.o'); if (o) pick(opts[+o.dataset.i][0]); });
+      document.body.appendChild(dd);
+      el.classList.add('open');
+      place();
+      const s = dd.querySelector('.o.sel'); if (s) s.scrollIntoView({ block: 'nearest' });
+      act = opts.findIndex(([v]) => String(v) === String(cur));
+      document.addEventListener('pointerdown', outside, true); W.addEventListener('scroll', place, true); W.addEventListener('resize', place);
+      pkOpenDd = { close };
+    };
+    el.addEventListener('click', () => (dd ? pkCloseDd() : open()));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { pkCloseDd(); return; }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!dd) open(); else if (act >= 0) pick(opts[act][0]); return; }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault(); if (!dd) open();
+        act = Math.max(0, Math.min(opts.length - 1, act + (e.key === 'ArrowDown' ? 1 : -1)));
+        dd.querySelectorAll('.o').forEach((o, i) => o.classList.toggle('act', i === act));
+        const a = dd.querySelector('.o.act'); if (a) a.scrollIntoView({ block: 'nearest' });
+      }
+    });
+    paint();
+    el.vafSet = (v) => { cur = v; paint(); };
+    el.vafGet = () => cur;
+    return el;
+  }
+
+  // Schieberegler. o = { min, max, values:[a] | [a,b], steps?:[werte…] (feste Stufen, Index-basiert),
+  //   fmt(v), marks?: [[wert, text]] (Beschriftung unter dem Regler), onChange([…]), live([…]) }
+  function pkSlider(o) {
+    pkStyle();
+    const steps = Array.isArray(o.steps) && o.steps.length ? o.steps : null;
+    const min = steps ? 0 : o.min, max = steps ? steps.length - 1 : o.max;
+    const toIdx = (v) => { if (!steps) return v; const i = steps.indexOf(v); return i >= 0 ? i : steps.reduce((b, s, j) => (Math.abs(s - v) < Math.abs(steps[b] - v) ? j : b), 0); };
+    const fromIdx = (i) => (steps ? steps[i] : i);
+    const fmt = o.fmt || String;
+    const cur = (o.values || [min]).map(toIdx);
+    const el = document.createElement('div'); el.className = 'vaf-pk-sl';
+    el.innerHTML = '<div class="r"></div><div class="k"></div>' + (steps ? steps.map(() => '<span class="d"></span>').join('') : '') + cur.map(() => '<span class="h" tabindex="0" role="slider"><span class="tip"></span></span>').join('');
+    const marks = o.marks || [[fromIdx(min), fmt(fromIdx(min))], [fromIdx(max), fmt(fromIdx(max))]];
+    marks.forEach(([v, t], i) => { const m = document.createElement('span'); m.className = 'm' + (i === 0 ? ' first' : i === marks.length - 1 ? ' last' : ''); m.dataset.v = String(toIdx(v)); m.textContent = t; el.appendChild(m); });
+    const hs = [...el.querySelectorAll('.h')], k = el.querySelector('.k'), dots = [...el.querySelectorAll('.d')];
+    const pct = (i) => ((i - min) / ((max - min) || 1)) * 100;
+    const draw = () => {
+      hs.forEach((h, i) => { h.style.left = pct(cur[i]) + '%'; h.querySelector('.tip').textContent = fmt(fromIdx(cur[i])); h.setAttribute('aria-valuenow', String(fromIdx(cur[i]))); h.setAttribute('aria-valuetext', fmt(fromIdx(cur[i]))); });
+      const a = cur.length === 2 ? cur[0] : min, b = cur.length === 2 ? cur[1] : cur[0];
+      k.style.left = pct(a) + '%'; k.style.width = (pct(b) - pct(a)) + '%';
+      dots.forEach((d, i) => { d.style.left = pct(i) + '%'; d.classList.toggle('on', i >= a && i <= b); });
+      el.querySelectorAll('.m').forEach((m) => { m.style.left = pct(+m.dataset.v) + '%'; });
+      if (o.live) try { o.live(cur.map(fromIdx)); } catch {}
+    };
+    const valAt = (x) => { const r = el.getBoundingClientRect(); const t = Math.max(0, Math.min(1, (x - r.left) / (r.width || 1))); return Math.round(min + t * (max - min)); };
+    const clampI = (i, v) => Math.max(i && cur.length === 2 ? cur[0] : min, Math.min(i === 0 && cur.length === 2 ? cur[1] : max, v));
+    const fire = () => { try { o.onChange && o.onChange(cur.map(fromIdx)); } catch (e) { warn('Regler', e); } };
+    let dragI = -1;
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const v = valAt(e.clientX);
+      dragI = cur.length === 2 ? (Math.abs(v - cur[0]) <= Math.abs(v - cur[1]) ? (v > cur[1] ? 1 : 0) : 1) : 0;
+      if (cur.length === 2 && cur[0] === cur[1]) dragI = v < cur[0] ? 0 : 1;
+      cur[dragI] = clampI(dragI, v); draw();
+      el.classList.add('drag');
+      try { el.setPointerCapture(e.pointerId); } catch {}
+    });
+    el.addEventListener('pointermove', (e) => { if (dragI < 0) return; const v = clampI(dragI, valAt(e.clientX)); if (v !== cur[dragI]) { cur[dragI] = v; draw(); } });
+    const end = () => { if (dragI < 0) return; dragI = -1; el.classList.remove('drag'); fire(); };
+    el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+    hs.forEach((h, i) => h.addEventListener('keydown', (e) => {
+      const d = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 0;
+      if (!d) return; e.preventDefault(); cur[i] = clampI(i, cur[i] + d); draw(); fire();
+    }));
+    draw();
+    el.vafSet = (vals) => { vals.forEach((v, i) => { cur[i] = toIdx(v); }); draw(); };
+    return el;
+  }
+  // Kästchen
+  function pkCheck(label, on, onChange) {
+    pkStyle();
+    const el = document.createElement('span'); el.className = 'vaf-pk-cb' + (on ? ' on' : ''); el.tabIndex = 0; el.setAttribute('role', 'checkbox');
+    el.innerHTML = `<span class="bx"></span><span class="t">${esc(label)}</span>`;
+    el.setAttribute('aria-checked', String(!!on));
+    const tog = () => { on = !on; el.classList.toggle('on', on); el.setAttribute('aria-checked', String(on)); try { onChange && onChange(on); } catch (e) { warn('Kästchen', e); } };
+    el.addEventListener('click', tog);
+    el.addEventListener('keydown', (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); tog(); } });
+    return el;
+  }
+  // Kästchen-Gruppe (Mehrfachauswahl): opts = [[wert, text]], vals = [werte]
+  function pkCheckGroup(opts, vals, onChange) {
+    const g = document.createElement('div'); g.className = 'vaf-pk-cbg';
+    let cur = [...vals];
+    for (const [v, n] of opts) g.appendChild(pkCheck(n, cur.includes(v), (on) => { cur = on ? [...cur, v] : cur.filter((x) => x !== v); onChange && onChange([...cur]); }));
+    return g;
+  }
 
   // =====================================================================================
   // Listen-Seiten markieren (Besucher, Likes, Sticker, Posteingang, Suche, Gruppen-Mitglieder)
@@ -2561,6 +2821,7 @@
     { re: /^\/inbox/, src: 'Nachrichten', auto: 'interaktionen' },
     { re: /^\/search\/member/, src: 'Suche', auto: 'suche' },
     { re: /^\/groups\//, src: 'Gruppen', auto: null },
+    { re: /(^|\/)events\/[^/]+\/[^/]+\/\d+/, src: 'Events', auto: null },
   ];
   const pageSource = () => PAGE_SOURCES.find((p) => p.re.test(location.pathname)) || null;
   const autoDone = new Set();
@@ -2768,6 +3029,35 @@
       try { await this.set('visible'); } catch {}
     },
   };
+  // Automatische Profilabfragen (z. B. Gruppenregeln) nur unsichtbar: vorher still unsichtbar schalten,
+  // 90 s nach der letzten Abfrage wieder sichtbar – außer der Nutzer hat inzwischen selbst umgeschaltet.
+  const VisAuto = (() => {
+    let active = 0, switchedAt = 0, timer = null, prep = null;
+    async function enter() {
+      active++; clearTimeout(timer);
+      if (switchedAt) return;
+      if (!prep) prep = (async () => {
+        const st = await Vis.state();
+        if (st === 'invisible') return;
+        await Vis.set('invisible'); switchedAt = now();
+        try { toast('Für Profilabfragen unsichtbar geschaltet – kurz warten …', 5000); } catch {}
+        await sleep(15000);
+      })().finally(() => { prep = null; });
+      await prep;
+    }
+    function leave() {
+      active = Math.max(0, active - 1);
+      if (active || !switchedAt) return;
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (active || !switchedAt) return;
+        const at = switchedAt; switchedAt = 0;
+        if (Vis.userChanged > at) return;
+        try { await Vis.set('visible'); } catch {}
+      }, 90000);
+    }
+    return { async use(fn) { await enter(); try { return await fn(); } finally { leave(); } } };
+  })();
   onApi(/^wio\/state$/, (d, info) => { if (info.method === 'POST' && info.body && info.body.value) { G.set('vis_state', info.body.value); Vis.userChanged = now(); } });
 
   // =====================================================================================
@@ -3080,11 +3370,11 @@
   const SCANS = [
     { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker, Nachrichten und Benachrichtigungen', fn: scanInteractions },
     { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
-    { k: 'party', title: 'Partygäste', sub: 'gibt es auf poppen.de nicht', fn: null },
+    { k: 'party', title: 'Partygäste (Events)', sub: '„Gehe“ und „Vielleicht“ aller Events; Veranstalter auf die Whitelist', fn: scanEvents },
     { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
     { k: 'gruppen_bl', src: 'gruppen', title: 'Gruppen (Blacklist)', sub: 'Mitglieder deiner Gruppen nach den Regeln prüfen', fn: scanGroupsBlack, def: false },
     { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
-    { k: 'xxl', title: 'XXL-Suche', sub: 'Figur ab „Plus-Size“ im eingestellten Radius, ab 18 aufwärts vermessen', fn: scanXxl, def: () => mopOn() },
+    { k: 'xxl', title: 'XXL-Suche', sub: 'Figur ab „Plus-Size“ im eingestellten Radius, über die Suchfilter vermessen (ohne Profilbesuch)', fn: scanXxl, def: () => mopOn() },
   ];
   const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : typeof sc.def === 'function' ? !!sc.def() : sc.def !== false; return o; };
   const scanActive = () => { const s = G.get('scan_state', null); return !!(s && s.running); };
@@ -3095,7 +3385,8 @@
       `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
       (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
       (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '') +
-      (total.xxlFound ? `<span>${esc(xxlName())}-Suche: gefunden / neu vermessen</span><b>${fmtN(total.xxlFound)} / ${fmtN(total.xxlMeasured || 0)}</b>` +
+      (total.xxlFound ? `<span>${esc(xxlName())}-Suche: gefunden / vermessen (ohne Profilbesuch)</span><b>${fmtN(total.xxlFound)} / ${fmtN(total.xxlMeasured || 0)}</b>` +
+        (total.xxlQueries ? `<span>${esc(xxlName())}-Suche: Suchabfragen</span><b>${fmtN(total.xxlQueries)}</b>` : '') +
         `<span>${esc(mopLabel(1))} · ${esc(mopLabel(2))} · ${esc(mopLabel(3))}</span><b>${fmtN(total.xxl1 || 0)} · ${fmtN(total.xxl2 || 0)} · ${fmtN(total.xxl3 || 0)}</b>` : '');
   }
 
@@ -3677,10 +3968,13 @@
         [0, 2, 4, 1, 3, 5].forEach((i) => { const inp = txtIn(mp.labels[i], (v) => { mp.labels[i] = v.trim() || DEFAULTS.moppel.labels[i]; paintLeg(); touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; mlbl.appendChild(inp); });
         const gm = (labHtml, desc, ...ctl) => { const r = document.createElement('div'); r.className = 'vaf-srcgrid vaf-grow shared'; const l = document.createElement('div'); l.className = 'vaf-glab'; l.innerHTML = `<span class="vaf-l">${labHtml}</span>${desc ? `<div class="vaf-d">${desc}</div>` : ''}`; const k = document.createElement('div'); k.className = 'vaf-gctl'; ctl.forEach((x) => k.append(x)); r.append(l, k); cm.appendChild(r); return r; };
         gm(lab('Bezeichnungen', 'moppel.labels'), 'Oben Einzahl, unten Mehrzahl', mlbl);
-        const rad = document.createElement('select');
-        rad.innerHTML = MOP_RADII.map((r) => `<option value="${r}">${r ? r + ' km' : 'Weltweit'}</option>`).join('');
-        rad.value = String(mp.radius); rad.addEventListener('change', () => { mp.radius = +rad.value; touch(); });
-        gm(lab('Suchradius', 'moppel.radius'), '', rad);
+        // Suchradius als Schieberegler im poppen-Design (Stufen wie poppens Radius-Regler, 75 km zusätzlich)
+        const rfmt = (r) => (r ? r + ' km' : 'Weltweit');
+        const radBox = document.createElement('div'); radBox.className = 'vaf-pk'; radBox.style.cssText = 'width:100%;min-width:220px;padding-top:6px';
+        const radVal = document.createElement('div'); radVal.className = 'vaf-pk-val'; radVal.textContent = rfmt(mp.radius);
+        const rad = pkSlider({ steps: MOP_RADII, values: [mp.radius], fmt: rfmt, marks: [[MOP_RADII[0], rfmt(MOP_RADII[0])], [0, 'Weltweit']], live: ([v]) => { radVal.textContent = rfmt(v); }, onChange: ([v]) => { mp.radius = v; touch(); } });
+        radBox.append(radVal, rad);
+        gm(lab('Suchradius', 'moppel.radius'), '', radBox);
         const mt = document.createElement('div'); mt.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap';
         for (const [t, name] of [['m', 'Mann'], ['w', 'Frau'], ['pw', 'Paar (Frau)'], ['pm', 'Paar (Mann)'], ['ts', 'Trans'], ['tv', 'Nicht-binär']]) {
           const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:6px;align-items:center';
@@ -3754,6 +4048,19 @@
       row(ce, 'ID-Auflösung', 'ermittelt Nicknames zu Mitglieds-IDs (Blockierende Popsters, böse Popsters, Warteliste)', irSt, irBtn);
       // Daten
       const btn = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
+      // Kontobindung: Daten bewusst an ein anderes Konto übergeben
+      const owSt = document.createElement('span'); owSt.className = 'vaf-mini';
+      const owInfo = () => { const o = Owner.get(); owSt.textContent = o ? `gehören zu ${o.nick}${o.handover ? ` · zur Übergabe freigegeben seit ${deDateTime(o.handover)} (7 Tage)` : ''}` : 'noch nicht gebunden'; };
+      owInfo();
+      const owBtn = btn('Daten an anderes Konto übergeben …', async () => {
+        const o = Owner.get(); if (!o) return;
+        if (o.handover) { Owner.cancelHandover(); owInfo(); owBtn.textContent = 'Daten an anderes Konto übergeben …'; return; }
+        const v = await ask('Daten übergeben', `<p>Die Opa-Schutz-Daten gehören zu <b>${esc(o.nick)}</b>.</p><p>Nach dem Freigeben fragt das Skript beim nächsten Anmelden mit einem <b>anderen</b> Konto (innerhalb von 7 Tagen), ob es die Daten übernehmen soll. Bis dahin bleibt alles wie es ist.</p>`,
+          [{ label: 'Zur Übergabe freigeben', value: 'yes', primary: true }, { label: 'Abbrechen', value: null, cancel: true }]);
+        if (v === 'yes') { Owner.handover(); owInfo(); owBtn.textContent = 'Übergabe zurücknehmen'; }
+      });
+      if ((Owner.get() || {}).handover) owBtn.textContent = 'Übergabe zurücknehmen';
+      row(ce, 'Kontobindung', 'Die Daten in diesem Browser-Profil gehören genau einem poppen-Konto; bei einem anderen bleibt der Opa-Schutz aus', owSt, owBtn);
       // Abgleich mit JOYclub (Briefkasten)
       const bkSt = document.createElement('span'); bkSt.className = 'vaf-mini';
       const bkInfo = () => { const t = G.get('bk_test', null); const at = G.get('bk_full_sent', 0); bkSt.textContent = (t ? t.msg : 'noch nicht geprüft') + (at ? ` · letzter Abgleich ${deDateTime(at)}` : ''); };
@@ -3907,7 +4214,7 @@
   async function showQueue() {
     const l = await Queue.list();
     const mc = Members.cached();
-    const m = modal({ title: 'Warteliste', sub: `${fmtN(l.length)} Mitglieder, in dieser Reihenfolge`, html: `<div class="vaf-list">${l.slice(0, 2000).map((q) => `<div>${q.nick ? `<a href="${esc(pathOfName(q.nick))}" target="_blank" rel="noopener" style="color:inherit">${esc(q.nick)}</a>` : `ID ${esc(q.uid)}`} · ${(q.ages || []).join('/')} · ${esc(q.src)}${esc(pstateNote(mc.get(String(q.uid))))}</div>`).join('') || '<div>leer</div>'}${l.length > 2000 ? '<div>…</div>' : ''}</div>` });
+    const m = modal({ title: 'Warteliste', sub: `${fmtN(l.length)} Mitglieder, in dieser Reihenfolge`, html: `<div class="vaf-list">${l.slice(0, 2000).map((q) => `<div>${q.nick ? `<a href="${esc(pathOfName(q.nick))}" target="_blank" rel="noopener" style="color:inherit">${esc(q.nick)}</a>` : esc(idresLabel(q.uid))} · ${(q.ages || []).join('/')} · ${esc(q.src)}${esc(pstateNote(mc.get(String(q.uid))))}</div>`).join('') || '<div>leer</div>'}${l.length > 2000 ? '<div>…</div>' : ''}</div>` });
     m.buttons([{ label: 'Schließen', focus: true, fn: () => m.close() }]);
   }
 
@@ -5053,7 +5360,7 @@
   }
 
   // ---------- Profil-Archiv ----------
-  async function hashText(s) { const b = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
+  async function hashText(s) { const b = await SUB.digest('SHA-1', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
   async function snapshot(uid, nick, reason, force = false) {
     const main = document.querySelector('main');
     if (!main || !uid) return;
@@ -5258,21 +5565,21 @@
 
   // ---------- Export / Import mit automatischem Verknüpfen ----------
   async function cryptKey(pass, salt) {
-    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(norm(pass)), 'PBKDF2', false, ['deriveKey']);
-    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const base = await SUB.importKey('raw', new TextEncoder().encode(norm(pass)), 'PBKDF2', false, ['deriveKey']);
+    return SUB.deriveKey({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
   }
   const b64 = (u8) => btoa(String.fromCharCode(...u8));
   const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
   async function encryptJSON(obj, pass) {
-    const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+    const salt = SUB.rnd(new Uint8Array(16)), iv = SUB.rnd(new Uint8Array(12));
     const key = await cryptKey(pass, salt);
-    const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj))));
+    const data = new Uint8Array(await SUB.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj))));
     let bin = ''; for (let i = 0; i < data.length; i += 0x8000) bin += String.fromCharCode(...data.subarray(i, i + 0x8000));
     return { alg: 'AES-GCM/PBKDF2', salt: b64(salt), iv: b64(iv), data: btoa(bin) };
   }
   async function decryptJSON(enc, pass) {
     const key = await cryptKey(pass, unb64(enc.salt));
-    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(enc.iv) }, key, unb64(enc.data));
+    const plain = await SUB.decrypt({ name: 'AES-GCM', iv: unb64(enc.iv) }, key, unb64(enc.data));
     return JSON.parse(new TextDecoder().decode(plain));
   }
   async function exportFick() {
@@ -5457,21 +5764,34 @@
           }, true);
           after.after(q); after = q;
         }
-        // virtualisierte Liste um drei Zeilen verlängern, damit alles scrollbar bleibt
-        try {
-          const ih = plus.offsetHeight || 32;
-          const inner = dd.querySelector('.rc-virtual-list-holder-inner');
-          const holder = dd.querySelector('.rc-virtual-list-holder');
-          if (inner && !inner.dataset.vafMop) { const h = parseFloat(inner.style.height) || inner.scrollHeight || 0; if (h) inner.style.height = (h + 3 * ih) + 'px'; inner.dataset.vafMop = '1'; }
-          if (holder && !holder.dataset.vafMop) { const mh = parseFloat(getComputedStyle(holder).maxHeight) || holder.clientHeight || 0; if (mh) holder.style.maxHeight = (mh + 3 * ih) + 'px'; holder.dataset.vafMop = '1'; }
-        } catch {}
         for (const o of opts) if (!o.classList.contains('vaf-mopopt')) o.addEventListener('click', () => G.set('figstage', 0), true);
       }
+      mopFitList(dd, plus);
       const st = figStage();
       for (const q of dd.querySelectorAll('.vaf-mopopt')) q.classList.toggle('ant-select-item-option-selected', +q.dataset.st === st);
       if (st) plus.classList.remove('ant-select-item-option-selected');
     }
     mopDisplay();
+  }
+  // Klappliste so hoch machen, dass alle Einträge samt Zusatzstufen erreichbar sind.
+  // poppens virtuelle Liste setzt ihre Höhe beim Neuzeichnen zurück → bei JEDEM Durchlauf per Klasse + CSS !important,
+  // Höhe aus der aktuellen Zeilenzahl (höchstens 60 % des Fensters, darüber scrollbar).
+  function mopFitList(dd, plus) {
+    try {
+      if (!document.getElementById('vaf-mopdd-style')) {
+        const st = document.createElement('style'); st.id = 'vaf-mopdd-style';
+        st.textContent = `.vaf-mopdd .rc-virtual-list-holder{max-height:var(--vaf-mopdd-h)!important;height:auto!important;overflow-y:auto!important;overflow-anchor:none}
+.vaf-mopdd .rc-virtual-list-holder-inner{height:auto!important;transform:none!important;position:static!important}
+.vaf-mopdd .rc-virtual-list-holder>div{height:auto!important}
+.vaf-mopdd .rc-virtual-list-scrollbar{display:none!important}`;
+        document.head.appendChild(st);
+      }
+      const rows = dd.querySelectorAll('.ant-select-item-option').length;
+      const ih = (plus && plus.offsetHeight) || 32;
+      const want = Math.min(Math.round((W.innerHeight || 800) * 0.6), rows * ih + 8);
+      dd.classList.add('vaf-mopdd');
+      if (dd.style.getPropertyValue('--vaf-mopdd-h') !== want + 'px') dd.style.setProperty('--vaf-mopdd-h', want + 'px');
+    } catch {}
   }
   function mopDisplay() {
     const st = figStage(); if (!st) return;
@@ -5556,9 +5876,10 @@
     return ty.includes(g[0]) ? { idx: g.map((_, i) => i), show: 'max' } : null;
   }
   function bodyInfo(m, s = S()) {
-    if (!m || !m.body) return null;
+    if (!m || (!m.body && !m.bodyS)) return null;
     const pk = mopPick(m, s);
     if (!pk) return null;
+    if (!m.body) { const b = bodyOne(m.bodyS, s); return b ? { ...b, pair: true } : null; }   // Paar über Suchfilter vermessen: einer von beiden
     if (pk.show === 'max') { const all = pk.idx.map((i) => bodyOne(m.body[i], s)).filter(Boolean); return all.sort((a, b) => b.lo - a.lo)[0] || null; }
     return bodyOne(m.body[pk.show], s);
   }
@@ -5587,54 +5908,118 @@
     return { ...data, users: kept.map((x) => x.u) };
   });
 
-  // ---------- Vermessung über die Profilangaben ----------
-  // Für jede SICHTBARE Trefferkarte ohne gültige Messung wird einmal user/info gelesen (gedrosselt);
-  // Größe/Gewicht landen im Gedächtnis (Members.body), fehlende Angaben merken sich als „UNKNOWN“.
-  const inView = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < (W.innerHeight || 900) && r.width > 0; };
-  const Measure = {
-    q: new Map(), running: false,
-    want(users) {
-      if (!mopOn()) return;
-      for (const u of users || []) {
-        if (!u || !validUid(u) || !u.nickname) continue;
-        const g = Array.isArray(u.gender) ? u.gender : [];
-        if (!mopPick({ g })) continue;
-        this.q.set(String(u.uid), u.nickname);
-      }
-      if (this.q.size) setTimeout(() => this.pump(), 300);
-    },
-    known(m) {
-      if (bodyInfo(m)) return true;
-      return !!(m && m.bodyUnk && now() - m.bodyUnk < S().expert.bodyUnknownDays * DAY);
-    },
-    async pump() {
-      if (this.running) return;
-      this.running = true;
-      try {
-        let idle = 0;
-        while (this.q.size && mopOn() && location.pathname.startsWith('/search') && idle < 600) {
+  // ---------- Vermessung OHNE Profilbesuch: über die Suchfilter Größe/Gewicht ----------
+  // Profilabfragen (user/info) zählen bei poppen als Besuch. Deshalb wird nur noch über die Suche eingegrenzt:
+  //  1) Größe: Bereich 130–220 halbieren, leere Bereiche überspringen, bis zu einer genauen Größe h (Zähl-Abfragen, 1 Treffer je Seite).
+  //  2) Gewicht je Größe: Bereich in Bänder an den BMI-Stufengrenzen teilen, Bänder mit Treffern weiter halbieren,
+  //     bis die Breite höchstens 1 BMI-Punkt ist. Wer in einem Blatt auftaucht, bekommt h und [wlo, whi].
+  //  Taucht jemand in zwei getrennten Gewichtsbändern auf (Angabe fehlt → Filter greift nicht), gilt das Gewicht als unbekannt.
+  //  Ist eine Zelle schon vollständig vermessen (alle Treffer mit gültiger, genauerer Messung), wird nicht weiter geteilt.
+  const Measure = { want() {} };     // früher: Vermessung sichtbarer Trefferkarten über user/info (Profilbesuch!) – entfällt
+  const MEAS_W0 = 30, MEAS_W1 = 300, MEAS_H0 = 130, MEAS_H1 = 220;
+  const wAt = (bmi, h) => Math.ceil(bmi * (h / 100) ** 2);
+  async function searchCount(payload, ctx) {
+    await SearchGuard.ensureState();
+    await SearchGuard.wait(ctx);
+    if (ctx.stop()) return 0;
+    G.set('search_dirty', true);
+    const d = await apiPost('user/search', { ...payload, page: 1, limit: 1 });
+    return (d && d.total) || 0;
+  }
+  async function searchList(payload, ctx) {
+    const out = [];
+    await searchAll(payload, ctx, async (users) => { out.push(...users); });
+    return out;
+  }
+  // base: Suchanfrage (genders, Alter, Ort …). opts: { couple: bool, src, onPerson(m) }
+  async function measureGrid(base, ctx, opts = {}) {
+    const s = S(), cuts = [...mop(s).bmi].sort((x, y) => x - y);
+    const stat = { queries: 0, heights: 0, measured: 0, unknownW: 0, skipped: 0 };
+    const q = (p) => { stat.queries++; return p; };
+    // 1) Größen mit Treffern finden
+    const heights = [];
+    const hRec = async (lo, hi) => {
+      if (ctx.stop()) return;
+      const n = await q(searchCount({ ...base, size_min: lo, size_max: hi, weight_min: 0, weight_max: 300 }, ctx));
+      if (!n) return;
+      if (lo === hi) { heights.push(lo); return; }
+      const mid = (lo + hi) >> 1;
+      await hRec(lo, mid); await hRec(mid + 1, hi);
+    };
+    ctx.phase && ctx.phase('Vermessung: Größen eingrenzen …');
+    await hRec(MEAS_H0, MEAS_H1);
+    stat.heights = heights.length;
+    // 2) je Größe Gewichtsbänder
+    for (let hi = 0; hi < heights.length && !ctx.stop(); hi++) {
+      const h = heights[hi];
+      ctx.outer && ctx.outer(hi, heights.length);
+      ctx.phase && ctx.phase(`Vermessung: ${h} cm`);
+      const bmiW = (h / 100) ** 2;                 // 1 BMI-Punkt in kg bei dieser Größe
+      const bounds = cuts.map((c) => wAt(c, h)).filter((w) => w > MEAS_W0 && w <= MEAS_W1);
+      const seenIn = new Map();                    // uid → [{wlo, whi}] (Blätter)
+      const users = new Map();
+      const leafW = Math.max(1, Math.ceil(bmiW));    // Zielbreite ≈ 1 BMI-Punkt
+      const w25 = bounds.length ? bounds[0] : MEAS_W1 + 1;
+      const leaf = (l, w0, w1) => { for (const u of l) { const k = String(u.uid); if (!seenIn.has(k)) seenIn.set(k, []); seenIn.get(k).push({ wlo: w0, whi: w1 }); } };
+      const wRec = async (w0, w1, list) => {
+        if (ctx.stop() || w0 > w1) return;
+        const l = list || await q(searchList({ ...base, size_min: h, size_max: h, weight_min: w0, weight_max: w1 }, ctx));
+        if (!l.length) return;
+        for (const u of l) users.set(String(u.uid), u);
+        const inner = bounds.find((b) => b > w0 && b <= w1);
+        if (!inner && w1 < w25) { leaf(l, w0, w1); return; }          // unter der ersten Stufe: Genauigkeit egal
+        const narrow = w1 - w0 + 1 <= leafW;
+        // schon bekannt und genauer als dieses Band? → nicht weiter teilen
+        if (!inner && !narrow) {
           const cache = Members.cached();
-          for (const uid of [...this.q.keys()]) if (this.known(cache.get(uid))) this.q.delete(uid);
-          const vis = cardsOn(document).filter((x) => inView(x.card));
-          const visUids = new Set(vis.map((x) => String(x.uid || '')));
-          const visNicks = new Set(vis.map((x) => norm(x.nick || '')));
-          const uid = [...this.q.keys()].find((u) => visUids.has(u) || visNicks.has(norm(this.q.get(u))));
-          if (!uid) { idle++; await sleep(1000); continue; }
-          idle = 0;
-          const nick = this.q.get(uid); this.q.delete(uid);
-          try {
-            const d = await apiGet('user/info/' + encodeURIComponent(nick), { _version: 2 });
-            await ingestUserInfo(d);
-            const m = await Members.get(uid);
-            if (m && !bodyInfo(m)) await Members.update(uid, (x) => { x.bodyUnk = now(); });
-            msgMaybeQueue(await Members.get(uid));
-          } catch (e) { warn('Figur: Profil nicht lesbar', nick, e && e.message); }
-          markSearchFig();
-          await sleep(1500 + Math.random() * 1500);
+          const allKnown = l.every((u) => { const m = cache.get(String(u.uid)); const b0 = m && m.body && m.body.find((x) => x && x.h === h); return b0 && b0.wlo >= w0 && b0.whi <= w1 && b0.whi - b0.wlo + 1 <= leafW && now() - b0.at < s.expert.bodyValidDays * DAY; });
+          if (allKnown) { stat.skipped += l.length; return; }
         }
-      } finally { this.running = false; }
-    },
-  };
+        if (!inner && (narrow || w0 === w1)) { leaf(l, w0, w1); return; }
+        if (!inner) {
+          // viele Treffer in einem breiten Band: alle Blätter direkt abfragen ist günstiger als Halbieren
+          const nLeaves = Math.ceil((w1 - w0 + 1) / leafW);
+          if (nLeaves <= 2 * l.length * Math.log2(nLeaves)) {
+            for (let a = w0; a <= w1 && !ctx.stop(); a += leafW) { const b = Math.min(w1, a + leafW - 1); const ll = await q(searchList({ ...base, size_min: h, size_max: h, weight_min: a, weight_max: b }, ctx)); if (ll.length) leaf(ll, a, b); }
+            return;
+          }
+        }
+        const mid = inner ? inner - 1 : (w0 + w1) >> 1;
+        await wRec(w0, mid); await wRec(mid + 1, w1);
+      };
+      await wRec(MEAS_W0, MEAS_W1);
+      for (const [uid, u] of users) {
+        if (ctx.stop()) break;
+        if (opts.keep && !opts.keep(u)) continue;
+        const leaves = seenIn.get(uid) || [];
+        const m0 = await seen(u, opts.src || 'Vermessung', { images: false });
+        if (!m0) continue;
+        if (leaves.length === 1) {
+          const { wlo, whi } = leaves[0];
+          const rec = { h, wlo, whi, bmi: Math.round(wlo / bmiW * 10) / 10, at: now(), src: 'Suche' };
+          await Members.update(uid, (x) => {
+            const g = x.g || [];
+            if (opts.couple || g.length >= 2) { x.bodyS = rec; }                   // Paar: wem die Werte gehören, ist unklar
+            else {
+              const old = Array.isArray(x.body) ? x.body[0] : null;
+              const oldOk = old && old.src === 'Profil' && old.h === h && old.wlo >= wlo && old.whi <= whi && now() - old.at < s.expert.bodyValidDays * DAY;
+              if (!oldOk) x.body = [rec];
+            }
+            if (opts.figc && !(g.length >= 2)) x.figc = [opts.figc];
+            delete x.bodyUnk;
+          });
+          stat.measured++;
+        } else if (!leaves.length || leaves.length > 1) {
+          stat.unknownW++;
+          await Members.update(uid, (x) => { if (!x.body && !x.bodyS) x.bodyUnk = now(); if (opts.figc && !((x.g || []).length >= 2)) x.figc = [opts.figc]; });
+        }
+        if (opts.onPerson) { try { await opts.onPerson(await Members.get(uid)); } catch {} }
+      }
+      try { G.set('xxl_rev', now()); } catch {}
+    }
+    ctx.outer && ctx.outer(heights.length, heights.length);
+    return stat;
+  }
 
   // ---------- Badges auf der Suchseite ----------
   async function markSearchFig() {
@@ -5943,6 +6328,13 @@
     let d;
     try { d = JSON.parse(text); } catch { toast('Datei nicht lesbar.'); return; }
     if (d.format !== 'opa-schutz-backup') { toast('Das ist keine Sicherung des Opa-Schutzes.'); return; }
+    // Kontobindung: nur Sicherungen DIESES Kontos wiederherstellen
+    const bu = (d.gm && ((d.gm.vaf2_owner && d.gm.vaf2_owner.uid) || (d.gm.vaf2_me && d.gm.vaf2_me.uid))) || '';
+    const curMe = Me.get() || await loadMe();
+    if (bu && curMe && String(bu) !== String(curMe.uid)) {
+      await ask('Andere Sicherung', `<p>Diese Sicherung gehört zu <b>${esc(d.account || '?')}</b>, angemeldet ist <b>${esc(curMe.nick)}</b>.</p><p>„Wiederherstellen“ geht nur mit einer eigenen Sicherung. Für das Gedächtnis eines anderen Kontos gibt es „Gedächtnis importieren“ (fremde Datensicherung).</p>`, [{ label: 'OK', value: true, primary: true }]);
+      return;
+    }
     const ok = await ask('Alle Daten wiederherstellen', `<p>Alle Daten werden durch die Sicherung vom ${esc(deDateTime(d.at))} (${esc(d.account || '?')}) ersetzt.</p>`, [
       { label: 'Wiederherstellen', value: true, primary: true }, { label: 'Abbrechen', value: false, focus: true, cancel: true }]);
     if (!ok) return;
@@ -5972,7 +6364,7 @@
 
   // Nur das Wissen über andere Mitglieder (für ein zweites Konto) – samt Fickliste (verschlüsselt) und Textvorlagen.
   //  „Anschreibbar“ (m.msg, je eigenem Profil) wird mit exportiert, aber nur beim Import ins SELBE Profil übernommen.
-  const MEM_FIELDS = ['uid', 'nick', 'nl', 'nicks', 'g', 'ages', 'ageAt', 'birth', 'by', 'zod', 'pay', 'city', 'first', 'last', 'lastLogin', 'signup', 'dist', 'body', 'bodyUnk', 'fig', 'del', 'active', 'avatar', 'seen'];
+  const MEM_FIELDS = ['uid', 'nick', 'nl', 'nicks', 'g', 'ages', 'ageAt', 'birth', 'by', 'zod', 'pay', 'city', 'first', 'last', 'lastLogin', 'signup', 'dist', 'body', 'bodyS', 'bodyUnk', 'fig', 'figc', 'tr', 'lf', 'interested', 'fake', 'rel', 'del', 'active', 'avatar', 'seen'];
   async function exportMemory(withImages) {
     const me = Me.get() || await loadMe();
     const tt = toast('Exportiere Gedächtnis …', 0);
@@ -5982,7 +6374,7 @@
     if (withImages) out.images = await DB.all('images');
     // Fickliste (verschlüsselt mit dem eigenen Nick) und Textvorlagen
     try { if (me && me.nick) out.fick = await encryptJSON(await Fick.all(), me.nick); } catch (e) { warn('Export Fickliste', e); }
-    try { out.templates = getTpls(); } catch {}
+    try { const te = await tplExportForFile(); out.templates = te.list; out.templatesDeleted = te.deleted; out.templatesFmt = 'joyclub'; } catch {}
     download(`opa-schutz-gedaechtnis-${stamp()}.json`, JSON.stringify(out));
     tt.innerHTML = `${fmtN(list.length)} Mitglieder exportiert${withImages ? ` (${fmtN(out.images.length)} Bilder)` : ''}${out.fick ? ', Fickliste' : ''}${out.templates ? ', Textvorlagen' : ''}.`;
     setTimeout(() => tt.remove(), 6000);
@@ -6016,6 +6408,21 @@
     if (d.format !== 'opa-schutz-gedaechtnis') { toast('Das ist kein Gedächtnis-Export.'); return; }
     const me = Me.get() || await loadMe();
     const sameProfile = !!(me && d.account && String(d.account.uid) === String(me.uid));
+    // Textvorlagen: Fall A (eigenes Konto, auch über „Ich“-Profile erkannt) ohne Rückfrage; fremd: Schalter (aus = Fall C)
+    let ownAcc = sameProfile;
+    if (!ownAcc && d.account) { try { const ich = await ichList(); ownAcc = ich.some((i) => (i.pf === 'poppen' || !i.pf) && String(i.uid) === String(d.account.uid)); } catch {} }
+    const fileTpls = Array.isArray(d.templates) ? d.templates.map((t) => (d.templatesFmt === 'joyclub' ? t : { ...t, text: toJoy(t.text) })) : null;
+    let tplMode = ownAcc ? 'A' : 'C';
+    if (!ownAcc && fileTpls && fileTpls.length) {
+      let mig = false;
+      const pr = ask('Fremde Datensicherung importieren', `<p>Gedächtnis von <b>${esc((d.account && d.account.nick) || '?')}</b> importieren.</p>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" id="vaf-tpl-mig"> Auch Textvorlagen migrieren (${fmtN(fileTpls.length)})</label>
+        <p class="vaf-mini">Nur für Konten, die ihre Textvorlagen bewusst teilen. Gelöschte Vorlagen der Datei werden hier nicht gelöscht, „Termine“ wird nie übernommen.</p>`,
+        [{ label: 'Importieren', value: true, primary: true, focus: true }, { label: 'Abbrechen', value: false, cancel: true }]);
+      const cb = document.getElementById('vaf-tpl-mig'); if (cb) cb.addEventListener('change', () => { mig = cb.checked; });
+      if (!(await pr)) return;
+      tplMode = mig ? 'B' : 'C';
+    }
     const members = (d.members || []).filter((x) => x && x.uid);
     const total = members.length;
     const tt = toast('Lese vorhandenes Gedächtnis …', 0);
@@ -6066,7 +6473,6 @@
       if (persons && sameProfile) {
         // eigene Sicherung: neuere Einträge gewinnen
         try { await BkRpc.call('putMany', { s: 'fick', list: persons.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || 0 })) }, 60000); FickStore.invalidate(); fickNote = `<br>Fickliste: ${fmtN(persons.length)} Einträge abgeglichen.`; } catch (e) { fickNote = '<br>Fickliste: Briefkasten nicht erreichbar.'; }
-        if (Array.isArray(d.templates)) { const byId = new Map(getTpls().map((t) => [t.id, t])); for (const t of d.templates) { const l = byId.get(t.id); if (!l || (t.updatedAt || 0) > (l.updatedAt || 0)) byId.set(t.id, t); } setTpls([...byId.values()]); }
       } else if (persons) {
         tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.`;
         const n = await fickImportForeign(persons, d.account, d.templates).catch((e) => { warn('Fickliste-Import', e); return 0; });
@@ -6075,6 +6481,10 @@
     }
     tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.` + fickNote;
     setTimeout(() => tt.remove(), 10000);
+    if (fileTpls && tplMode !== 'C') {
+      const rep = await tplImportFile(fileTpls, d.templatesDeleted || [], tplMode).catch((e) => { warn('Textvorlagen-Import', e); return [['Textvorlagen', 'Fehler: ' + e.message]]; });
+      tplReport(rep, `Textvorlagen aus der Datei von ${(d.account && d.account.nick) || '?'}`);
+    }
   }
   // ---------- Umstellung von Version 1.x ----------
   // Die alten Listen kannten keine Benutzer-IDs. Sie werden ins neue Gedächtnis übernommen, sobald
@@ -6692,7 +7102,7 @@
 
   // ---------- Textvorlagen: Felder für den Abgleich + Drei-Wege-Merge ----------
   function tplEnsureMeta(t) {
-    if (!t.id) t.id = uuid();
+    if (!t.id) t.id = 'x:' + uuid();
     if (!t.updatedAt) t.updatedAt = now();
     if (!t.updatedBy) t.updatedBy = { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' };
     return t;
@@ -6809,7 +7219,7 @@
   function bkServer(parentTab) {
     let dbp = null;
     const sdb = () => dbp || (dbp = new Promise((resolve, reject) => {
-      const rq = indexedDB.open(SHARED_DB, 1);
+      const rq = IDB.open(SHARED_DB, 1);
       rq.onupgradeneeded = () => {
         const d = rq.result;
         for (const [n, def] of Object.entries(SHARED_STORES)) {
@@ -7049,12 +7459,12 @@
     if (!rows.length) { el.innerHTML = head + `<div class="vaf-blk-empty">Zurzeit blockiert dich niemand – oder die Liste wurde noch nicht eingelesen.</div>`; return; }
     const items = rows.map((r) => {
       const nick = r.nick;
-      const name = nick || `ID ${esc(r.uid)}`;
+      const name = nick || idresLabel(r.uid);
       const avatar = r.m && r.m.avatar && !isPlaceholderAvatar(r.m.avatar) ? r.m.avatar : '';
       const pic = avatar
         ? `<img class="vaf-blk-ava" src="${esc(avatar)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'vaf-blk-ava vaf-blk-ph',textContent:'${esc(blkInitial(name))}'}))">`
         : `<div class="vaf-blk-ava vaf-blk-ph">${esc(blkInitial(name))}</div>`;
-      const meta = r.m ? blkMeta(r.m) : `ID ${esc(r.uid)}`;
+      const meta = r.m ? blkMeta(r.m) : (idresGone(r.uid) ? 'vermutlich von poppen gesperrt' : `ID ${r.uid}`);
       const title = nick
         ? `<a class="vaf-blk-name" href="${esc(pathOfName(nick))}">${esc(name)}</a>`
         : `<span class="vaf-blk-name">${esc(name)}</span>`;
@@ -8019,7 +8429,8 @@
   async function grProbe(name, opts = {}) {
     const out = { trait: null, verified: false, photos: [], hasphoto: false, avatar: '', error: '', nick: String(name), uid: '', rel: null, relCats: [], interested: [], lookingForCodes: [] };
     let d;
-    try { d = await apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 }); } catch (e) { out.error = e.message; return out; }
+    // user/info zählt als Profilbesuch → nur unsichtbar abfragen
+    try { d = await VisAuto.use(() => apiGet('user/info/' + encodeURIComponent(String(name).toLowerCase()), { _version: 2 })); } catch (e) { out.error = e.message; return out; }
     if (!d || !d.userInfo) { out.error = 'keine Angaben'; return out; }
     const ui = d.userInfo; out.trait = d.user_trait || {};
     out.uid = String(ui.uid || (d.user_trait && d.user_trait.uid) || '');
@@ -8711,6 +9122,16 @@
   //  Selbsttest an bekannten Profilen bestanden ist (einmal automatisch, sonst per Knopf in den Experten-Einstellungen).
   // =====================================================================================
   const IDRES_GAP = 1800;                 // ms zwischen zwei Abfragen
+  // nächster Versuch für ungelöste IDs: wachsende Abstände 1 → 7 → 30 Tage
+  const idresNext = (c) => (c.at || 0) + [1, 7, 30][Math.min(2, Math.max(0, (c.n || 1) - 1))] * DAY;
+  const idresGone = (uid) => { const c = (G.get('idres_cache', {}) || {})[String(uid)]; return !!(c && !c.nick && c.st === 'leer'); };
+  const idresLabel = (uid) => (idresGone(uid) ? `Profil nicht mehr erreichbar (ID ${uid})` : `ID ${uid}`);
+  // für den Rekorder: alle ungelösten IDs mit Grund
+  function idresFails() {
+    const c = G.get('idres_cache', {}) || {};
+    const src = G.get('idres_src', {}) || {};
+    return Object.entries(c).filter(([, r]) => r && !r.nick).map(([uid, r]) => ({ uid, zustand: r.st === 'leer' ? 'leere Antwort (nicht erreichbar)' : r.err ? 'Fehler' : 'ohne Nick', err: r.err || null, code: r.code != null ? r.code : null, user_status: typeof r.st === 'number' ? r.st : null, versuche: r.n || 1, zuletzt: r.at ? new Date(r.at).toISOString() : null, naechster: new Date(idresNext(r)).toISOString(), quelle: src[uid] || null }));
+  }
   const Resolver = (() => {
     let last = 0, chain = Promise.resolve();
     const cache = () => G.get('idres_cache', {}) || {};
@@ -8732,20 +9153,21 @@
       uid = String(uid || '');
       if (!/^\d+$/.test(uid)) return Promise.resolve(null);
       const c = cache()[uid];
-      if (c && (c.nick || now() - c.at < DAY)) return Promise.resolve(c);
+      if (c && (c.nick || now() < idresNext(c))) return Promise.resolve(c);
       const p = chain.then(async () => {
         if (!(await ensureTested())) return null;
-        const c2 = cache()[uid]; if (c2 && (c2.nick || now() - c2.at < DAY)) return c2;
-        let res = { nick: '', st: null, at: now() };
+        const c2 = cache()[uid]; if (c2 && (c2.nick || now() < idresNext(c2))) return c2;
+        let res = { nick: '', st: null, at: now(), n: ((c2 && c2.n) || 0) + 1 };
         try {
           const d = await raw(uid);
           const gd = d && d.group_data;
+          if (!gd) { res.st = 'leer'; res.code = d ? 0 : null; }   // poppen liefert gar nichts (Profil nicht mehr erreichbar, vermutlich gesperrt)
           if (gd && String(gd.uid) === uid) {
             res = { nick: gd.nickname || '', st: gd.user_status != null ? gd.user_status : null, at: now() };
             if (gd.user_status !== 1) log(`ID-Auflösung: ${uid} (${gd.nickname || '?'}) user_status=${gd.user_status}`);
             if (gd.nickname && !DELETED_NICK.test(gd.nickname)) await seen({ uid, nickname: gd.nickname, gender: gd.gender, age: gd.age, avatar: gd.avatar, payclass: gd.payclass }, 'ID-Auflösung', { images: false }).catch(() => {});
           }
-        } catch (e) { res.err = e.message || String(e); }
+        } catch (e) { res.err = e.message || String(e); res.code = e.code; }
         G.set('idres_cache', { ...cache(), [uid]: res });
         return res;
       });
@@ -8842,12 +9264,16 @@
     let n = 0;
     try {
       const ids = new Set();
-      for (const uid of G.get('evil_ids', []) || []) if (!(evilNames()[uid])) ids.add(String(uid));                    // Blockierende Popsters ohne Namen
-      for (const e of S().expert.evil || []) if (/^\d+$/.test(String(e).trim())) ids.add(String(e).trim());           // Besonders böse Popsters (IDs)
-      for (const q of await Queue.list()) if (/^\d+$/.test(String(q.uid)) && !q.nick) ids.add(String(q.uid));          // Warteliste ohne Nick
-      await Members.each((m) => { if (ids.size < max * 2 && m && /^\d+$/.test(String(m.uid)) && !m.nick) ids.add(String(m.uid)); });
+      const srcs = { ...(G.get('idres_src', {}) || {}) };
+      const addId = (u, src) => { u = String(u); ids.add(u); if (!srcs[u]) srcs[u] = src; };
+      for (const uid of G.get('evil_ids', []) || []) if (!(evilNames()[uid])) addId(uid, 'Blockierende Popsters (ignorieren mich)');
+      for (const e of S().expert.evil || []) if (/^\d+$/.test(String(e).trim())) addId(String(e).trim(), 'Besonders böse Popsters');
+      for (const q of await Queue.list()) if (/^\d+$/.test(String(q.uid)) && !q.nick) addId(q.uid, 'Warteliste' + (q.src ? ' (' + q.src + ')' : ''));
+      await Members.each((m) => { if (ids.size < max * 2 && m && /^\d+$/.test(String(m.uid)) && !m.nick) addId(m.uid, 'Gedächtnis'); });
+      for (const k of Object.keys(srcs)) if (!ids.has(k)) delete srcs[k];
+      G.set('idres_src', srcs);
       const cache = Resolver.cache();
-      const todo = [...ids].filter((u) => !(cache[u] && (cache[u].nick || now() - cache[u].at < DAY))).slice(0, max);
+      const todo = [...ids].filter((u) => !(cache[u] && (cache[u].nick || now() < idresNext(cache[u])))).slice(0, max);
       if (!todo.length) return 0;
       if (!(await Resolver.ensureTested())) return 0;
       for (const uid of todo) {
@@ -8877,9 +9303,9 @@
   const xxlName = () => mopLabel(3, true) || 'XXL';
 
   // ---------- Hintergrund-Suche ----------
-  // Umgekehrt zum Ignorier-Scan: je ausgewähltem Profiltyp ab 18 AUFSTEIGEND jedes Alter bis unter die Grenze,
-  // ab der dieser Typ ignoriert würde, im eingestellten Radius (75 km = Suche mit 100 km, Rest verworfen).
-  // Gesucht wird „Plus-size“; jeder Treffer wird gedrosselt über seine Profilangaben vermessen (BMI im Gedächtnis).
+  // Je ausgewähltem Profiltyp von 18 bis unter die Grenze, ab der dieser Typ ignoriert würde, im eingestellten
+  // Radius (75 km = Suche mit 100 km, Rest verworfen). Gesucht wird „Plus-size“; vermessen wird OHNE Profilbesuch
+  // über die Suchfilter (Raster aus genauer Größe × Gewichtsbändern an den BMI-Stufen, siehe measureGrid).
   async function scanXxl(ctx) {
     const res = newRes();
     if (!mopOn()) { ctx.notes && ctx.notes.push('XXL-Suche übersprungen: „Benutzer ist Moppel-Liebhaber“ ist aus.'); return res; }
@@ -8900,55 +9326,58 @@
       }
       if (lim > 18) plan.push({ t, to: lim - 1 });
     }
-    const steps = plan.reduce((a, p) => a + (p.to - 18 + 1), 0);
-    let done = 0, found = 0, measured = 0;
+    let found = 0, measured = 0, queries = 0;
     const stageN = [0, 0, 0, 0];
     try {
-      for (const p of plan) {
-        for (let age = 18; age <= p.to && !ctx.stop(); age++) {
-          ctx.outer && ctx.outer(done++, steps);
-          ctx.phase && ctx.phase(`${TYPE_NAMES[p.t] || p.t} · ${age} Jahre`);
-          const hits = [];
-          await searchAll({ ...base, genders: [p.t], age_min: age, age_max: age }, ctx, async (users) => {
-            for (const u of users) {
-              if (r === 75 && typeof u.distance === 'number' && u.distance > 75) continue;
-              res.total++;
-              const m = await seen(u, 'XXL-Suche', { images: false });
-              if (m) hits.push(m);
-            }
-          }, `${TYPE_NAMES[p.t] || p.t}, ${age} Jahre`);
-          for (const m0 of hits) {
-            if (ctx.stop()) break;
-            let m = await Members.get(m0.uid);
-            if (!m || !mopTypeOk(m)) continue;
+      for (let pi = 0; pi < plan.length && !ctx.stop(); pi++) {
+        const p = plan[pi];
+        ctx.phase && ctx.phase(`${TYPE_NAMES[p.t] || p.t} · 18–${p.to} Jahre`);
+        const st = await measureGrid({ ...base, genders: [p.t], age_min: 18, age_max: p.to }, ctx, {
+          src: 'XXL-Suche', figc: 6, couple: p.t === 'p',
+          keep: (u) => !(r === 75 && typeof u.distance === 'number' && u.distance > 75),
+          onPerson: async (m) => {
+            res.total++;
+            if (!m || !mopTypeOk(m)) return;
             found++;
-            if (!bodyInfo(m) && !(m.bodyUnk && now() - m.bodyUnk < s.expert.bodyUnknownDays * DAY)) {
-              ctx.step && ctx.step(0, 0, `vermesse ${m.nick} …`);
-              try {
-                const d = await apiGet('user/info/' + encodeURIComponent(m.nick), { _version: 2 });
-                await ingestUserInfo(d);
-                m = await Members.get(m.uid);
-                if (m && !bodyInfo(m)) await Members.update(m.uid, (x) => { x.bodyUnk = now(); });
-                measured++;
-              } catch (e) { ctx.error && ctx.error(`Vermessung ${m.nick}`, e); }
-              await sleep(1500 + Math.random() * 1500);
-            }
-            m = await Members.get(m.uid);
             const bi = bodyInfo(m);
-            if (bi) { const st = mopStage(bi.lo); if (st >= 0) stageN[st]++; }
+            if (bi) { const sg = mopStage(bi.lo); if (sg >= 0) stageN[sg]++; }
             msgMaybeQueue(m);
-          }
-        }
+          },
+        });
+        measured += st.measured; queries += st.queries;
       }
     } finally { await SearchGuard.restore(); }
-    res.xxlFound = found; res.xxlMeasured = measured; res.xxl1 = stageN[1]; res.xxl2 = stageN[2]; res.xxl3 = stageN[3];
-    ctx.outer && ctx.outer(steps, steps);
+    res.xxlFound = found; res.xxlMeasured = measured; res.xxl1 = stageN[1]; res.xxl2 = stageN[2]; res.xxl3 = stageN[3]; res.xxlQueries = queries;
+    ctx.outer && ctx.outer(1, 1);
     return res;
   }
 
-  // ---------- Menüpunkt unter „Entdecken“ (nach „Popsters“) ----------
+  // ---------- Adresse ----------
+  // Die Seite hängt unter /search/member#xxl (dort gibt es poppens Seitenleiste „Entdecken“ samt Suchfilter-Platz).
+  // poppens eigene Suche wird auf dieser Seite unterdrückt (Ersatz-Antwort ohne Netzverkehr), damit weder eine
+  // echte Suche läuft noch poppens gespeicherte Suchfilter verändert werden.
   const XXL_HASH = 'xxl';
   const XXL_PATH = '/search/member';
+  function xxlPageOn() { try { return mopOn() && location.pathname.replace(/\/+$/, '') === XXL_PATH && location.hash === '#' + XXL_HASH; } catch { return false; } }
+  const xxlOn = xxlPageOn;
+  let xxlBlocked = 0;
+  blockPageApi((method, path) => {
+    if (method !== 'POST' || !/^user\/search(\/riseup)?$/.test(path) || !xxlPageOn()) return null;
+    xxlBlocked++;
+    return { code: 0, data: { total: 0, next_page: 0, users: [] } };
+  });
+
+  // ---------- Menüpunkt unter „Entdecken“ (nach „Popsters“) + Hervorhebung ----------
+  let xxlActCls = null;      // Klassen, die poppen dem aktiven Menüpunkt gibt (gehasht, deshalb abgeguckt)
+  function xxlNavActive(nav) {
+    const links = [...nav.querySelectorAll('a')].filter((x) => x.querySelector('[data-type="label"]') && !x.classList.contains('vaf-xxl-link'));
+    const cur = links.find((x) => (x.getAttribute('href') || '') === location.pathname);
+    if (!cur) return xxlActCls;
+    const others = links.filter((x) => x !== cur);
+    const cls = [...cur.classList].filter((c) => others.length && others.filter((o) => o.classList.contains(c)).length <= others.length / 3);
+    if (cls.length) xxlActCls = cls;
+    return xxlActCls;
+  }
   function xxlMenuLink() {
     const on = mopOn();
     for (const old of document.querySelectorAll('a.vaf-xxl-link')) if (!on) old.remove();
@@ -8958,17 +9387,32 @@
       if (!lab || norm(lab.textContent) !== 'popsters' || el.classList.contains('vaf-xxl-link')) continue;
       let a = el.nextElementSibling && el.nextElementSibling.classList && el.nextElementSibling.classList.contains('vaf-xxl-link') ? el.nextElementSibling : null;
       const seek = mopSeek();
+      const nav = el.parentElement;
       if (!a) {
         a = el.cloneNode(true);
         a.removeAttribute('id'); a.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
         a.classList.add('vaf-xxl-link');
         for (const n of [a, ...a.querySelectorAll('*')]) { if (n.removeAttribute) { n.removeAttribute('aria-current'); n.removeAttribute('data-active'); } if (n.classList) for (const c of [...n.classList]) if (/active|selected|current/i.test(c)) n.classList.remove(c); }
-        const ref = [...el.parentElement.querySelectorAll('a')].find((x) => x !== el && x.querySelector('[data-type="label"]') && !x.classList.contains('vaf-xxl-link') && (x.getAttribute('href') || '') !== location.pathname);
+        const ref = [...nav.querySelectorAll('a')].find((x) => x !== el && x.querySelector('[data-type="label"]') && !x.classList.contains('vaf-xxl-link') && (x.getAttribute('href') || '') !== location.pathname);
         if (ref) { a.className = ref.className + ' vaf-xxl-link'; for (const sel of ['[data-type="label"]', '[data-type="icon"]']) { const r0 = ref.querySelector(sel), x = a.querySelector(sel); if (r0 && x) x.className = r0.className; } }
+        a.dataset.vafBase = a.className;
         a.setAttribute('href', XXL_PATH + '#' + XXL_HASH);
         const badge = a.querySelector('[data-type="badge"]'); if (badge) badge.remove();
-        a.addEventListener('click', (e) => { e.preventDefault(); if (location.pathname.startsWith(XXL_PATH)) { location.hash = XXL_HASH; xxlRoute(); } else location.href = XXL_PATH + '#' + XXL_HASH; });
+        a.addEventListener('click', (e) => { e.preventDefault(); if (location.pathname.replace(/\/+$/, '') === XXL_PATH) { location.hash = XXL_HASH; xxlTick(); } else location.href = XXL_PATH + '#' + XXL_HASH; });
         el.after(a);
+      }
+      // Popsters ↔ XXL: Hervorhebung umsetzen (poppen markiert sonst Popsters, gleiche Adresse)
+      const act = xxlNavActive(nav) || [];
+      if (xxlPageOn()) {
+        for (const c of act) { el.classList.remove(c); a.classList.add(c); }
+        el.removeAttribute('aria-current'); a.setAttribute('aria-current', 'page');
+        if (!el.dataset.vafXxlNav) {
+          el.dataset.vafXxlNav = '1';
+          el.addEventListener('click', (e) => { if (xxlPageOn() || xxlBlocked) { e.preventDefault(); e.stopPropagation(); location.href = XXL_PATH; } }, true);
+        }
+      } else {
+        for (const c of act) a.classList.remove(c);
+        a.removeAttribute('aria-current');
       }
       const lab2 = a.querySelector('[data-type="label"]'); if (lab2 && lab2.textContent !== xxlName()) lab2.textContent = xxlName();
       const ic = a.querySelector('[data-type="icon"]'); if (ic && ic.dataset.g !== seek) { ic.innerHTML = xxlIconSvg(seek); ic.dataset.g = seek; }
@@ -8976,12 +9420,12 @@
   }
 
   // ---------- Seite (aus dem Gedächtnis, sieht aus wie die Mitgliedersuche) ----------
-  const xxlOn = () => mopOn() && location.pathname.startsWith(XXL_PATH) && location.hash === '#' + XXL_HASH;
   const XXL_SORTS = [['dist', 'Entfernung'], ['bmi', 'BMI'], ['age', 'Alter'], ['login', 'Nach letzter Login'], ['signup', 'Nach Anmeldedatum']];
   const XXL_ZODIAC = [['1', 'Steinbock'], ['2', 'Wassermann'], ['3', 'Fische'], ['4', 'Widder'], ['5', 'Stier'], ['6', 'Zwillinge'], ['7', 'Krebs'], ['8', 'Löwe'], ['9', 'Jungfrau'], ['10', 'Waage'], ['11', 'Skorpion'], ['12', 'Schütze']];
   const XXL_SEX = [['2', 'Hetero'], ['1', 'Gay'], ['3', 'Bi'], ['4', 'bi-interessiert']];
+  const XXL_REL = [['', 'Spielt keine Rolle'], ['single', 'Single'], ['taken', 'In einer Beziehung']];
   const xxlDefaults = () => ({ g: ['m', 'w', 'p', 'ts', 'tv'].filter((t) => (t === 'p' ? mop().types.some((x) => x === 'pw' || x === 'pm') : mop().types.includes(t))), age: [18, 99], radius: mop().radius, pics: false, online: false, verified: false,
-    stage: 0, unclear: false, msgok: false, lf: [], zod: '', smoker: '', sex: '', size: [130, 220], weight: [0, 300], sort: 'bmi' });
+    stage: 0, unclear: false, msgok: false, lf: [], rel: '', zod: '', smoker: '', sex: '', size: [130, 220], weight: [0, 300], sort: 'bmi' });
   const xxlF = () => ({ ...xxlDefaults(), ...(G.get('xxl_filter', {}) || {}) });
   let xxlCache = null;          // { at, list: [members] }
   async function xxlLoad(force = false) {
@@ -9002,7 +9446,6 @@
   }
   const xxlAge = (m) => { const a = m.birth && m.birth.length ? m.birth.map((b) => ageToday(b)) : (m.ages || []); return a.filter((x) => x > 0); };
   function xxlFilter(list, f) {
-    const cut = mop().bmi;
     const out = [];
     for (const m of list) {
       const t = typeCode(m.g); if (!f.g.includes(t)) continue;
@@ -9017,10 +9460,11 @@
         const st = mopStage(bi.lo);
         if (st < f.stage || (st === 0 && !mopPlusDeclared(m))) continue;
         if (bi.h < f.size[0] || (f.size[1] < 220 && bi.h > f.size[1])) continue;
-        if (bi.wlo < f.weight[0] || (f.weight[1] < 300 && bi.wlo > f.weight[1])) continue;
+        if (bi.whi < f.weight[0] || (f.weight[1] < 300 && bi.wlo > f.weight[1])) continue;
       }
       if (f.msgok) { const r = msgOf(m); if (r && !r.ok) continue; if (!r) MsgQ.want(m.uid, m.nick); }
       if (f.lf.length && !(m.lf || []).some((c) => f.lf.includes(String(c)))) continue;
+      if (f.rel && m.rel && Array.isArray(m.rel.cats)) { const single = !m.rel.cats.length; if ((f.rel === 'single') !== single) continue; }
       const tr = m.tr || {};
       if (f.zod && !(tr.zodiac || []).map(String).includes(f.zod)) continue;
       if (f.smoker && !(tr.smoker || []).map(String).includes(f.smoker)) continue;
@@ -9029,56 +9473,77 @@
     }
     const key = { dist: (x) => (x.m.dist ? x.m.dist.km : 1e9), bmi: (x) => (x.bi ? -x.bi.lo : 1e9), age: (x) => (x.ages[0] || 999), login: (x) => -(x.m.lastLogin || 0), signup: (x) => -(x.m.signup || 0) }[f.sort] || ((x) => 0);
     out.sort((a, b) => key(a) - key(b) || (b.bi ? b.bi.wlo : 0) - (a.bi ? a.bi.wlo : 0));
-    void cut;
     return out;
+  }
+  // poppens Suchfilter-Bereich in der linken Leiste (wird auf der XXL-Seite durch unsere Filter ersetzt)
+  function xxlSiderSlot() {
+    const aside = document.querySelector('aside[data-type="page-sider"]') || document.querySelector('aside');
+    if (!aside) return null;
+    const form = [...aside.querySelectorAll('form')].find((f) => /Suchfilter/.test((f.querySelector('h2') || {}).textContent || ''));
+    if (!form) return null;
+    const box = form.parentElement;
+    return box && box.parentElement ? { box, host: box.parentElement } : null;
   }
   function xxlRoute() {
     const main = document.querySelector('main');
     let view = document.getElementById('vaf-xxl-view');
-    if (!xxlOn() || !main) {
-      if (view) { view.remove(); if (main) for (const c of main.children) if (c.dataset.vafXxlHidden) { c.style.display = ''; delete c.dataset.vafXxlHidden; } }
+    let fbox = document.getElementById('vaf-xxl-filters');
+    const restore = () => {
+      if (view) view.remove();
+      if (fbox) fbox.remove();
+      for (const c of document.querySelectorAll('[data-vaf-xxl-hidden]')) { c.style.display = c.dataset.vafXxlHidden === '-' ? '' : c.dataset.vafXxlHidden; delete c.dataset.vafXxlHidden; }
+      pkCloseDd();
+    };
+    if (!xxlPageOn() || !main) {
+      if (view || fbox) { restore(); if (xxlBlocked) { xxlBlocked = 0; location.reload(); } }   // poppens unterdrückte Suche nachholen
       return;
     }
-    if (view && view.isConnected) return;
+    const hide = (c) => { if (c.dataset.vafXxlHidden === undefined) { c.dataset.vafXxlHidden = c.style.display || '-'; c.style.display = 'none'; } };
+    for (const c of main.children) if (c.id !== 'vaf-xxl-view') hide(c);
+    const slot = xxlSiderSlot();
+    if (slot) hide(slot.box);
+    if (view && view.isConnected && (!slot || (fbox && fbox.isConnected && fbox.parentElement === slot.host))) return;
+    restore();
+    for (const c of main.children) hide(c);
+    if (slot) hide(slot.box);
     xxlStyle();
-    for (const c of main.children) if (c.id !== 'vaf-xxl-view' && c.style.display !== 'none') { c.dataset.vafXxlHidden = '1'; c.style.display = 'none'; }
-    view = document.createElement('div'); view.id = 'vaf-xxl-view'; view.className = 'vaf-xxl';
+    view = document.createElement('div'); view.id = 'vaf-xxl-view'; view.className = 'vaf-xxl vaf-pk';
     main.appendChild(view);
-    xxlRender(view).catch((e) => warn('XXL-Seite', e));
+    fbox = document.createElement('div'); fbox.id = 'vaf-xxl-filters'; fbox.className = 'vaf-pk vaf-xxl-f';
+    if (slot) slot.host.appendChild(fbox); else { view.classList.add('nosider'); view.appendChild(fbox); }
+    xxlRender(view, fbox).catch((e) => warn('XXL-Seite', e));
   }
   function xxlStyle() {
+    pkStyle();
     if (document.getElementById('vaf-xxl-style')) return;
     const st = document.createElement('style'); st.id = 'vaf-xxl-style';
-    st.textContent = SETTINGS_CSS.replace(/#vaf-set/g, '.vaf-xxl') + `
-      .vaf-xxl{display:flex;gap:24px;align-items:flex-start;color:#e8e8e8;font-size:14px;padding:16px 0 40px}
-      .vaf-xxl .xf{flex:0 0 300px;background:#1f1f1f;border-radius:16px;padding:16px;position:sticky;top:80px;max-height:calc(100vh - 100px);overflow:auto}
-      .vaf-xxl .xf h3{margin:0 0 10px;font-size:18px;color:#fff}
-      .vaf-xxl .xf .fl{color:#a6a6a6;font-size:12.5px;margin:12px 0 5px;font-weight:600}
-      .vaf-xxl .xf .chips{display:flex;flex-wrap:wrap;gap:6px}
-      .vaf-xxl .xf .chip{border:1.5px solid #3a3a3a;background:#2a2a2a;color:#e8e8e8;border-radius:999px;padding:3px 11px;font-size:13px;cursor:pointer}
-      .vaf-xxl .xf .chip.on{border-color:#ffc21a;color:#ffc21a;background:rgba(255,194,26,.12)}
-      .vaf-xxl .xf .ln{display:flex;align-items:center;gap:8px;margin:7px 0}
-      .vaf-xxl .xf select{width:100%}
-      .vaf-xxl .xf .rng{display:flex;gap:6px;align-items:center}.vaf-xxl .xf .rng input{width:70px}
-      .vaf-xxl .xr{flex:1;min-width:0}
-      .vaf-xxl .xr .sorts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;align-items:center}
-      .vaf-xxl .xr .sorts .chip{border:1px solid #3a3a3a;background:#1f1f1f;color:#e8e8e8;border-radius:8px;padding:5px 12px;font-size:13px;cursor:pointer}
-      .vaf-xxl .xr .sorts .chip.on{background:#ffc21a;color:#141414;border-color:#ffc21a;font-weight:600}
-      .vaf-xxl .xr .cnt{color:#a6a6a6;font-size:13px;margin-left:auto}
-      .vaf-xxl .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
-      .vaf-xxl .card{background:#1f1f1f;border-radius:14px;overflow:hidden;color:#e8e8e8;text-decoration:none;display:flex;flex-direction:column}
+    st.textContent = `
+      .vaf-xxl{color:#e8e8e8;font-size:14px;padding:8px 0 40px;width:100%;box-sizing:border-box}
+      .vaf-xxl.nosider{display:flex;gap:24px;align-items:flex-start}.vaf-xxl.nosider .vaf-xxl-f{flex:0 0 320px}.vaf-xxl.nosider .xr{flex:1;min-width:0}
+      .vaf-xxl-f{padding:0 0 30px}
+      .vaf-xxl-f .btns{display:flex;gap:10px;margin-top:6px}
+      .vaf-xxl-f .rst{background:none;border:0;color:#f5b800;font-weight:700;font-size:16px;cursor:pointer;padding:6px 0}
+      .vaf-xxl .xr{width:100%}
+      .vaf-xxl .sorts{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px;align-items:center}
+      .vaf-xxl .sorts .chip{border:1px solid #3d3d3d;background:#1b1b1b;color:#e8e8e8;border-radius:999px;padding:7px 16px;font-size:14.5px;font-weight:600;cursor:pointer}
+      .vaf-xxl .sorts .chip.on{background:#f5b800;color:#141414;border-color:#f5b800}
+      .vaf-xxl .sorts .cnt{color:#9a9a9a;font-size:14px;margin-left:auto}
+      .vaf-xxl .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;width:100%}
+      .vaf-xxl .card{background:#1f1f1f;border-radius:16px;overflow:hidden;color:#e8e8e8;text-decoration:none;display:flex;flex-direction:column}
       .vaf-xxl .card .pic{aspect-ratio:1/1;background:#2a2a2a center/cover no-repeat;position:relative;display:flex;align-items:center;justify-content:center;font-size:42px;color:#555}
       .vaf-xxl .card .bd{position:absolute;left:8px;top:8px;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700;color:#fff}
-      .vaf-xxl .card .tx{padding:9px 11px}.vaf-xxl .card b{display:block;color:#fff;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .vaf-xxl .card span{color:#a6a6a6;font-size:12.5px}
-      .vaf-xxl .more{margin:16px auto;display:block}`;
+      .vaf-xxl .card .tx{padding:10px 12px}.vaf-xxl .card b{display:block;color:#fff;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .vaf-xxl .card span{color:#a6a6a6;font-size:13px}
+      .vaf-xxl .more{margin:18px auto;display:block}
+      .vaf-xxl .hint{color:#9a9a9a;font-size:13px;margin:0 0 10px}`;
     document.head.appendChild(st);
   }
-  async function xxlRender(view) {
+  const xxlRadiusFmt = (r) => (r ? r + ' km' : 'Weltweit');
+  async function xxlRender(view, fbox) {
     let f = xxlF();
     const save = () => { G.set('xxl_filter', f); };
-    view.innerHTML = '<div class="xf"></div><div class="xr"><div class="sorts"></div><div class="grid"></div></div>';
-    const fx = view.querySelector('.xf'), sorts = view.querySelector('.sorts'), grid = view.querySelector('.grid');
+    view.insertAdjacentHTML('beforeend', '<div class="xr"><div class="sorts"></div><div class="grid"></div></div>');
+    const sorts = view.querySelector('.sorts'), grid = view.querySelector('.grid');
     let shown = 120;
     let list = [];
     const draw = () => {
@@ -9088,47 +9553,56 @@
       sorts.querySelectorAll('[data-sort]').forEach((c) => c.addEventListener('click', () => { f.sort = c.dataset.sort; save(); shown = 120; draw(); }));
       grid.innerHTML = rows.slice(0, shown).map(({ m, bi, ages }) => {
         const st = bi ? mopStage(bi.lo) : -1;
-        const badge = bi ? `<span class="bd" style="background:${MOP_COLORS[Math.max(0, st)]}">${esc(mopLabel(Math.max(0, st)))} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}</span>` : '<span class="bd" style="background:#555">BMI unklar</span>';
+        const badge = bi ? `<span class="bd" style="background:${MOP_COLORS[Math.max(0, st)]}" title="${esc(`${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg${bi.pair ? ' (einer von beiden)' : ''}`)}">${esc(mopLabel(Math.max(0, st)))} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}</span>` : '<span class="bd" style="background:#555">BMI unklar</span>';
         const pic = !isPlaceholderAvatar(m.avatar) ? ` style="background-image:url('${esc(m.avatar)}')"` : '';
         const meta = [(m.g || []).map((c) => TYPE_NAMES[c] || c).join(' & ') || '', ages.length ? ages.join('/') + ' Jahre' : '', m.dist ? Math.round(m.dist.km) + ' km' : (m.city || '')].filter(Boolean).join(' · ');
         return `<a class="card" href="${esc(pathOfName(m.nick))}"><div class="pic"${pic}>${pic ? '' : esc((m.nick || '?')[0].toUpperCase())}${badge}</div><div class="tx"><b>${esc(m.nick)}</b><span>${esc(meta)}</span></div></a>`;
-      }).join('') || '<div style="color:#a6a6a6">Keine Treffer. Die XXL-Suche im Opa-Scan füllt diese Liste.</div>';
+      }).join('') || `<div style="color:#a6a6a6">Keine Treffer. Die ${esc(xxlName())}-Suche im Opa-Scan füllt diese Liste.</div>`;
       if (rows.length > shown) { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn more'; b.textContent = `Weitere ${fmtN(Math.min(120, rows.length - shown))} anzeigen`; b.addEventListener('click', () => { shown += 120; draw(); }); grid.after(b); }
     };
-    const chip = (on, label) => `<span class="chip${on ? ' on' : ''}">${esc(label)}</span>`;
+    const upd = () => { save(); shown = 120; draw(); };
     const buildFilters = () => {
-      const sel = (opts, cur, ph) => `<select>${ph ? `<option value="">${esc(ph)}</option>` : ''}${opts.map(([v, n]) => `<option value="${esc(v)}"${String(cur) === String(v) ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
-      fx.innerHTML = `<h3>Suchfilter</h3>
-        <div class="fl">Geschlecht</div><div class="chips" data-k="g">${[['m', 'Mann'], ['w', 'Frau'], ['p', 'Paar'], ['ts', 'Trans'], ['tv', 'Nicht-binär']].map(([v, n]) => `<span class="chip${f.g.includes(v) ? ' on' : ''}" data-v="${v}">${n}</span>`).join('')}</div>
-        <div class="fl">Alter</div><div class="rng" data-k="age"><input class="vaf-num" type="number" min="18" max="99" value="${f.age[0]}"> bis <input class="vaf-num" type="number" min="18" max="99" value="${f.age[1]}"></div>
-        <div class="fl">Radius</div><div data-k="radius">${sel(MOP_RADII.map((r) => [r, r ? r + ' km' : 'Weltweit']), f.radius)}</div>
-        <div class="ln" data-k="pics"><button type="button" class="vaf-sw${f.pics ? ' on' : ''}"></button>Mit Bildern</div>
-        <div class="ln" data-k="online"><button type="button" class="vaf-sw${f.online ? ' on' : ''}"></button>Jetzt online</div>
-        <div class="ln" data-k="verified"><button type="button" class="vaf-sw${f.verified ? ' on' : ''}"></button>Nur verifiziert</div>
-        <div class="fl">Figur</div><div data-k="stage">${sel([[0, MOP_STAGE0], [1, mopLabel(1)], [2, mopLabel(2)], [3, mopLabel(3)]], f.stage)}</div>
-        <label class="ln"><input type="checkbox" data-k="unclear"${f.unclear ? ' checked' : ''}> auch unklarer BMI</label>
-        <label class="ln"><input type="checkbox" data-k="msgok"${f.msgok ? ' checked' : ''}> nur anschreibbare</label>
-        <div class="fl">Suche nach</div><div class="chips" data-k="lf">${SEARCHING_VALS.map(([v, n]) => `<span class="chip${f.lf.includes(v) ? ' on' : ''}" data-v="${v}">${esc(n)}</span>`).join('')}</div>
-        <div class="fl">Sternzeichen</div><div data-k="zod">${sel(XXL_ZODIAC, f.zod, 'Beliebig')}</div>
-        <div class="fl">Raucher</div><div data-k="smoker">${sel([['1', 'Ja'], ['0', 'Nein']], f.smoker, 'Keine Angabe')}</div>
-        <div class="fl">Sexualität</div><div data-k="sex">${sel(XXL_SEX, f.sex, 'Keine Angabe')}</div>
-        <div class="fl">Größe (cm)</div><div class="rng" data-k="size"><input class="vaf-num" type="number" min="130" max="220" value="${f.size[0]}"> bis <input class="vaf-num" type="number" min="130" max="220" value="${f.size[1]}"></div>
-        <div class="fl">Gewicht (kg)</div><div class="rng" data-k="weight"><input class="vaf-num" type="number" min="0" max="300" value="${f.weight[0]}"> bis <input class="vaf-num" type="number" min="0" max="300" value="${f.weight[1]}"></div>
-        <div class="ln" style="margin-top:14px"><button type="button" class="vaf-btn" data-reset>Zurücksetzen</button></div>`;
-      const upd = () => { save(); shown = 120; draw(); };
-      fx.querySelectorAll('.chips[data-k] .chip').forEach((c) => c.addEventListener('click', () => { const k = c.parentElement.dataset.k; const v = c.dataset.v; f[k] = f[k].includes(v) ? f[k].filter((x) => x !== v) : [...f[k], v]; c.classList.toggle('on'); upd(); }));
-      fx.querySelectorAll('.rng[data-k]').forEach((r) => r.querySelectorAll('input').forEach((i, n) => i.addEventListener('change', () => { f[r.dataset.k] = [...f[r.dataset.k]]; f[r.dataset.k][n] = +i.value; upd(); })));
-      fx.querySelectorAll('div[data-k] > select').forEach((s0) => s0.addEventListener('change', () => { const k = s0.parentElement.dataset.k; f[k] = k === 'radius' || k === 'stage' ? +s0.value : s0.value; upd(); }));
-      fx.querySelectorAll('.ln[data-k] .vaf-sw').forEach((b) => b.addEventListener('click', () => { const k = b.parentElement.dataset.k; f[k] = !f[k]; b.classList.toggle('on', f[k]); upd(); }));
-      fx.querySelectorAll('input[type=checkbox][data-k]').forEach((c) => c.addEventListener('change', () => { f[c.dataset.k] = c.checked; upd(); }));
-      fx.querySelector('[data-reset]').addEventListener('click', () => { f = xxlDefaults(); save(); buildFilters(); draw(); });
+      fbox.innerHTML = '';
+      const h = document.createElement('h2'); h.className = 'vaf-pk-h'; h.textContent = 'Suchfilter'; fbox.appendChild(h);
+      const add = (label, ctrl) => fbox.appendChild(pkItem(label, ctrl));
+      add('Geschlecht', pkCheckGroup([['m', 'Mann'], ['w', 'Frau'], ['p', 'Paar'], ['ts', 'Trans'], ['tv', 'Nicht-binär']], f.g, (v) => { f.g = v; upd(); }));
+      add('Alter', pkSlider({ min: 18, max: 99, values: f.age, onChange: (v) => { f.age = v; upd(); } }));
+      fbox.appendChild(pkDivider());
+      add('Radius', pkSlider({ steps: MOP_RADII, values: [f.radius], fmt: xxlRadiusFmt, marks: [[MOP_RADII[0], xxlRadiusFmt(MOP_RADII[0])], [0, 'Weltweit']], onChange: ([v]) => { f.radius = v; upd(); } }));
+      fbox.appendChild(pkDivider());
+      const cbs = document.createElement('div');
+      cbs.append(pkCheck('Mit Bildern', f.pics, (v) => { f.pics = v; upd(); }), pkCheck('Jetzt online', f.online, (v) => { f.online = v; upd(); }), pkCheck('Nur verifiziert', f.verified, (v) => { f.verified = v; upd(); }));
+      cbs.style.cssText = 'display:flex;flex-direction:column;margin-bottom:12px'; fbox.appendChild(cbs);
+      fbox.appendChild(pkDivider());
+      add('Figur', pkSelect([[0, MOP_STAGE0], [1, mopLabel(1)], [2, mopLabel(2)], [3, mopLabel(3)]], f.stage, (v) => { f.stage = +v; upd(); }));
+      const cb2 = document.createElement('div'); cb2.style.cssText = 'display:flex;flex-direction:column;margin:-8px 0 12px';
+      cb2.append(pkCheck('auch unklarer BMI', f.unclear, (v) => { f.unclear = v; upd(); }), pkCheck('nur anschreibbare', f.msgok, (v) => { f.msgok = v; upd(); }));
+      fbox.appendChild(cb2);
+      add('Suche nach', pkCheckGroup(SEARCHING_VALS, f.lf, (v) => { f.lf = v; upd(); }));
+      add('Beziehungsstatus', pkSelect(XXL_REL, f.rel, (v) => { f.rel = v; upd(); }));
+      add('Sternzeichen', pkSelect([['', 'Beliebig'], ...XXL_ZODIAC], f.zod, (v) => { f.zod = v; upd(); }));
+      add('Raucher', pkSelect([['', 'Keine Angabe'], ['1', 'Ja'], ['0', 'Nein']], f.smoker, (v) => { f.smoker = v; upd(); }));
+      add('Sexualität', pkSelect([['', 'Keine Angabe'], ...XXL_SEX], f.sex, (v) => { f.sex = v; upd(); }));
+      add('Größe', pkSlider({ min: 130, max: 220, values: f.size, fmt: (v) => v + ' cm', marks: [[130, '130 cm'], [220, '220 cm']], onChange: (v) => { f.size = v; upd(); } }));
+      add('Gewicht', pkSlider({ min: 0, max: 300, values: f.weight, fmt: (v) => v + ' kg', marks: [[0, '0 kg'], [300, '300 kg']], onChange: (v) => { f.weight = v; upd(); } }));
+      const btns = document.createElement('div'); btns.className = 'btns';
+      const rst = document.createElement('button'); rst.type = 'button'; rst.className = 'rst'; rst.textContent = 'Filter zurücksetzen';
+      rst.addEventListener('click', () => { f = xxlDefaults(); save(); buildFilters(); draw(); });
+      btns.appendChild(rst); fbox.appendChild(btns);
     };
     buildFilters();
     grid.innerHTML = '<div style="color:#a6a6a6">Lese das Gedächtnis …</div>';
     list = await xxlLoad();
     draw();
-    // Ergebnisse der Hintergrund-Prüfungen (anschreibbar, Vermessung) einfließen lassen
-    const iv = setInterval(async () => { if (!view.isConnected) { clearInterval(iv); return; } if (f.msgok) draw(); }, 8000);
+    // Neue Messungen aus einem Scan in einem anderen Tab live nachladen (Signal über den Tampermonkey-Speicher)
+    let lt = null;
+    const reload = () => { clearTimeout(lt); lt = setTimeout(async () => { if (!view.isConnected) return; list = await xxlLoad(true); const y = W.scrollY; draw(); W.scrollTo(0, y); }, 4000); };
+    let lid = null;
+    try { lid = GM_addValueChangeListener('vaf2_xxl_rev', () => reload()); } catch {}
+    const iv = setInterval(() => {
+      if (!view.isConnected) { clearInterval(iv); try { if (lid != null) GM_removeValueChangeListener(lid); } catch {} return; }
+      if (f.msgok) draw();
+    }, 8000);
   }
   function xxlTick() { try { xxlMenuLink(); xxlRoute(); } catch (e) { warn('XXL', e); } }
   function initXxl() { xxlTick(); setInterval(xxlTick, 1000); W.addEventListener('hashchange', xxlTick); }
@@ -9211,37 +9685,150 @@
   })();
 
   // ---------- Textvorlagen: Briefkasten = gemeinsamer Bestand, Tampermonkey-Speicher = Zwischenspeicher ----------
+  // Textvorlagen in der gemeinsamen Ablage nach dem gemeinsamen Regelwerk (FORMAT.md, „Textvorlagen“):
+  //  - in der Ablage in JOYclub-Schreibweise (*name*-Smileys), hier im Tampermonkey-Speicher in poppen-Schreibweise
+  //  - zuletzt abgeglichene Fassung je Vorlage (tpl_remote: der Ablage-Eintrag samt rev) = „gelesen“ für expect
+  //  - gleichzeitiges Schreiben (3.1): andere Seite unverändert → schreiben; nur Ergänzungen → zusammenführen;
+  //    sonst gewinnt die gerade schreibende Fassung, die andere kommt in den Papierkorb
+  //  - unbekannte Felder (pfIds, owner …) werden mitgeführt
+  const tplKey = (t) => (t ? `${tplNameKey(t.name)}\u0001${stripSmileys(String(t.text || '')).replace(/\s+/g, '')}` : '');
+  const toJoy = (txt) => translateSmileys(String(txt || ''), 'poppen', 'joyclub').text;
+  const toPop = (txt) => translateSmileys(String(txt || ''), 'joyclub', 'poppen').text.slice(0, TPL_LEN);
+  const tplParas = (t) => String(t || '').split(/\n\s*\n/);
+  const pkey = (x) => stripSmileys(x).replace(/\s+/g, '');
+  // Ist a eine reine Ergänzung von base (alle Absätze von base in Reihenfolge enthalten)? → Einfügungen je Lücke
+  function tplGaps(base, a) {
+    const B = tplParas(base).filter((x) => pkey(x)), A = tplParas(a);
+    const gaps = Array.from({ length: B.length + 1 }, () => []);
+    let j = 0;
+    for (const p of A) {
+      if (j < B.length && pkey(p) === pkey(B[j])) { j++; continue; }
+      if (!pkey(p)) continue;
+      gaps[j].push(p);
+    }
+    return j === B.length ? { B, gaps } : null;
+  }
+  // Ergänzungen beider Seiten zusammenführen (die ältere zuerst); null = keine reinen Ergänzungen
+  function tplMergeAdd(base, a, b, aOlder = true) {
+    const ga = tplGaps(base, a), gb = tplGaps(base, b);
+    if (!ga || !gb) return null;
+    const [first, second] = aOlder ? [ga, gb] : [gb, ga];
+    const out = [];
+    for (let i = 0; i <= ga.B.length; i++) {
+      const add = [...first.gaps[i]];
+      for (const p of second.gaps[i]) if (!add.some((x) => pkey(x) === pkey(p))) add.push(p);
+      out.push(...add);
+      if (i < ga.B.length) out.push(ga.B[i]);
+    }
+    return out.join('\n\n');
+  }
+  function tplTrashCopy(t, why) {
+    if (!t) return;
+    const tr = G.get('tpl_trash', []) || [];
+    if (tr.some((x) => x.id === t.id && x.text === t.text && x.name === t.name)) return;     // schon drin
+    tr.push({ ...t, text: t.text, deletedAt: now(), why: why || '' });
+    G.set('tpl_trash', tr.filter((x) => now() - (x.deletedAt || 0) < 30 * DAY));
+  }
   const TplSync = {
-    pulling: false,
+    pulling: false, busy: null,
+    remote() { return G.get('tpl_remote', {}) || {}; },
+    setRemote(m) { G.set('tpl_remote', m); },
+    // Ablage-Eintrag aus lokaler Vorlage (poppen-Text → JOYclub-Schreibweise, verlustfrei, wenn unverändert)
+    asRemote(t, R, force) {
+      const joy = !force && R && toPop(R.text) === t.text ? R.text : toJoy(t.text);
+      const { text, updatedAt, updatedBy, ...rest } = t;
+      return { ...(R || {}), ...rest, id: t.id, name: t.name, text: joy };
+    },
+    async write(v, expect) {
+      const by = { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' };
+      return BkRpc.call('put', { s: 'tpl', v, expect, by });
+    },
     async push(list) {
-      if (this.pulling) return;
-      const sent = { ...(G.get('tpl_pushed', {}) || {}) };
-      const ids = new Set();
-      for (const t of list || []) {
-        if (!t || !t.id) continue;
-        ids.add(t.id);
-        if (sent[t.id] && sent[t.id] >= (t.updatedAt || 0)) continue;
-        try { await BkRpc.call('putMany', { s: 'tpl', list: [{ ...t, updatedAt: t.updatedAt || now() }] }); sent[t.id] = t.updatedAt || now(); } catch (e) { warn('Textvorlage teilen', e && e.message); return; }
-      }
-      for (const id of Object.keys(sent)) if (!ids.has(id)) { try { await BkRpc.call('del', { s: 'tpl', k: id, by: { pf: 'poppen', ver: VERSION } }); delete sent[id]; } catch {} }
-      G.set('tpl_pushed', sent);
+      if (this.pulling || !Owner.mayWriteShared()) return;
+      if (this.busy) return this.busy;
+      this.busy = (async () => {
+        const R = this.remote();
+        const ids = new Set();
+        const mig = !G.get('tpl_joy', 0);        // 2.34: Ablage einmalig auf JOYclub-Schreibweise umstellen
+        for (const t of list || []) {
+          if (!t || !t.id) continue;
+          ids.add(t.id);
+          const r0 = R[t.id];
+          if (r0 && !r0.deleted && tplKey({ name: r0.name, text: toPop(r0.text) }) === tplKey(t) && !(mig && r0.text !== toJoy(t.text))) continue;   // unverändert
+          let v = this.asRemote(t, r0, mig), expect = r0 ? r0.rev || 0 : null;
+          for (let tries = 0; tries < 4; tries++) {
+            let res;
+            try { res = await this.write(v, expect); } catch (e) { warn('Textvorlage teilen', e && e.message); return; }
+            if (res && res.ok) { R[t.id] = res.v; break; }
+            const cur = res && res.conflict;
+            if (!cur) break;
+            // Konflikt: jemand anderes hat inzwischen geschrieben
+            const base = r0 ? r0.text : '';
+            if (!cur.deleted && r0 && tplKey(cur) === tplKey(r0)) { expect = cur.rev || 0; continue; }       // andere Seite unverändert
+            const merged = r0 && !cur.deleted && cur.name === v.name ? tplMergeAdd(base, cur.text, v.text, true) : null;
+            if (merged != null) { v = { ...cur, ...v, text: merged }; expect = cur.rev || 0; continue; }
+            if (!cur.deleted) tplTrashCopy({ ...cur, text: toPop(cur.text) }, 'überschrieben');                // Schreiber gewinnt
+            v = { ...cur, ...v }; expect = cur.rev || 0;
+          }
+          // zusammengeführten Text lokal übernehmen
+          const nr = R[t.id];
+          if (nr && toPop(nr.text) !== t.text && tplKey({ name: nr.name, text: toPop(nr.text) }) !== tplKey(t)) {
+            const loc = getTpls(); const i = loc.findIndex((x) => x.id === t.id);
+            if (i >= 0) { loc[i] = { ...loc[i], text: toPop(nr.text) }; this.pulling = true; try { setTpls(loc); } finally { this.pulling = false; } }
+          }
+        }
+        // lokal gelöscht → Löschmarke (nur, wenn die Ablage seitdem unverändert ist)
+        for (const [id, r0] of Object.entries(R)) {
+          if (ids.has(id) || !r0 || r0.deleted) continue;
+          let res;
+          try { res = await BkRpc.call('del', { s: 'tpl', k: id, expect: r0.rev || 0, by: { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' } }); } catch { continue; }
+          if (res && res.ok) R[id] = res.v;
+          else if (res && res.conflict && !res.conflict.deleted) {
+            // inzwischen anderswo geändert → nicht löschen, geänderte Fassung zurückholen
+            const cur = res.conflict; R[id] = cur;
+            const loc = getTpls(); if (!loc.some((x) => x.id === id)) { loc.push({ ...cur, text: toPop(cur.text) }); this.pulling = true; try { setTpls(loc); } finally { this.pulling = false; } }
+          }
+        }
+        this.setRemote(R);
+        if (mig) G.set('tpl_joy', now());
+      })().finally(() => { this.busy = null; });
+      return this.busy;
     },
     async pull() {
       let remote;
       try { remote = await BkRpc.call('all', { s: 'tpl' }, 20000); } catch { return; }
+      // Gehört die Ablage jemand anderem (owner nicht unter den eigenen „Ich“-Profilen)? → nur lesen
+      const owners = [...new Set((remote || []).map((r) => r && r.owner).filter(Boolean))];
+      if (owners.length) {
+        const ich = await ichList();
+        const ids = new Set(ich.map((i) => i.id || `${i.pf}:${i.uid}`));
+        Owner.sharedOk = owners.every((o) => ids.has(o));
+        if (!Owner.sharedOk) { warn('Gemeinsame Textvorlagen gehören einem anderen Konto – kein Abgleich'); return; }
+      } else Owner.sharedOk = true;
+      if (!Owner.mayWriteShared()) return;
+      const R = this.remote();
       const local = getTpls();
       const byId = new Map(local.map((t) => [t.id, t]));
       let changed = false;
-      const sent = { ...(G.get('tpl_pushed', {}) || {}) };
       for (const r of remote || []) {
-        const l = byId.get(r.id);
-        if (r.deleted) { if (l && (l.updatedAt || 0) <= (r.updatedAt || 0)) { byId.delete(r.id); changed = true; } delete sent[r.id]; continue; }
-        if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { const { rev, deleted, ...t } = r; byId.set(r.id, { ...(l || {}), ...t }); changed = true; }
-        sent[r.id] = Math.max(sent[r.id] || 0, r.updatedAt || 0);
+        const r0 = R[r.id], L = byId.get(r.id);
+        if (r0 && (r.rev || 0) <= (r0.rev || 0)) continue;                  // nichts Neues
+        const Lchanged = L && (!r0 || tplKey(L) !== tplKey({ name: r0.name, text: toPop(r0.text) }));
+        if (r.deleted) {
+          if (L && !Lchanged) { tplTrashCopy(L, 'anderswo gelöscht'); byId.delete(r.id); changed = true; }
+          R[r.id] = r; continue;
+        }
+        const asLocal = (x) => { const { rev, deleted, ...t } = x; return { ...(L || {}), ...t, text: toPop(x.text) }; };
+        if (!L || !Lchanged) { byId.set(r.id, asLocal(r)); changed = true; R[r.id] = r; continue; }
+        // beide Seiten geändert
+        if (tplKey(L) === tplKey({ name: r.name, text: toPop(r.text) })) { R[r.id] = r; continue; }
+        const merged = r0 && r.name === L.name ? tplMergeAdd(r0.text, r.text, toJoy(L.text), (r.updatedAt || 0) <= (L.updatedAt || 0)) : null;
+        if (merged != null) { byId.set(r.id, { ...L, text: toPop(merged) }); changed = true; R[r.id] = r; continue; }   // wird beim push geschrieben
+        if ((r.updatedAt || 0) > (L.updatedAt || 0)) { tplTrashCopy(L, 'anderswo neuer'); byId.set(r.id, asLocal(r)); changed = true; R[r.id] = r; }
+        else { tplTrashCopy({ ...r, text: toPop(r.text) }, 'hier neuer'); R[r.id] = r; }
       }
-      G.set('tpl_pushed', sent);
+      this.setRemote(R);
       if (changed) { this.pulling = true; try { setTpls([...byId.values()]); } finally { this.pulling = false; } }
-      // lokal neuere/neue Vorlagen hochladen
       await this.push(getTpls());
     },
   };
@@ -9287,7 +9874,7 @@
     const st = G.get('mig232', null);
     if (st && st.done) {
       if (st.fickPending) migrateFick232().catch(() => {});
-      if (now() - st.done > 14 * DAY && !st.oldDeleted) { try { W.indexedDB.deleteDatabase(OLD_DB_NAME); G.set('mig232', { ...st, oldDeleted: now() }); log('Altbestand „opa-schutz“ gelöscht (Umzug vor 14 Tagen)'); } catch {} }
+      if (now() - st.done > 14 * DAY && !st.oldDeleted) { try { IDB.deleteDatabase(OLD_DB_NAME); G.set('mig232', { ...st, oldDeleted: now() }); log('Altbestand „opa-schutz“ gelöscht (Umzug vor 14 Tagen)'); } catch {} }
       return;
     }
     if (!(await Lock.take('mig232', 'Umzug'))) {
@@ -9578,6 +10165,222 @@
     else if (res.meets && res.meets.length) await Fick.put(p);
     return 1;
   }
+  // =====================================================================================
+  // Events (poppens Gegenstück zu den JOYclub-Partys)
+  //  - Veranstalter (creator) → automatische Whitelist „Event-Veranstalter“, bis 30 Tage nach Event-Ende
+  //  - Listen „Gehe“ (event/attendee/list) und „Vielleicht“ (event/bookmark/list): nebenbei merken,
+  //    auf der Event-Seite kennzeichnen wie Gruppenlisten, im Opa-Scan als Quelle „Partygäste“
+  //  - Event → Treffen in der Fickliste (Knopf auf der Event-Seite)
+  // =====================================================================================
+  const EVT_GRACE = 30 * DAY;
+  const EVT_CATS = [56, 81, 132, 197];        // Stammtisch Event, Clubs, Ausstellung & Kultur, Online-Event
+  const evtWhite = (m) => { const e = m && m.auto && m.auto.evt; if (!e) return ''; const live = Object.values(e).filter((x) => x && (x.end || 0) + EVT_GRACE > now()); return live.length ? 'Event-Veranstalter: ' + live.map((x) => x.name || 'Event').slice(0, 3).join(', ') : ''; };
+  const evtInfo = new Map();                  // cms_id → event/profile-Daten (nur im Arbeitsspeicher)
+  async function evtMarkCreator(ev) {
+    const c = ev && ev.creator;
+    if (!c || !validUid(c) || String(c.uid) === String(Me.uid())) return null;
+    const u = normUser(c); if (!u) return null;
+    const m = await seen(u, 'Events', { images: false });
+    if (!m) return null;
+    const end = +ev.end_time || +ev.start_time || now();
+    const was = !!(m.auto && m.auto.evt && m.auto.evt[String(ev.cms_id)]);
+    await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.evt = x.auto.evt || {}; x.auto.evt[String(ev.cms_id)] = { end, name: String(ev.name || '').trim().slice(0, 80) }; });
+    return { m: await Members.get(u.uid), fresh: !was };
+  }
+  // nebenbei: Event-Seiten, Event-Suche, Teilnehmerlisten
+  onApi(/^event\/profile$/, async (d) => { if (d && d.cms_id) { evtInfo.set(String(d.cms_id), d); await evtMarkCreator(d); } });
+  onApi(/^event\/search$/, async (d) => { for (const ev of (d && d.cms_list) || []) await evtMarkCreator(ev); });
+  onApi(/^event\/(attendee|bookmark)\/list$/, (d) => seenMany(((d && d.users) || []).filter(validUid), 'Events', { images: false }));
+
+  async function evtList(kind, cms, ctx, onUsers) {
+    let page = 1, n = 0, total = 0, invisible = 0;
+    for (let guard = 0; guard < 500 && !ctx.stop(); guard++) {
+      const d = await apiGet(`event/${kind}/list`, { _version: 2, cms_id: cms, page, limit: 30 });
+      const l = ((d && d.users) || []).filter(validUid);
+      total = (d && d.total) || total; invisible = (d && d.invisible_count) || invisible;
+      n += l.length;
+      if (l.length) await onUsers(l);
+      if (!d || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+      await sleep(400);
+    }
+    return { n, total, invisible };
+  }
+  async function evtAll(ctx) {
+    const geo = G.get('mygeo', null);
+    const out = [];
+    let page = 1;
+    for (let guard = 0; guard < 200 && !ctx.stop(); guard++) {
+      const body = { sort: ['status', 'start_date', 'highlight'], order: ['desc', 'asc', 'desc'], category: EVT_CATS, limit: 20, page };
+      if (geo && geo.city) body.location = { city: geo.city };      // ohne „distance“ = weltweit
+      const d = await apiPost('event/search', body, { _version: 2 });
+      const l = (d && d.cms_list) || [];
+      out.push(...l);
+      if (!l.length || !d.next_page || d.next_page === page) break;
+      page = d.next_page;
+      await sleep(400);
+    }
+    return out;
+  }
+  // Opa-Scan-Quelle „Partygäste“: alle Events weltweit (poppen hat nur wenige), je „Gehe“ + „Vielleicht“
+  async function scanEvents(ctx) {
+    const res = newRes();
+    const me = String(Me.uid());
+    ctx.phase && ctx.phase('Events laden …');
+    const evs = await evtAll(ctx);
+    let i = 0;
+    for (const ev of evs) {
+      if (ctx.stop()) break;
+      i++;
+      ctx.outer && ctx.outer(i - 1, evs.length);
+      ctx.phase && ctx.phase(`Event ${i}/${evs.length}: ${ev.name || ev.cms_id}`);
+      // Veranstalter: Whitelist, ggf. vom Opa-Schutz Geblockte entsperren
+      const cr = await evtMarkCreator(ev);
+      const evLive = ((+ev.end_time || +ev.start_time || now()) + EVT_GRACE) > now();
+      if (cr && cr.fresh && evLive) res.whitelisted++;
+      if (evLive && cr && cr.m && cr.m.blk && cr.m.blk.opa && !cr.m.unblk) {
+        const r = await unblockOne(cr.m);
+        if (r === 'ok' || r === 'Test') { res.unblocked++; (ctx.notes || []).push(`${cr.m.nick}: entsperrt, weil Veranstalter von „${ev.name}“`); }
+      }
+      for (const kind of ['attendee', 'bookmark']) {
+        await evtList(kind, String(ev.cms_id), ctx, async (users) => {
+          const own = users.filter((u) => String(u.uid) !== me);
+          for (const u of own) await seen(u, 'Events', { images: false });
+          addRes(res, await judge(own.map(normUser).filter(Boolean), 'Events'));
+        });
+        await sleep(300);
+      }
+      ctx.step && ctx.step(i, evs.length, `${fmtN(i)} von ${fmtN(evs.length)} Events`);
+    }
+    ctx.outer && ctx.outer(evs.length, evs.length);
+    return res;
+  }
+
+  // ---------- Event-Seite: Knopf „In die Fickliste“ ----------
+  const evtIdOfPath = (p = location.pathname) => { const m = /\/events\/[^/]+\/[^/]+\/(\d+)\/?$/.exec(p); return m ? m[1] : ''; };
+  function evtMeetFrom(ev) {
+    const d = new Date(+ev.start_time || now());
+    const pad = (n) => String(n).padStart(2, '0');
+    const where = ev.is_online_event ? 'Online' : [ev.raw_location && !ev.raw_location.hide_location_street ? ev.raw_location.location_street : '', ev.geo_location && ev.geo_location.city].filter(Boolean).join(', ');
+    return { date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, time: `${pad(d.getHours())}:${pad(d.getMinutes())}`, where: String(ev.name || '').trim(), club: where, link: 'https://www.poppen.de' + (ev.profile_url || location.pathname), pf: 'poppen' };
+  }
+  async function evtPageButton() {
+    const id = evtIdOfPath();
+    const old = document.getElementById('vaf-evt-fick');
+    if (!id) { if (old) old.remove(); return; }
+    if (old && old.dataset.id === id) return;
+    const h1 = document.querySelector('main h1') || document.querySelector('h1');
+    if (!h1) return;
+    if (old) old.remove();
+    let ev = evtInfo.get(id);
+    if (!ev) { try { ev = await apiGet('event/profile', { _version: 2, cms_id: id }); if (ev) evtInfo.set(id, ev); } catch { return; } }
+    if (!ev || document.getElementById('vaf-evt-fick')) return;
+    const b = document.createElement('button'); b.type = 'button'; b.id = 'vaf-evt-fick'; b.dataset.id = id; b.className = 'vaf-btn';
+    b.style.cssText = 'margin:10px 0;display:inline-flex;gap:6px;align-items:center';
+    b.textContent = 'Als Treffen in die Fickliste …';
+    b.title = 'Dieses Event als Treffen mit einer Person aus deiner Fickliste eintragen (Was = Event, Wo = Ort, Datum, Link)';
+    b.addEventListener('click', () => evtToFick(ev).catch((e) => toast('Fickliste: ' + e.message)));
+    h1.after(b);
+  }
+  async function evtToFick(ev) {
+    const meet = evtMeetFrom(ev);
+    const all = (await Fick.all()).filter((p) => !p.deleted);
+    const name = (p) => (p.main && p.main.nick) || (p.ext && p.ext.name) || p.id;
+    const opts = all.sort((a, b) => name(a).localeCompare(name(b), 'de')).map((p) => `<option value="${esc(p.id)}">${esc(name(p))}</option>`).join('');
+    if (!all.length) { toast('Deine Fickliste ist noch leer.'); return; }
+    let pid = all[0] ? all.sort((a, b) => name(a).localeCompare(name(b), 'de'))[0].id : '';
+    const pr = ask('Event als Treffen eintragen', `<p><b>${esc(meet.where)}</b><br>${esc(meet.date.split('-').reverse().join('.'))} ${esc(meet.time)} · ${esc(meet.club || '')}</p>
+      <p>Mit wem? <select id="vaf-evt-p" style="min-width:220px">${opts}</select></p>
+      <p class="vaf-mini">Das Treffen wird bei dieser Person eingetragen. Gibt es an dem Tag schon ein Treffen mit ihr, wird es ergänzt.</p>`,
+    [{ label: 'Eintragen', value: 'ok', primary: true, focus: true }, { label: 'Abbrechen', value: null, cancel: true }]);
+    const sel = document.getElementById('vaf-evt-p'); if (sel) { pid = sel.value; sel.addEventListener('change', () => { pid = sel.value; }); }
+    if ((await pr) !== 'ok') return;
+    const p = await Fick.get(pid);
+    if (!p) return;
+    p.meets = p.meets || [];
+    const same = p.meets.find((t) => t.date === meet.date);
+    if (same) { for (const k of ['time', 'where', 'club', 'link', 'pf']) if (!same[k] && meet[k]) same[k] = meet[k]; }
+    else p.meets.push({ id: 'm' + Math.random().toString(36).slice(2, 10), ...meet, at: now() });
+    p.history = [...(p.history || []), { at: now(), what: `Treffen eingetragen: ${meet.where} (${meet.date})` }];
+    await Fick.put(p);
+    toast(`Treffen „${meet.where}“ bei ${name(p)} eingetragen.`);
+  }
+  function initEvents() { setInterval(() => { evtPageButton().catch(() => {}); }, 1500); }
+  // =====================================================================================
+  // Textvorlagen beim Import einer Sicherungsdatei (gemeinsames Regelwerk, Abschnitt 4)
+  //  Fall A (eigenes Konto): ohne Rückfrage, mit Löschen · Fall B (Schalter „Auch Textvorlagen migrieren“):
+  //  wie A, aber ohne Löschen und ohne „Termine“ · Fall C (Schalter aus): Vorlagen nie anfassen.
+  //  „Gemeinsamer Stand“ = Prüfsumme (tplBaseHash) beim letzten Import dieser Vorlage, in der Datei als `base`.
+  // =====================================================================================
+  async function tplBaseHash(text) { return (await sha256hex(stripSmileys(String(text || '')).replace(/\s+/g, ''))).slice(0, 16); }
+  const tplBases = () => G.get('tpl_base', {}) || {};
+  // Export: Vorlagen in JOYclub-Schreibweise samt base; gelöschte (Löschmarken) als Liste
+  async function tplExportForFile() {
+    const B = tplBases();
+    const out = [];
+    for (const t of getTpls()) {
+      const { updatedAt, updatedBy, ...rest } = t;
+      out.push({ ...rest, text: toJoy(t.text), updatedAt, updatedBy, base: B[t.id] || null, hash: await tplBaseHash(t.text) });
+    }
+    const R = TplSync.remote();
+    const deleted = Object.values(R).filter((r) => r && r.deleted).map((r) => ({ id: r.id, name: r.name, at: r.updatedAt || 0 }));
+    return { list: out, deleted };
+  }
+  async function tplImportFile(fileT, fileDeleted, mode) {
+    const report = [];
+    if (!Array.isArray(fileT) || mode === 'C') return report;
+    const allowDelete = mode === 'A';
+    const B = { ...tplBases() };
+    const loc = getTpls();
+    const byId = new Map(loc.map((t) => [t.id, t]));
+    const byName = new Map(loc.map((t) => [tplNameKey(t.name), t]));
+    for (const f of fileT) {
+      if (!f || !f.name) continue;
+      const name = String(f.name).trim();
+      if (mode === 'B' && /^termine$/i.test(name)) { report.push([name, 'übersprungen (Termine einer Fremddatei werden nur angezeigt)']); continue; }
+      let fText = toPop(f.text);
+      let cut = false;
+      if (fText.length > TPL_LEN) { fText = fText.slice(0, TPL_LEN); cut = true; }
+      const L = byId.get(f.id) || byName.get(tplNameKey(name));
+      const fh = await tplBaseHash(fText);
+      if (!L) {
+        if ([...byId.values()].length >= TPL_MAX) { report.push([name, `nicht angelegt: Grenze von ${TPL_MAX} erreicht`]); continue; }
+        const nt = tplEnsureMeta({ id: f.id && !byId.has(f.id) ? f.id : undefined, name, text: fText, updatedAt: now(), updatedBy: { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' } });
+        for (const k of Object.keys(f)) if (!(k in nt) && !['text', 'base', 'hash', 'rev', 'deleted'].includes(k)) nt[k] = f[k];   // unbekannte Felder mitführen
+        byId.set(nt.id, nt); byName.set(tplNameKey(name), nt); B[nt.id] = fh;
+        report.push([name, 'neu' + (cut ? ' (auf 8000 Zeichen gekürzt)' : '')]);
+        continue;
+      }
+      const lh = await tplBaseHash(L.text);
+      if (lh === fh) { B[L.id] = fh; report.push([name, 'gleich']); continue; }
+      const common = f.base && B[L.id] && f.base === B[L.id] ? f.base : null;
+      const take = (why) => { L.text = fText; L.updatedAt = now(); L.updatedBy = { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' }; B[L.id] = fh; report.push([name, why + (cut ? ' (auf 8000 Zeichen gekürzt)' : '')]); };
+      if (common && lh === common) { take('übernommen'); continue; }                       // nur die Datei hat geändert
+      if (common && fh === common) { report.push([name, 'eigene Fassung neuer – bleibt']); continue; }
+      // nur Ergänzungen?
+      if (mode === 'A' || common) {
+        if (tplGaps(L.text, fText)) { take('übernommen (Ergänzung)'); continue; }
+        if (tplGaps(fText, L.text)) { B[L.id] = lh; report.push([name, 'eigene Fassung ist eine Ergänzung – bleibt']); continue; }
+      }
+      report.push([name, common ? 'übersprungen: beide Seiten verschieden geändert' : 'übersprungen: Text verschieden, kein gemeinsamer Stand (zum Übernehmen die eigene Vorlage vorher löschen)']);
+    }
+    if (allowDelete) {
+      for (const del of fileDeleted || []) {
+        const L = byId.get(del.id);
+        if (!L) continue;
+        const lh = await tplBaseHash(L.text);
+        if (B[L.id] && lh === B[L.id]) { tplTrashCopy(L, 'in der Datei gelöscht'); byId.delete(L.id); delete B[L.id]; report.push([L.name, 'gelöscht (in der Datei gelöscht, hier unverändert)']); }
+        else report.push([L.name, 'nicht gelöscht: hier seit dem letzten Import geändert']);
+      }
+    }
+    G.set('tpl_base', B);
+    setTpls([...byId.values()]);
+    return report;
+  }
+  function tplReport(report, title) {
+    if (!report || !report.length) return;
+    ask(title || 'Textvorlagen', `<div style="max-height:55vh;overflow:auto"><table style="width:100%;border-collapse:collapse">${report.map(([n, w]) => `<tr><td style="padding:5px 10px 5px 0;color:#fff;font-weight:600;vertical-align:top">${esc(n)}</td><td style="padding:5px 0;color:#c8c8c8">${esc(w)}</td></tr>`).join('')}</table></div>`, [{ label: 'OK', value: true, primary: true }]);
+  }
 
   // =====================================================================================
   // Start
@@ -9608,6 +10411,8 @@
     ensureStyle();
     await migrateV1().catch((e) => warn('Umstellung', e));
     if (await handleSpecialPage()) return;
+    // Kontobindung: anderes oder kein Konto angemeldet → Skript bleibt komplett aus
+    if (BK_MODE === 'poppen' && !(await Owner.check().catch((e) => { warn('Kontobindung', e); return true; }))) { Owner.showOff(); return; }
     bkEmbed(true);
     await migrate232().catch((e) => warn('Umzug', e));
     loadMe().then(() => { headerButton(); ageWithMe().catch((e) => warn('Grenzen altern', e)); return loadSecondHome(); }).catch(() => {});
@@ -9621,6 +10426,7 @@
     initGroupAuto();
     initResolver();
     initXxl();
+    initEvents();
     initShared();
     initGroupRequests();
     Etappe.start();
@@ -9690,7 +10496,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

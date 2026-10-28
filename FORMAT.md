@@ -110,8 +110,34 @@ Eine Person je Eintrag. Alle Felder sind optional außer `id`.
 Versionsfelder `rev`, `updatedAt`, `updatedBy`, `deleted`.
 
 ### `tpl` – gemeinsame Textvorlagen
-`{ id, name, text, … }` plus die Versionsfelder. Eine Vorlage namens „Termine“ enthält Termine im Format
+Regelwerk für Abgleich, Migration und Import: gemeinsam mit dem JOYclub-Skript festgelegt (Kurzfassung unten).
+
+| Feld | Bedeutung |
+|---|---|
+| `id` | stabil, ändert sich nie: `j:<Notiz-ID auf JOYclub>` (Vorlage stammt vom JOYclub-Server), sonst `x:<zufall>`. Ältere poppen-Vorlagen haben noch eine reine UUID – gilt wie `x:`. |
+| `name` | eindeutig unter den nicht gelöschten Einträgen (Vergleich ohne Groß/Klein und Leerraum) |
+| `text` | höchstens 8000 Zeichen, **in JOYclub-Schreibweise** (`*name*`-Smileys); andere Plattformen übersetzen beim Anzeigen/Einfügen (`smiley-map.json`) |
+| `pfIds` | `{ joyclub: <Notiz-ID> }` – Verknüpfung mit dem JOYclub-Server (vom JOYclub-Skript gesetzt, sonst nur mitführen) |
+| `owner` | `ich`-ID des JOYclub-Kontos, dem die Vorlagen gehören (`joyclub:<uid>`). Steht `owner` nicht unter den eigenen `ich`-Einträgen, schreibt das poppen-Skript nicht in `tpl`. |
+
+Höchstens 100 nicht gelöschte Vorlagen. Eine Vorlage namens „Termine“ enthält Termine im Format
 `wann - wo - was - Link` (eine Zeile je Termin).
+
+**Vergleich:** „geändert“ heißt Name oder Text weichen ab – Text immer **ohne Smileys/Emoji und ohne Leerraum** verglichen.
+**Ergänzung:** Der neue Text enthält alle Absätze des alten in derselben Reihenfolge und hat nur neue Absätze (am Anfang, am Ende oder dazwischen) dazubekommen. Ergänzen beide Seiten dieselbe Stelle, kommen beide Ergänzungen hinein, die ältere zuerst.
+
+**Gleichzeitiges Schreiben ohne JOYclub-Skript (3.1):** Schreiben mit `expect`. Bei abweichendem `rev`: andere Seite unverändert gegenüber dem Gelesenen → schreiben; nur Ergänzungen → zusammenführen; sonst gewinnt die gerade schreibende Fassung, die andere kommt in den Papierkorb (30 Tage). Gelöscht wird nur per Löschmarke; wurde die Vorlage seit dem Lesen anderswo geändert, wird nicht gelöscht.
+Mit JOYclub-Skript im Browser-Profil ist der JOYclub-Server maßgeblich (Regeln 3.2/3.3 im JOYclub-Skript).
+
+**Sicherungsdatei** („Gedächtnis sichern“): `templates: [{ id, name, text, updatedAt, updatedBy, pfIds?, owner?, base, hash }]`,
+`templatesDeleted: [{ id, name, at }]`, `templatesFmt: "joyclub"` (Text in JOYclub-Schreibweise; fehlt das Feld, ist der Text in poppen-Schreibweise – Dateien vor 2.34).
+- `hash` = Prüfsumme der Vorlage in der Datei, `base` = Prüfsumme beim letzten Import dieser Vorlage („gemeinsamer Stand“, `null` = noch nie importiert).
+- Prüfsumme = die ersten 16 Hex-Zeichen von SHA-256 über den Text **ohne Smileys und ohne Leerraum** (UTF-8).
+- Import Fall A (Konto der Datei = eigenes `ich`): nur in der Datei → anlegen · gleich → nichts · eine Seite seit dem gemeinsamen Stand unverändert → die geänderte gewinnt · nur Ergänzungen → zusammenführen · beide verschieden geändert bzw. erster Import mit verschiedenem Text → überspringen · in der Datei gelöscht und hier seit dem letzten Import unverändert → Löschmarke, alte Fassung in den Papierkorb.
+- Fremde Datei: Schalter „Auch Textvorlagen migrieren“ (Standard aus). Aus = Fall C (nie anfassen). An = Fall B: wie A, aber ohne Löschen; beim ersten Import nur neue Namen anlegen und gleiche Texte verknüpfen. „Termine“ einer fremden Datei wird nie übernommen (nur im Fickliste-Import angezeigt).
+- Danach ein Bericht je Vorlage: neu · übernommen · zusammengeführt · übersprungen (Grund) · gelöscht · Grenze von 100 erreicht.
+
+**Kontobindung (3.4):** Jedes Skript bindet seinen Tampermonkey-Speicher an genau ein Konto seiner Plattform (poppen: `vaf2_owner { uid, nick, seit }`). Ist ein anderes Konto angemeldet, bleibt das Skript komplett aus und schreibt weder in `fick` noch in `tpl`.
 
 ### `arch`
 Reserviert für ein gemeinsames Profil-Archiv. Das poppen-Skript führt sein Archiv derzeit verschlüsselt lokal.
@@ -163,4 +189,4 @@ Smileys: 😁 = breit grinsend, 😳 = große, ungläubige Augen.
 ## Änderungsliste
 | schema | Änderung |
 |---|---|
-| 1 | erste Fassung (poppen 2.32); Ergänzungen 2.33: IDs `j:`, Plattform-Codes, `updatedBy`-Felder, Feldlisten, Fallliste des Imports (keine Formatänderung) |
+| 1 | erste Fassung (poppen 2.32); Ergänzungen 2.33: IDs `j:`, Plattform-Codes, `updatedBy`-Felder, Feldlisten, Fallliste des Imports; 2.34: Textvorlagen-Regelwerk (JOYclub-Schreibweise, `x:`-IDs, `pfIds`, `owner`, `base`/`hash` in der Sicherungsdatei), Kontobindung (keine Formatänderung) |
