@@ -5935,7 +5935,8 @@
   async function measureGrid(base, ctx, opts = {}) {
     const s = S(), cuts = [...mop(s).bmi].sort((x, y) => x - y);
     const stat = { queries: 0, heights: 0, measured: 0, unknownW: 0, skipped: 0 };
-    const q = (p) => { stat.queries++; return p; };
+    // gedrosselt: zwischen zwei Suchabfragen 0,5–1 s (viele kleine Abfragen sollen poppen nicht auffallen)
+    const q = async (p) => { stat.queries++; const r = await p; await sleep(500 + Math.random() * 500); return r; };
     // 1) Größen mit Treffern finden
     const heights = [];
     const hRec = async (lo, hi) => {
