@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.29
+// @version      2.30
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,8 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.29';
+  const VERSION = '2.30';
+  const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
   const HOST = location.hostname;
@@ -178,6 +179,8 @@
         sugarDaddy: { on: false, gap: 15 }, sugarMom: { on: false, gap: 15 },
         labels: ['junges Paar', 'junge Paare', 'Paar', 'Paare', 'Geronto-Paar', 'Geronto-Paare'] },
     },
+    // Moppel-Liebhaber: Figur-Stufen nach BMI (Griffe = Beginn Stufe 1/2/3; darunter Stufe 0 „Plus-Size“)
+    moppel: { on: false, bmi: [25, 40, 45], labels: ['Kurvig', 'Kurvige', 'Üppig', 'Üppige', 'XXL', 'XXL'], radius: 100, types: ['m', 'w'] },
     warnYears: 1,                 // so viele Jahre vor „Ignorieren ab“: dunkelorange + vormerken
     watch: true,
     whitelist: {
@@ -515,6 +518,9 @@
   // ---------- Beobachter für Antworten der Seite ----------
   const RespHooks = [];   // { re, onData(data, info), rewrite(data, info) → neue Daten oder null }
   function onApi(re, onData, rewrite) { RespHooks.push({ re, onData, rewrite }); }
+  // Antworten mit Fehlercode (code ≠ 0) beobachten, z. B. „Nachrichtenfilter“ (20903)
+  const ErrHooks = [];
+  function onApiErr(re, fn) { ErrHooks.push({ re, fn }); }
 
   function parseBody(b) {
     if (b == null) return null;
@@ -531,6 +537,7 @@
     let json;
     try { json = JSON.parse(text); } catch { return null; }
     try { Recorder.add(info, json); } catch (e) { warn('Rekorder', e); }
+    if (json && json.code !== 0) { for (const h of ErrHooks) if (h.re.test(path)) { try { h.fn(json, info); } catch (e) { warn('Fehler-Hook', path, e); } } }
     if (!json || json.code !== 0) return null;
     let data = json.data, changed = false;
     for (const h of RespHooks) {
@@ -718,7 +725,7 @@
         });
       },
       async stats() { await load(); const v = Object.values(data); return { total: v.length, fresh: v.filter((x) => !x.known).length }; },
-      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} const idres = G.get('idres_test', null); return { version: VERSION, at: new Date().toISOString(), valuemap, idres, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
+      async export() { await load(); const cur = await KV.get('recorder', {}); data = mergeRec(cur, data); let valuemap; try { valuemap = grValueTableSnapshot(); } catch {} const idres = G.get('idres_test', null); const searchDistances = G.get('search_distances', null); return { version: VERSION, at: new Date().toISOString(), valuemap, idres, searchDistances, entries: Object.values(data).sort((a, b) => (a.known - b.known) || a.path.localeCompare(b.path)) }; },
       async clear() { data = {}; await KV.set('recorder', {}); Bus.emit('recorder'); },
     };
   })();
@@ -946,6 +953,7 @@
       city: (u.geo_location && u.geo_location.city) || (u.location && u.location.city) || '',
       note: typeof u.note === 'string' ? u.note : undefined,
       active: u.is_active, lastLogin: u.last_visible_login || 0, fake: u.fakecheck,
+      signup: u.signup_date || 0, dist: typeof u.distance === 'number' ? u.distance : null,
     };
   }
 
@@ -980,6 +988,8 @@
         if (pn && (!m.blk || !m.blk.opa)) m.blk = { at: pn.at, src: pn.src, note: x.note, opa: true };
       }
       if (x.lastLogin) m.lastLogin = x.lastLogin;
+      if (x.signup) m.signup = x.signup;
+      if (x.dist != null && isFinite(x.dist)) m.dist = { km: x.dist, at: now() };   // Entfernung, wie poppen sie bei der Sichtung angezeigt hat
       if (m.del && src !== 'Blockierliste') delete m.del;
       m.last = now();
       m.seen = m.seen || {};
@@ -2070,6 +2080,9 @@
     // Nutzer-Suche auf der Suchseite mitschneiden (eigene Abfragen laufen am Beobachter vorbei)
     function record(body) {
       if (!onSearch() || !body || typeof body !== 'object') return;
+      // alle vorkommenden Entfernungen merken (Stufen des Radius-Reglers; „Weltweit“ = ohne/ höchster Wert)
+      const dv = body.distance === undefined ? 'ohne' : String(body.distance);
+      const ds = { ...(G.get('search_distances', {}) || {}) }; ds[dv] = (ds[dv] || 0) + 1; G.set('search_distances', ds);
       G.set('search_user_state', { ...cleanState(body), at: now() });
     }
     async function ensureState() {
@@ -2212,7 +2225,21 @@
   // Oberfläche: Stile, Popups im poppen-Stil, Markierungen
   // =====================================================================================
   const OLD_MAN_PATH = 'M3408 12790 c-235 -43 -487 -227 -651 -477 -33 -50 -47 -63 -67 -63 -37 0 -119 -24 -168 -49 -102 -52 -148 -120 -201 -298 -48 -164 -73 -337 -69 -483 3 -112 6 -131 30 -180 15 -30 41 -64 58 -75 29 -19 30 -23 30 -92 0 -39 -3 -74 -8 -77 -4 -2 -86 -1 -182 4 -273 12 -411 -7 -566 -80 -227 -105 -387 -276 -518 -551 -127 -266 -203 -574 -253 -1019 -22 -199 -25 -1016 -5 -1265 20 -240 60 -603 82 -750 12 -82 15 -131 9 -133 -6 -3 -6 -8 0 -16 7 -8 -3 -51 -30 -136 -109 -339 -191 -737 -235 -1140 -22 -191 -25 -693 -6 -845 33 -258 72 -434 158 -699 234 -721 431 -1986 554 -3566 12 -145 22 -265 23 -266 1 -1 52 -16 114 -34 98 -29 113 -36 121 -59 45 -127 347 -276 743 -366 622 -140 1209 -69 1131 137 l-10 28 168 0 c273 0 423 30 492 100 62 62 50 120 -43 204 -59 53 -250 150 -377 191 l-84 27 6 77 c35 439 116 2702 166 4611 15 587 12 548 44 595 65 94 130 255 161 400 9 44 19 87 21 97 4 13 23 4 102 -49 201 -134 411 -220 617 -252 109 -16 209 -22 222 -14 18 13 32 57 39 126 l6 64 69 -35 69 -36 0 -156 c0 -170 4 -186 60 -215 37 -19 64 -19 104 0 55 26 61 45 66 214 l5 155 28 7 27 7 0 -2924 c0 -3216 -5 -2965 60 -2999 62 -32 136 -10 164 49 15 31 16 279 16 3052 l0 3017 25 64 c99 246 -33 525 -286 604 -33 10 -83 19 -110 19 -27 0 -60 6 -72 14 -37 24 -132 36 -367 46 -124 6 -272 15 -330 20 -98 9 -467 74 -476 83 -3 2 -9 91 -14 198 -27 543 -53 829 -125 1389 l-6 45 53 35 c141 94 296 282 422 513 20 37 42 67 49 67 7 0 46 -17 87 -38 59 -29 78 -45 93 -74 30 -59 36 -140 25 -308 -13 -195 -6 -359 17 -424 26 -71 104 -148 178 -175 200 -73 369 48 421 302 9 42 16 81 16 86 0 17 -87 71 -148 92 -72 26 -220 28 -308 5 -34 -9 -66 -16 -72 -16 -5 0 -11 71 -15 173 -4 137 -9 186 -26 239 -28 89 -88 155 -173 193 -35 15 -65 29 -66 31 -2 1 10 39 27 83 40 105 106 337 122 433 11 69 16 78 40 88 77 32 105 336 42 457 -16 31 -21 68 -27 190 -4 84 -14 199 -21 255 -14 100 -13 104 6 120 23 19 35 74 25 113 -6 24 -10 26 -39 21 l-32 -6 -19 82 c-10 46 -35 137 -57 203 -171 527 -466 883 -824 994 -79 25 -249 36 -327 21z';
-  const oldManSvg = (scale = 1.25) => `<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 640 1280" preserveAspectRatio="xMidYMid meet" fill="currentColor" style="transform:scale(${scale})"><g transform="translate(0,1280) scale(0.1,-0.1)"><path d="${OLD_MAN_PATH}"></path></g></svg>`;
+  // Oma-Symbol (Fassung A1 aus dem JOYclub-Skript, 32×64, ×20 auf das 640×1280-Raster skaliert)
+  const OMA_PARTS = '<circle cx="9.6" cy="9.2" r="3.3"/><circle cx="15.2" cy="12.4" r="5"/><path d="M8.4 16.2 C5.6 19.6 5.8 26 8.2 32 L4.6 53 L22.8 53 L19 33 C20.6 29 21 24.6 19.2 20.4 C16.6 17.2 12.2 15.4 8.4 16.2Z"/><path d="M17.4 21.6 C20.6 23.4 23.2 26 25.4 29.2 L23.8 30.4 C21.4 28 19 26 16.4 24.6Z"/><path d="M24.8 29.6 L24.8 62" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M24.8 29.6 C24.8 26.4 28.8 26.4 28.8 29.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><rect x="9.6" y="52" width="3.2" height="9" rx="1"/><rect x="14.6" y="52" width="3.2" height="9" rx="1"/><path d="M8.2 60 h5.6 v2.6 h-6.6 z"/><path d="M13.6 60 h6 v2.6 h-6 z"/>';
+  // Opa bzw. Oma (eigenes Männer-Profil → „Oma“) als <g> im 640×1280-Raster
+  const figG = () => (typeof Me !== 'undefined' && Me.male() ? `<g transform="scale(20)">${OMA_PARTS}</g>` : `<g transform="translate(0,1280) scale(0.1,-0.1)"><path d="${OLD_MAN_PATH}"></path></g>`);
+  const oldManSvg = (scale = 1.25) => `<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 640 1280" preserveAspectRatio="xMidYMid meet" fill="currentColor" style="transform:scale(${scale})">${figG()}</svg>`;
+  // Schalter-Symbol „Opa-/Oma-Schutz“: aus = Umriss im Kreis, an = gefüllt im Kreis mit Schrägstrich
+  let protSvgN = 0;
+  function protectSvg(on) {
+    const id = 'vaf-sil' + (protSvgN++);
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1600" width="1em" height="1em" fill="currentColor" stroke="currentColor" aria-hidden="true">` +
+      `<defs><filter id="${id}" x="-10%" y="-10%" width="120%" height="120%"><feMorphology in="SourceAlpha" operator="erode" radius="55" result="e"/><feComposite in="SourceGraphic" in2="e" operator="out"/></filter></defs>` +
+      `<circle cx="800" cy="800" r="735" stroke-width="120" fill="none"/>` +
+      `<g${on ? '' : ` filter="url(#${id})"`}><g transform="translate(506,226) scale(0.9)">${figG()}</g></g>` +
+      (on ? '<line x1="280" y1="1320" x2="1320" y2="280" stroke-width="120" stroke-linecap="round"/>' : '') + '</svg>';
+  }
 
   // Opa mit Stift (Menüeintrag „Opa-Schutz“): Stift von „Profil bearbeiten“ verkleinert unten rechts, mit Rand in Hintergrundfarbe
   const PEN_PATH = 'M21.988 2.514C21.14 1.698 19.395.258 18.273.057c-1.873-.328-3.069.826-4.222 1.938-1.82 1.758-3.62 3.6-5.365 5.38-2.19 2.244-4.455 4.553-6.794 6.734-.836.922-.846 1.673-.857 2.626 0 .202 0 .403-.01.625-.053 1.165-.085 2.542 0 3.908.116 1.99.687 2.541 2.74 2.658A42 42 0 0 0 6.326 24c.836 0 1.661-.021 2.392-.074.952-.064 1.534-.307 2.158-.868 2.074-1.885 4.085-3.993 6.032-6.026 2.064-2.16 4.19-4.395 6.413-6.375 1.069-.964 1.63-2.001 1.65-3.092.032-1.906-1.565-3.707-2.973-5.051zm-1.778 8.672-9.789 9.732-.127-.052c-1.598-2.097-3.576-4.078-6.2-6.238l9.745-9.838c.37.138 2.074 1.494 2.54 1.896 1.249 1.112 2.35 2.33 3.196 3.516l.137.2s.085.107.138.17c.106.127.423.52.37.604zM15.194 3.52a7 7 0 0 1 .444-.52c1.037-1.111 1.937-1.408 2.847-.931.444.233 1.185.826 1.735 1.302l.477.435c.846.815 2.18 2.53 2.338 3.61.127.9-.624 1.578-1.29 2.182-.075.064-.149.138-.223.201l-1.714-2.181c-1.45-1.567-2.91-2.88-4.487-4.024a.6.6 0 0 0-.138-.074zM8.982 22.062h-.37c-1.418.074-2.89.127-4.318.064-.074 0-.137-.021-.211-.032-.074-.021-.149-.032-.223-.043h-.306c-.35.022-.604.022-.635-.137-.106-2.298-.117-4.183-.011-5.93.064.042.148.106.275.211 1.905 1.515 3.556 3.145 5.185 5.126l.096.116s.042.053.084.096c.212.243.36.413.445.53h-.01Z';
@@ -3141,9 +3168,13 @@
   #vaf-set .vaf-grow .vaf-gctl{grid-column:2 / span 2;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   #vaf-set .vaf-grow.shared .vaf-glab, #vaf-set .vaf-grow.shared .vaf-gctl{grid-column:1 / -1}
   #vaf-set .vaf-grow.shared .vaf-glab{display:flex;gap:10px;align-items:baseline}
+  #vaf-set .vaf-mop-leg{display:flex;gap:22px;font-size:13px;font-weight:600}
   #vaf-set .vaf-lbls{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 18px;width:100%}
   #vaf-set .vaf-lbls .vaf-txt{min-width:0;width:100%;box-sizing:border-box}
-  #vaf-set .vaf-ver{font-size:13px;font-weight:400;color:#8c8c8c}
+  #vaf-set .vaf-ver{font-size:13px;font-weight:400;color:#8c8c8c;text-decoration:none}
+  #vaf-set .vaf-ver:hover{text-decoration:underline}
+  #vaf-set .vaf-hlink{font-size:13px;font-weight:400;color:#4096ff;text-decoration:none;margin-left:10px}
+  #vaf-set .vaf-hlink:hover{text-decoration:underline}
   #vaf-set .vaf-sl{position:relative;height:36px;min-width:180px;user-select:none;touch-action:none}
   #vaf-set .vaf-sl .t{position:absolute;top:22px;left:8px;right:8px;height:4px;background:#444;border-radius:2px}
   #vaf-set .vaf-sl .f{position:absolute;top:22px;height:4px;background:#ffc21a;border-radius:2px}
@@ -3256,6 +3287,34 @@
     const i = document.createElement('input'); i.type = 'text'; i.className = 'vaf-txt'; i.value = v || ''; i.placeholder = ph;
     i.addEventListener('change', () => fn(i.value)); return i;
   }
+  // Schieberegler mit mehreren Griffen und farbigen Abschnitten (Moppel-Stufen)
+  const MOP_RADII = [5, 10, 25, 50, 75, 100, 250, 450, 0];   // 0 = Weltweit; 75 = sucht 100 km und filtert über 75 km
+  function multiSlider(min, max, vals, colors, fn) {
+    const el = document.createElement('div');
+    el.className = 'vaf-sl';
+    el.innerHTML = '<div class="t"></div>' + colors.map(() => '<div class="seg"></div>').join('') + vals.map(() => '<div class="h"><span class="v"></span></div>').join('');
+    const segs = [...el.querySelectorAll('.seg')], hs = [...el.querySelectorAll('.h')];
+    const cur = [...vals];
+    const pos = (v) => `calc(8px + (100% - 16px) * ${(v - min) / (max - min)})`;
+    const draw = () => {
+      const b = [min, ...cur, max];
+      segs.forEach((sg, i) => { sg.style.cssText = `position:absolute;top:22px;height:4px;border-radius:2px;background:${colors[i]};left:${pos(b[i])};width:calc((100% - 16px) * ${(b[i + 1] - b[i]) / (max - min)})`; });
+      hs.forEach((h, i) => { h.style.left = pos(cur[i]); h.style.borderColor = '#fff'; h.querySelector('.v').textContent = cur[i]; });
+    };
+    hs.forEach((h, i) => h.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); h.setPointerCapture(e.pointerId);
+      const mv = (ev) => {
+        const r = el.getBoundingClientRect();
+        let v = Math.round(min + (ev.clientX - r.left - 8) / (r.width - 16) * (max - min));
+        v = Math.max(i ? cur[i - 1] : min, Math.min(i < cur.length - 1 ? cur[i + 1] : max, v));
+        if (v !== cur[i]) { cur[i] = v; draw(); }
+      };
+      const up = () => { h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up); fn([...cur]); };
+      h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+    }));
+    draw();
+    return el;
+  }
   // Schieberegler mit 1–2 Griffen
   function slider(min, max, vals, fn) {
     const el = document.createElement('div');
@@ -3308,7 +3367,7 @@
     settingsDirty = false;
     el.id = 'vaf-set';
     const W1 = word();
-    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <span class="vaf-ver">${esc(VERSION)}</span></h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
+    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <a class="vaf-ver" href="${REPO_URL}/blob/main/changelog.txt" target="_blank" rel="noopener" title="Was ist neu? (Changelog)">${esc(VERSION)}</a><a class="vaf-hlink" href="${REPO_URL}#readme" target="_blank" rel="noopener">Anleitung</a><a class="vaf-hlink" href="${REPO_URL}/issues" target="_blank" rel="noopener">Fehler melden</a></h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
     const body = el.querySelector('#vaf-set-body');
     const touch = () => { settingsDirty = true; projectLater(); };
     const lab = (text, path) => `<span data-path="${path}">${text}</span>`;
@@ -3453,6 +3512,45 @@
       row(cu, lab('Automatisch anmelden', 'autoLogin'), 'nur mit vom Browser ausgefüllten Daten', sw(draft.autoLogin, (v) => { draft.autoLogin = v; touch(); }), 'Pause zwischen Versuchen', numIn(draft.autoLoginPauseMin, (x) => { draft.autoLoginPauseMin = x; touch(); }, 1, 1440), 'Min.');
       row(cu, lab('Wartungsseite', 'maintenanceMin'), '', 'neuer Versuch nach', numIn(draft.maintenanceMin, (x) => { draft.maintenanceMin = x; touch(); }, 1, 1440), 'Min.');
 
+      // ---- Moppel-Liebhaber ----
+      {
+        const mp = draft.moppel;
+        const cm = card(body, 'Moppel-Liebhaber');
+        const r0 = document.createElement('div'); r0.className = 'vaf-srcgrid shared';
+        r0.append(swCell(sw(mp.on, (v) => { mp.on = v; touch(); }), lab('Benutzer ist Moppel-Liebhaber', 'moppel.on')), document.createElement('div'));
+        cm.appendChild(r0);
+        // Legende (Bezeichnungen in Segmentfarbe) + Regler 25–60 mit drei Griffen
+        const r1 = document.createElement('div'); r1.className = 'vaf-srcgrid shared';
+        const leg = document.createElement('div'); leg.className = 'vaf-mop-leg'; leg.style.gridColumn = '1/-1';
+        const paintLeg = () => { leg.innerHTML = ['Plus-Size', mp.labels[0], mp.labels[2], mp.labels[4]].map((t, i) => `<span style="color:${MOP_COLORS[i]}">${esc(t)}</span>`).join(''); };
+        paintLeg();
+        const ms = multiSlider(25, 60, mp.bmi, MOP_COLORS, (x) => { mp.bmi = x; touch(); });
+        ms.style.gridColumn = '1/-1';
+        r1.append(leg, ms); cm.appendChild(r1);
+        const mlbl = document.createElement('div'); mlbl.className = 'vaf-lbls';
+        [0, 2, 4, 1, 3, 5].forEach((i) => { const inp = txtIn(mp.labels[i], (v) => { mp.labels[i] = v.trim() || DEFAULTS.moppel.labels[i]; paintLeg(); touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; mlbl.appendChild(inp); });
+        const gm = (labHtml, desc, ...ctl) => { const r = document.createElement('div'); r.className = 'vaf-srcgrid vaf-grow shared'; const l = document.createElement('div'); l.className = 'vaf-glab'; l.innerHTML = `<span class="vaf-l">${labHtml}</span>${desc ? `<div class="vaf-d">${desc}</div>` : ''}`; const k = document.createElement('div'); k.className = 'vaf-gctl'; ctl.forEach((x) => k.append(x)); r.append(l, k); cm.appendChild(r); return r; };
+        gm(lab('Bezeichnungen', 'moppel.labels'), 'Oben Einzahl, unten Mehrzahl', mlbl);
+        const rad = document.createElement('select');
+        rad.innerHTML = MOP_RADII.map((r) => `<option value="${r}">${r ? r + ' km' : 'Weltweit'}</option>`).join('');
+        rad.value = String(mp.radius); rad.addEventListener('change', () => { mp.radius = +rad.value; touch(); });
+        gm(lab('Suchradius', 'moppel.radius'), '', rad);
+        const mt = document.createElement('div'); mt.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap';
+        for (const [t, name] of [['m', 'Mann'], ['w', 'Frau'], ['pw', 'Paar (Frau)'], ['pm', 'Paar (Mann)'], ['ts', 'Trans'], ['tv', 'Nicht-binär']]) {
+          const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:6px;align-items:center';
+          const ch = document.createElement('input'); ch.type = 'checkbox'; ch.checked = mp.types.includes(t);
+          ch.addEventListener('change', () => { mp.types = ch.checked ? [...new Set([...mp.types, t])] : mp.types.filter((x) => x !== t); touch(); });
+          l.append(ch, name); mt.appendChild(l);
+        }
+        gm(lab('Profiltypen', 'moppel.types'), '', mt).classList.add('vaf-last');
+      }
+
+      // ---- Sicherung (immer offen) ----
+      const btnS = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
+      const cs = card(body, 'Sicherung');
+      row(cs, 'Alle Daten', 'Einstellungen, Gedächtnis, Warteliste, Fickliste (verschlüsselt) …', btnS('Alle Daten sichern', () => backupAll()), btnS('Alle Daten wiederherstellen', () => restoreAll()));
+      row(cs, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder samt Fickliste und Textvorlagen (z. B. für ein zweites Profil)', btnS('Exportieren ohne Bilder', () => exportMemory(false)), btnS('mit Bildern', () => exportMemory(true)), btnS('Importieren (mischen)', () => importMemory()));
+
       // ---- Experten ----
       const exp = document.createElement('div'); exp.className = 'vaf-exp'; exp.textContent = '▸ Experten-Einstellungen';
       body.appendChild(exp);
@@ -3509,8 +3607,6 @@
       const bkBtn = btn('Jetzt prüfen', async () => { bkSt.textContent = 'prüfe …'; try { await bkTest(); } catch {} bkInfo(); });
       row(ce, 'Abgleich mit JOYclub', 'automatisch über den Briefkasten (Fickliste und Textvorlagen)', bkSt, bkBtn);
 
-      row(ce, 'Alle Daten', 'Einstellungen, Gedächtnis, Warteliste, Fickliste (verschlüsselt) …', btn('Alle Daten sichern', () => backupAll()), btn('Alle Daten wiederherstellen', () => restoreAll()));
-      row(ce, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder (z. B. für ein zweites Profil)', btn('Exportieren ohne Bilder', () => exportMemory(false)), btn('mit Bildern', () => exportMemory(true)), btn('Importieren (mischen)', () => importMemory()));
       const work = btn('Jetzt abarbeiten', () => workQueue(work));
       if (Etappe.running && Etappe.manual) work.textContent = 'Anhalten';
       row(ce, 'Warteliste', 'Blockiert wird im Hintergrund; „Jetzt abarbeiten“ arbeitet die Warteliste auch bei ausgeschaltetem Schalter einmal ganz ab', btn('Anzeigen', showQueue), work, btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
@@ -3749,10 +3845,15 @@
         const r = rowOf(inv, pop);
         const c = r.cloneNode(true);
         c.id = 'vaf-pm-toggle';
-        const lf = leafWithText(c, 'Unsichtbar'); if (lf) lf.textContent = `${W1}-Schutz aktiv`;
+        const lf = leafWithText(c, 'Unsichtbar'); if (lf) lf.textContent = `${W1}-Schutz`;
         const swb = c.querySelector('button[role=switch]') || c.querySelector('.ant-switch');
+        // Symbol: Opa/Oma im Kreis – aus als Umriss, an gefüllt mit Schrägstrich (statt des Augen-Symbols von „Unsichtbar“)
+        const oldIcon = [...c.querySelectorAll('svg')].find((x) => !swb || !swb.contains(x));
+        const ico = document.createElement('span'); ico.className = 'vaf-prot-ico'; ico.style.cssText = 'display:inline-flex;font-size:1.15em';
+        if (oldIcon) oldIcon.replaceWith(ico);
         const paint = () => {
           const on = isOn();
+          if (ico.dataset.on !== String(on)) { ico.innerHTML = protectSvg(on); ico.dataset.on = String(on); }
           if (swb) { swb.classList.toggle('ant-switch-checked', on); swb.setAttribute('aria-checked', on ? 'true' : 'false'); }
           c.title = on ? 'Automatik an: Seiten prüfen, Etappen blockieren' : 'Automatik aus';
         };
@@ -3774,10 +3875,10 @@
       if (!inbox) return;
       const anchor = inbox.closest('.ant-badge') || inbox;
       let wrap = document.getElementById('vaf-header-btn');
-      if (!wrap || !wrap.isConnected || wrap.nextElementSibling !== anchor || !wrap.querySelector('.vaf-hdr-dot') || !wrap.querySelector('.vaf-hdr-act')) {
+      if (!wrap || !wrap.isConnected || wrap.nextElementSibling !== anchor || !wrap.querySelector('.vaf-hdr-dot') || !wrap.querySelector('.vaf-hdr-act') || wrap.dataset.oma !== String(Me.male())) {
         if (wrap) wrap.remove();
         wrap = document.createElement('span');
-        wrap.id = 'vaf-header-btn';
+        wrap.id = 'vaf-header-btn'; wrap.dataset.oma = String(Me.male());
         wrap.className = 'ant-badge ant-theme';
         wrap.style.position = 'relative';
         wrap.innerHTML = `<a href="#" class="ant-btn ant-theme ant-btn-circle ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-icon-only" tabindex="0"><span class="ant-btn-icon">${oldManSvg()}</span></a>` +
@@ -4490,7 +4591,7 @@
     await Members.update(uid, (m) => {
       if (x.nick) m.nick = m.nick || x.nick;
       const z = fields['Sternzeichen'];
-      if (z) { m.zod = z.split(',').map((t) => t.trim()); if (m.birth) m.birth = m.birth.map((b, i) => (m.zod[i] ? applyZodiac(b, m.zod[i]) : b)); }
+      if (z) m.zod = z.split(',').map((t) => t.trim());   // nur als Angabe: das Sternzeichen ist auf poppen frei wählbar und engt den Geburtszeitraum NICHT ein
       const h = num(fields['Größe']), w = num(fields['Gewicht']);
       if (h && w) m.body = [{ h, wlo: w, whi: w, at: now(), src: 'Profil' }];
       if (fields['Figur']) m.fig = fields['Figur'];
@@ -5128,127 +5229,183 @@
     if (b.ext && !a.main) a.ext = { ...(b.ext || {}), ...(a.ext || {}) };
     return a;
   }
-
   // =====================================================================================
-  // Figur: „Kurvig“ → „Mollig“, „Plus-size“ → „Mastschwein“ (überall), Zusatzoption „Qualle“ (Suche),
-  // Vermessung über die Profilangaben (user/info je sichtbarer Trefferkarte, gedrosselt), Badges, Ausblenden, Sortierung
+  // Figur („Moppel-Liebhaber“) – alles hier greift nur, wenn in den Einstellungen
+  // „Benutzer ist Moppel-Liebhaber“ an ist; sonst entfällt es ersatzlos.
+  //  - poppens „Kurvig“ heißt „Mollig“ (damit es nicht mit der eigenen Stufe „Kurvig“ verwechselt wird)
+  //  - Stufen nach BMI (drei Grenzen, einstellbar): 0 = „Plus-Size“ (poppens Bezeichnung), 1–3 = eigene Bezeichnungen
+  //  - Mitgliedersuche: zusätzliche Figur-Optionen für die Stufen 1–3 (sucht „Plus-size“ und filtert nach berechnetem BMI),
+  //    Badges in Stufenfarbe, Sortierung „BMI“ (nur dann wird umsortiert)
+  //  - Vermessung über die Profilangaben jeder sichtbaren Trefferkarte (gedrosselt)
   // =====================================================================================
-  const FIG_RENAME = { 'Kurvig': 'Mollig', 'Plus-size': 'Mastschwein', 'Plus-Size': 'Mastschwein' };
-  const FIG_MODES = { mollig: { min: 35, hide: 0 }, mastschwein: { min: 40, hide: 40 }, qualle: { min: 45, hide: 45 } };
-  const BANDS = [[45, 'Qualle'], [40, 'Mastschwein'], [35, 'mollig']];
-  // Gewichts-Farbskala rot→grün (Schlank … Qualle); Badges nutzen die drei grünen Töne.
-  const FIG_SCALE = { Schlank: '#b62020', Normal: '#b65c20', Sportlich: '#b69820', mollig: '#98b620', Mastschwein: '#5cb620', Qualle: '#20b620' };
+  const MOP_COLORS = ['#e0473a', '#e8a23a', '#a9c93a', '#3fbf5f'];   // Stufe 0 rot → Stufe 3 grün
+  const MOP_STAGE0 = 'Plus-Size';
+  const mop = (s = S()) => s.moppel || DEFAULTS.moppel;
+  const mopOn = (s = S()) => !!mop(s).on;
+  const mopLabel = (st, plural = false, s = S()) => (st <= 0 ? MOP_STAGE0 : (mop(s).labels[(st - 1) * 2 + (plural ? 1 : 0)] || ''));
+  // Stufe 0–3 nach BMI; −1 = unter „Plus-Size“ (keine Einstufung)
+  function mopStage(bmi, s = S()) {
+    if (!(bmi > 0)) return -1;
+    const b = mop(s).bmi;
+    if (bmi >= b[2]) return 3;
+    if (bmi >= b[1]) return 2;
+    if (bmi >= b[0]) return 1;
+    return 0;
+  }
+  const FIG_RENAME = { Kurvig: 'Mollig' };
 
   function renameTextNodes(root) {
+    if (!mopOn() || !root || (root.closest && root.closest('#vaf-set, .vaf-ov, .vaf-xxl'))) return;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let n;
     while ((n = walker.nextNode())) {
       const t = n.nodeValue.trim();
-      if (FIG_RENAME[t] && !(n.parentElement && n.parentElement.closest('input, textarea, [contenteditable]'))) n.nodeValue = n.nodeValue.replace(t, FIG_RENAME[t]);
+      if (!FIG_RENAME[t]) continue;
+      const pe = n.parentElement;
+      if (pe && pe.closest('input, textarea, [contenteditable], #vaf-set, .vaf-ov, .vaf-xxl, .vaf-mopopt')) continue;
+      n.nodeValue = n.nodeValue.replace(t, FIG_RENAME[t]);
     }
-    if (root.querySelectorAll) for (const e of root.querySelectorAll('[title="Kurvig"], [title="Plus-size"], [title="Plus-Size"]')) e.setAttribute('title', FIG_RENAME[e.getAttribute('title')]);
+    if (root.querySelectorAll) for (const e of root.querySelectorAll('[title="Kurvig"]')) if (!e.closest('#vaf-set, .vaf-mopopt')) e.setAttribute('title', FIG_RENAME.Kurvig);
   }
 
-  // ---------- „Qualle“ in der Klappliste der Suche ----------
-  const qualleOn = () => location.pathname.startsWith('/search') && G.get('qualle', false);
-  function qualleOption() {
+  // ---------- Zusatzoptionen in der Figur-Klappliste der Suche ----------
+  // G.figstage: 0 = keine eigene Stufe gewählt, 1–3 = eigene Stufe (Suche selbst läuft mit „Plus-size“)
+  const figStage = () => (location.pathname.startsWith('/search') && mopOn() ? (G.get('figstage', 0) || 0) : 0);
+  function mopOptions() {
+    if (!mopOn() || !location.pathname.startsWith('/search')) return;
     for (const dd of document.querySelectorAll('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')) {
       const opts = [...dd.querySelectorAll('.ant-select-item-option')];
-      const mast = opts.find((o) => !o.classList.contains('vaf-qualle') && /^(Mastschwein|Plus-size)$/i.test(o.textContent.trim()));
-      if (!mast || !opts.some((o) => /^Schlank$/.test(o.textContent.trim()))) continue;
-      if (!location.pathname.startsWith('/search')) continue;
-      let q = dd.querySelector('.vaf-qualle');
-      if (!q) {
-        q = mast.cloneNode(true);
-        q.classList.add('vaf-qualle');
-        q.classList.remove('ant-select-item-option-selected', 'ant-select-item-option-active');
-        q.setAttribute('title', 'Qualle');
-        const c = q.querySelector('.ant-select-item-option-content'); if (c) c.textContent = 'Qualle';
-        q.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
-        q.addEventListener('click', (e) => {
-          e.preventDefault(); e.stopPropagation();
-          G.set('qualle', true);
-          const m2 = [...dd.querySelectorAll('.ant-select-item-option:not(.vaf-qualle)')].find((o) => /Mastschwein|Plus-size/i.test(o.textContent));
-          if (m2) { m2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); m2.click(); }
-          setTimeout(qualleDisplay, 100);
-        }, true);
-        mast.after(q);
-        // Die virtualisierte Liste kennt die zusätzliche Zeile nicht → letzte Option (Qualle)
-        // wäre sonst nicht scrollbar. Holder + Inner um eine Zeilenhöhe verlängern.
+      const plus = opts.find((o) => !o.classList.contains('vaf-mopopt') && /^plus-?size$/i.test(o.textContent.trim()));
+      if (!plus || !opts.some((o) => /^Schlank$/.test(o.textContent.trim()))) continue;
+      if (!dd.querySelector('.vaf-mopopt')) {
+        let after = plus;
+        for (let st = 1; st <= 3; st++) {
+          const q = plus.cloneNode(true);
+          q.classList.add('vaf-mopopt'); q.dataset.st = String(st);
+          q.classList.remove('ant-select-item-option-selected', 'ant-select-item-option-active');
+          q.setAttribute('title', mopLabel(st));
+          const c = q.querySelector('.ant-select-item-option-content'); if (c) c.textContent = mopLabel(st);
+          q.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
+          q.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            G.set('figstage', st);
+            const p2 = [...dd.querySelectorAll('.ant-select-item-option:not(.vaf-mopopt)')].find((o) => /^plus-?size$/i.test(o.textContent.trim()));
+            if (p2) { p2.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); p2.click(); }
+            setTimeout(mopDisplay, 100);
+          }, true);
+          after.after(q); after = q;
+        }
+        // virtualisierte Liste um drei Zeilen verlängern, damit alles scrollbar bleibt
         try {
-          const ih = mast.offsetHeight || 32;
+          const ih = plus.offsetHeight || 32;
           const inner = dd.querySelector('.rc-virtual-list-holder-inner');
           const holder = dd.querySelector('.rc-virtual-list-holder');
-          if (inner && !inner.dataset.vafQualleH) { const h = parseFloat(inner.style.height) || inner.scrollHeight || 0; if (h) inner.style.height = (h + ih) + 'px'; inner.dataset.vafQualleH = '1'; }
-          if (holder && !holder.dataset.vafQualleH) { const mh = parseFloat(getComputedStyle(holder).maxHeight) || holder.clientHeight || 0; if (mh) holder.style.maxHeight = (mh + ih) + 'px'; holder.dataset.vafQualleH = '1'; }
+          if (inner && !inner.dataset.vafMop) { const h = parseFloat(inner.style.height) || inner.scrollHeight || 0; if (h) inner.style.height = (h + 3 * ih) + 'px'; inner.dataset.vafMop = '1'; }
+          if (holder && !holder.dataset.vafMop) { const mh = parseFloat(getComputedStyle(holder).maxHeight) || holder.clientHeight || 0; if (mh) holder.style.maxHeight = (mh + 3 * ih) + 'px'; holder.dataset.vafMop = '1'; }
         } catch {}
-        // andere Auswahl → Qualle aus
-        for (const o of opts) if (!o.classList.contains('vaf-qualle')) o.addEventListener('click', () => G.set('qualle', false), true);
+        for (const o of opts) if (!o.classList.contains('vaf-mopopt')) o.addEventListener('click', () => G.set('figstage', 0), true);
       }
-      const sel = qualleOn();
-      q.classList.toggle('ant-select-item-option-selected', sel);
-      mast.classList.toggle('ant-select-item-option-selected', !sel && mast.classList.contains('ant-select-item-option-selected'));
+      const st = figStage();
+      for (const q of dd.querySelectorAll('.vaf-mopopt')) q.classList.toggle('ant-select-item-option-selected', +q.dataset.st === st);
+      if (st) plus.classList.remove('ant-select-item-option-selected');
     }
-    qualleDisplay();
+    mopDisplay();
   }
-  function qualleDisplay() {
-    if (!qualleOn()) return;
+  function mopDisplay() {
+    const st = figStage(); if (!st) return;
     for (const it of document.querySelectorAll('.ant-select-selection-item')) {
-      if (/^(Mastschwein|Plus-size)$/i.test(it.textContent.trim())) { it.textContent = 'Qualle'; it.title = 'Qualle (sucht „Plus-size“ und blendet unter BMI 45 aus)'; }
+      if (/^plus-?size$/i.test(it.textContent.trim())) { it.textContent = mopLabel(st); it.title = `${mopLabel(st)} (sucht „Plus-size“ und blendet aus, wer nach BMI darunter liegt)`; }
+    }
+  }
+
+  // ---------- Sortierung „BMI“ in der Suche (zwischen „Entfernung“ und „Alter“) ----------
+  const figSortOn = () => location.pathname.startsWith('/search') && mopOn() && !!G.get('figsort', false);
+  function mopSortRadio() {
+    if (!mopOn() || !location.pathname.startsWith('/search')) return;
+    const labels = [...document.querySelectorAll('main label.ant-radio-button-wrapper')];
+    const dist = labels.find((l) => norm(l.textContent) === 'entfernung');
+    if (!dist) return;
+    let mine = dist.parentElement.querySelector('.vaf-bmisort');
+    if (!mine) {
+      mine = dist.cloneNode(true);
+      mine.classList.add('vaf-bmisort');
+      mine.classList.remove('ant-radio-button-wrapper-checked');
+      const inp = mine.querySelector('input'); if (inp) { inp.removeAttribute('name'); inp.value = 'vaf-bmi'; inp.checked = false; }
+      const lb = mine.querySelector('.ant-radio-button-label'); if (lb) lb.textContent = 'BMI';
+      mine.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (G.get('figsort', false)) return;
+        G.set('figsort', true);
+        // poppen neu suchen lassen (beliebige andere Sortierung) – die Antwort sortiert das Skript nach BMI um
+        const others = [...dist.parentElement.querySelectorAll('label.ant-radio-button-wrapper:not(.vaf-bmisort)')];
+        const target = others.find((l) => !l.classList.contains('ant-radio-button-wrapper-checked')) || others[0];
+        if (target) target.click();
+        setTimeout(mopSortPaint, 50);
+      }, true);
+      dist.after(mine);
+      for (const l of dist.parentElement.querySelectorAll('label.ant-radio-button-wrapper:not(.vaf-bmisort)')) l.addEventListener('click', (e) => { if (e.isTrusted) G.set('figsort', false); setTimeout(mopSortPaint, 50); }, true);
+    }
+    mopSortPaint();
+  }
+  function mopSortPaint() {
+    const mine = document.querySelector('.vaf-bmisort'); if (!mine) return;
+    const on = figSortOn();
+    mine.classList.toggle('ant-radio-button-wrapper-checked', on);
+    const sp = mine.querySelector('.ant-radio-button'); if (sp) sp.classList.toggle('ant-radio-button-checked', on);
+    for (const l of mine.parentElement.querySelectorAll('label.ant-radio-button-wrapper:not(.vaf-bmisort)')) {
+      l.style.opacity = '';
+      if (on) { l.classList.remove('ant-radio-button-wrapper-checked'); const s2 = l.querySelector('.ant-radio-button'); if (s2) s2.classList.remove('ant-radio-button-checked'); }
     }
   }
 
   // ---------- Körpermaße im Gedächtnis ----------
   const bmiOf = (h, w) => w / ((h / 100) ** 2);
-  const wFor = (bmi, h) => Math.ceil(bmi * (h / 100) ** 2);
   function bodyInfo(m, s = S()) {
     if (!m || !m.body || !m.body[0]) return null;
     const b = m.body[0];
     if (now() - b.at > s.expert.bodyValidDays * DAY) return null;
     const lo = bmiOf(b.h, b.wlo), hi = bmiOf(b.h, b.whi);
-    return { h: b.h, wlo: b.wlo, whi: b.whi, bmi: b.wlo === b.whi ? lo : lo, exact: b.wlo === b.whi, lo, hi };
+    return { h: b.h, wlo: b.wlo, whi: b.whi, bmi: lo, exact: b.wlo === b.whi, lo, hi };
   }
-  const bandOf = (bmi) => (BANDS.find(([t]) => bmi >= t) || [0, ''])[1];
-  // Sortier-/Filterwert eines Mitglieds in einem Figur-Modus (UNKNOWN = niedrigster Wert der Suche, 0 kg)
-  function figKey(m, mode) {
-    const bi = bodyInfo(m);
-    if (!bi) return { bmi: FIG_MODES[mode].min, w: 0, unknown: true };
-    return { bmi: Math.floor(bi.lo * 10) / 10, w: bi.wlo, unknown: false };
-  }
+  // Profiltyp eines Mitglieds für die Moppel-Regeln (Einzelprofile; Paare folgen in der XXL-Suche)
+  const mopTypeOk = (m, s = S()) => { const g = (m && m.g) || []; return g.length === 1 && mop(s).types.includes(g[0]); };
 
-  // ---------- Suchantworten umsortieren und filtern ----------
-  let lastFig = null;   // { mode, payload, key }
-  function figModeOf(body) {
-    if (!body || !Array.isArray(body.figure) || !body.figure.length) return null;
-    if (body.figure.includes(6)) return G.get('qualle', false) ? 'qualle' : 'mastschwein';
-    if (body.figure.includes(5)) return 'mollig';
-    return null;
-  }
+  // ---------- Suchantworten filtern / umsortieren ----------
+  let lastFig = null;   // { stage }
+  const figPlus = (body) => !!(body && Array.isArray(body.figure) && body.figure.includes(6));
   onApi(/^user\/search$/, null, (data, info) => {
-    if (!location.pathname.startsWith('/search')) return null;
-    const mode = figModeOf(info.body);
-    if (!mode) { lastFig = null; return null; }
-    const { page, limit, ...rest } = info.body;
-    const key = JSON.stringify({ ...rest, q: mode });
-    lastFig = { mode, payload: rest, key };
+    if (!mopOn() || !location.pathname.startsWith('/search')) { lastFig = null; return null; }
     const users = (data && data.users) || [];
+    const st = figPlus(info.body) ? figStage() : 0;
+    lastFig = { stage: st };
     Measure.want(users);
+    const sortBmi = figSortOn();
+    if (!st && !sortBmi) return null;
     const cache = Members.cached();
-    const withKey = users.map((u, i) => ({ u, i, k: figKey(cache.get(String(u.uid)), mode) }));
-    const hide = FIG_MODES[mode].hide;
-    const kept = withKey.filter((x) => x.k.unknown || x.k.bmi >= hide);
-    kept.sort((a, b) => b.k.bmi - a.k.bmi || b.k.w - a.k.w || a.i - b.i);
+    const b = mop().bmi;
+    const rows = users.map((u, i) => { const bi = bodyInfo(cache.get(String(u.uid))); return { u, i, bmi: bi ? bi.lo : null, w: bi ? bi.wlo : 0 }; });
+    // nur herausfiltern, wer nach Berechnung NICHT mindestens die gewählte Stufe erreicht (unbekannt bleibt drin)
+    const kept = st ? rows.filter((x) => x.bmi == null || x.bmi >= b[st - 1]) : rows;
+    if (sortBmi) kept.sort((x, y) => (x.bmi == null) - (y.bmi == null) || (y.bmi || 0) - (x.bmi || 0) || y.w - x.w || x.i - y.i);
     return { ...data, users: kept.map((x) => x.u) };
   });
 
   // ---------- Vermessung über die Profilangaben ----------
-  // Keine Hintergrund-Suchen mehr (die würden die gespeicherte Suche des Nutzers überschreiben):
   // Für jede SICHTBARE Trefferkarte ohne gültige Messung wird einmal user/info gelesen (gedrosselt);
   // Größe/Gewicht landen im Gedächtnis (Members.body), fehlende Angaben merken sich als „UNKNOWN“.
   const inView = (el) => { const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < (W.innerHeight || 900) && r.width > 0; };
   const Measure = {
     q: new Map(), running: false,
-    want(users) { for (const u of users || []) if (u && validUid(u) && u.nickname) this.q.set(String(u.uid), u.nickname); if (this.q.size) setTimeout(() => this.pump(), 300); },
+    want(users) {
+      if (!mopOn()) return;
+      for (const u of users || []) {
+        if (!u || !validUid(u) || !u.nickname) continue;
+        const g = Array.isArray(u.gender) ? u.gender : [];
+        if (g.length === 1 && !mop().types.includes(g[0])) continue;
+        this.q.set(String(u.uid), u.nickname);
+      }
+      if (this.q.size) setTimeout(() => this.pump(), 300);
+    },
     known(m) {
       if (bodyInfo(m)) return true;
       return !!(m && m.bodyUnk && now() - m.bodyUnk < S().expert.bodyUnknownDays * DAY);
@@ -5258,7 +5415,7 @@
       this.running = true;
       try {
         let idle = 0;
-        while (this.q.size && lastFig && location.pathname.startsWith('/search') && idle < 600) {
+        while (this.q.size && mopOn() && location.pathname.startsWith('/search') && idle < 600) {
           const cache = Members.cached();
           for (const uid of [...this.q.keys()]) if (this.known(cache.get(uid))) this.q.delete(uid);
           const vis = cardsOn(document).filter((x) => inView(x.card));
@@ -5273,6 +5430,7 @@
             await ingestUserInfo(d);
             const m = await Members.get(uid);
             if (m && !bodyInfo(m)) await Members.update(uid, (x) => { x.bodyUnk = now(); });
+            msgMaybeQueue(await Members.get(uid));
           } catch (e) { warn('Figur: Profil nicht lesbar', nick, e && e.message); }
           markSearchFig();
           await sleep(1500 + Math.random() * 1500);
@@ -5283,23 +5441,22 @@
 
   // ---------- Badges auf der Suchseite ----------
   async function markSearchFig() {
-    if (!location.pathname.startsWith('/search') || !lastFig) return;
-    const mode = lastFig.mode;
-    const min = FIG_MODES[mode].min, hide = FIG_MODES[mode].hide;
+    const on = mopOn() && location.pathname.startsWith('/search');
+    if (!on) { for (const b of document.querySelectorAll('.vaf-fig')) b.remove(); return; }
+    const st = (lastFig && lastFig.stage) || 0;
+    const lim = st ? mop().bmi[st - 1] : 0;
     for (const x of cardsOn(document)) {
       const m = x.uid ? await Members.get(x.uid) : await Members.byNick(x.nick);
       const bi = bodyInfo(m);
       let b = x.card.querySelector('.vaf-fig');
       // ausgefilterte Treffer komplett entfernen (kein leerer Platzhalter im Raster)
-      if (bi && bi.lo < hide) { try { (x.card.closest('[data-index]') || x.card).remove(); } catch {} continue; }
-      x.card.style.display = '';
-      const bmi = bi ? Math.floor(bi.lo) : null;
-      const band = bi ? bandOf(bi.lo) : '';
-      if (!bi || bi.lo < min || !band) { if (b) b.remove(); continue; }
+      if (st && bi && bi.lo < lim) { try { (x.card.closest('[data-index]') || x.card).remove(); } catch {} continue; }
+      const stage = bi ? mopStage(bi.lo) : -1;
+      if (!bi || stage < 0 || (m && m.g && m.g.length === 1 && !mopTypeOk(m))) { if (b) b.remove(); continue; }
       if (!b) { b = document.createElement('div'); b.className = 'vaf-fig vaf-mark'; (x.host || x.card).prepend(b); }
-      b.textContent = `${band} · BMI ${bmi}${bi.exact ? '' : '+'}`;
+      b.textContent = `${mopLabel(stage)} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}`;
       b.title = `${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg`;
-      b.style.cssText = `background:${FIG_SCALE[band] || '#777'};color:#fff`;
+      b.style.cssText = `background:${MOP_COLORS[stage]};color:#fff`;
     }
   }
 
@@ -5307,9 +5464,69 @@
     renameTextNodes(document.body);
     let t = null;
     new MutationObserver((muts) => {
-      for (const mu of muts) for (const n of mu.addedNodes) { if (n.nodeType === 1) renameTextNodes(n); else if (n.nodeType === 3 && n.parentElement) renameTextNodes(n.parentElement); }
-      clearTimeout(t); t = setTimeout(() => { qualleOption(); markSearchFig(); }, 200);
+      if (mopOn()) for (const mu of muts) for (const n of mu.addedNodes) { if (n.nodeType === 1) renameTextNodes(n); else if (n.nodeType === 3 && n.parentElement) renameTextNodes(n.parentElement); }
+      clearTimeout(t); t = setTimeout(() => { mopOptions(); mopSortRadio(); markSearchFig(); }, 200);
     }).observe(document.body, { childList: true, subtree: true, characterData: false });
+  }
+  // =====================================================================================
+  // „Anschreibbar“: Darf das eigene Profil diesem Mitglied eine Nachricht schicken?
+  //  poppen prüft beim Öffnen des Messengers POST messenger/p2p/permission { group_id: uid, nickname }:
+  //  code 0 = ja, code 20903 = Nachrichtenfilter („Du kannst nur einen Sticker senden“).
+  //  Gespeichert je EIGENEM Profil (m.msg[eigeneUid] = { ok, code, at }), weil die Antwort vom Absender abhängt.
+  //  Passiv: jede Prüfung der Seite wird mitgeschrieben. Aktiv: gedrosselt für Mitglieder ab „Plus-Size“, die keine
+  //  Ignorier-Kriterien erfüllen (Figur-Messung, XXL-Suche) und bei Bedarf für den Regel-Editor; nach 30 Tagen erneut.
+  // =====================================================================================
+  const MSG_FILTER_CODE = 20903;
+  const MSG_TTL = 30 * DAY;
+  function msgOf(m) { const me = Me.uid(); return (m && m.msg && me && m.msg[me]) || null; }
+  async function msgRecord(uid, ok, code) {
+    const me = Me.uid(); uid = String(uid || '');
+    if (!me || !/^\d+$/.test(uid)) return;
+    await Members.update(uid, (x) => { x.msg = x.msg || {}; x.msg[me] = { ok: !!ok, code: code || 0, at: now() }; });
+  }
+  function installMsgHooks() {
+    onApi(/^messenger\/p2p\/permission$/, (d, info) => { const b = info.body || {}; if (b.group_id) msgRecord(b.group_id, true, 0); });
+    onApiErr(/^messenger\/p2p\/permission$/, (j, info) => { const b = info.body || {}; if (b.group_id && j.code === MSG_FILTER_CODE) msgRecord(b.group_id, false, j.code); });
+  }
+  // eine Prüfung (Ergebnis true/false, null = unbekannt)
+  async function msgCheck(uid, nick) {
+    try { await apiPost('messenger/p2p/permission', { group_id: String(uid), nickname: nick || '' }); await msgRecord(uid, true, 0); return true; }
+    catch (e) { if (e && e.code === MSG_FILTER_CODE) { await msgRecord(uid, false, e.code); return false; } return null; }
+  }
+  const msgFresh = (m) => { const r = msgOf(m); return !!(r && now() - r.at < MSG_TTL); };
+  // Hintergrund-Warteschlange (gedrosselt, je Tab)
+  const MsgQ = {
+    q: new Map(), running: false,
+    want(uid, nick) { uid = String(uid || ''); if (!/^\d+$/.test(uid) || !nick) return; this.q.set(uid, nick); setTimeout(() => this.pump(), 500); },
+    async pump() {
+      if (this.running) return;
+      this.running = true;
+      try {
+        while (this.q.size) {
+          const [uid, nick] = this.q.entries().next().value; this.q.delete(uid);
+          const m = await Members.get(uid);
+          if (msgFresh(m)) continue;
+          await msgCheck(uid, nick);
+          await sleep(2500 + Math.random() * 2000);
+        }
+      } finally { this.running = false; }
+    },
+  };
+  // Mitglied ab „Plus-Size“ und ohne Ignorier-Kriterien? → im Hintergrund prüfen
+  function msgMaybeQueue(m) {
+    if (!m || !m.nick || msgFresh(m) || !mopOn()) return;
+    const bi = bodyInfo(m);
+    const plus = (bi && mopStage(bi.lo) >= 0) || (m.body && m.body[0] && m.body[0].fig === 6);
+    if (!plus) return;
+    try { if (classify(m, 'suche').ignore) return; } catch { return; }
+    MsgQ.want(m.uid, m.nick);
+  }
+  // für den Regel-Editor: Wert besorgen (prüft, wenn unbekannt oder veraltet)
+  async function msgOkFor(uid, nick) {
+    const m = await Members.get(uid);
+    if (msgFresh(m)) return msgOf(m).ok;
+    const r = await msgCheck(uid, nick);
+    return r === true;
   }
 
   // =====================================================================================
@@ -5556,61 +5773,82 @@
     setTimeout(() => location.reload(), 1500);
   }
 
-  // Nur das Wissen über andere Mitglieder (für ein zweites Konto)
-  const MEM_FIELDS = ['uid', 'nick', 'nl', 'nicks', 'g', 'ages', 'ageAt', 'birth', 'by', 'zod', 'pay', 'city', 'first', 'last', 'lastLogin', 'body', 'bodyUnk', 'fig', 'del', 'active', 'avatar'];
+  // Nur das Wissen über andere Mitglieder (für ein zweites Konto) – samt Fickliste (verschlüsselt) und Textvorlagen.
+  //  „Anschreibbar“ (m.msg, je eigenem Profil) wird mit exportiert, aber nur beim Import ins SELBE Profil übernommen.
+  const MEM_FIELDS = ['uid', 'nick', 'nl', 'nicks', 'g', 'ages', 'ageAt', 'birth', 'by', 'zod', 'pay', 'city', 'first', 'last', 'lastLogin', 'signup', 'dist', 'body', 'bodyUnk', 'fig', 'del', 'active', 'avatar', 'seen'];
   async function exportMemory(withImages) {
+    const me = Me.get() || await loadMe();
     const tt = toast('Exportiere Gedächtnis …', 0);
     const list = [];
-    await Members.each((m) => { const o = {}; for (const f of MEM_FIELDS) if (m[f] !== undefined) o[f] = m[f]; list.push(o); });
-    const out = { format: 'opa-schutz-gedaechtnis', version: VERSION, at: new Date().toISOString(), members: list };
+    await Members.each((m) => { const o = {}; for (const f of MEM_FIELDS) if (m[f] !== undefined) o[f] = m[f]; if (m.msg) o.msg = m.msg; list.push(o); });
+    const out = { format: 'opa-schutz-gedaechtnis', version: VERSION, at: new Date().toISOString(), account: me ? { uid: me.uid, nick: me.nick } : null, members: list };
     if (withImages) out.images = await DB.all('images');
+    // Fickliste (verschlüsselt mit dem eigenen Nick) und Textvorlagen
+    try { if (me && me.nick) out.fick = await encryptJSON(await Fick.all(), me.nick); } catch (e) { warn('Export Fickliste', e); }
+    try { out.templates = getTpls(); } catch {}
     download(`opa-schutz-gedaechtnis-${stamp()}.json`, JSON.stringify(out));
-    tt.innerHTML = `${fmtN(list.length)} Mitglieder exportiert${withImages ? ` (${fmtN(out.images.length)} Bilder)` : ''}.`;
+    tt.innerHTML = `${fmtN(list.length)} Mitglieder exportiert${withImages ? ` (${fmtN(out.images.length)} Bilder)` : ''}${out.fick ? ', Fickliste' : ''}${out.templates ? ', Textvorlagen' : ''}.`;
     setTimeout(() => tt.remove(), 6000);
   }
-  // Import mischt das Gedächtnis gechunkt im Hintergrund, damit der Browser auch bei
-  // 100 000+ Mitgliedern nicht einfriert. Regel: der NEUERE Datensatz gewinnt als Ganzes
-  // (weggefallene Wissens-Felder verschwinden, kein feldweises Mergen). Lokale Felder wie der
-  // Blockstatus gehören nicht zum geteilten Wissen und bleiben immer erhalten.
+  // Mischregel je Mitglied (wie im JOYclub-Skript):
+  //  1. Gewinner ist, wer das Profil zuletzt aufgerufen hat (seen.Profil), bei Gleichstand der vollständigere
+  //     Eintrag, dann der eigene.
+  //  2. Geburtszeiträume werden immer geschnitten (leere Schnittmenge → die des Gewinners).
+  //  3. Sternzeichen sowie Größe/Gewicht werden aus dem anderen Datensatz ergänzt, wenn sie fehlen.
+  //  Lokale Felder (Blockstatus, eigene Markierungen …) bleiben immer erhalten; „Anschreibbar“ nur aus dem eigenen Profil.
   const pickMem = (x) => { const o = {}; for (const f of MEM_FIELDS) if (x[f] !== undefined) o[f] = x[f]; return o; };
+  const memFill = (x) => MEM_FIELDS.filter((f) => x[f] !== undefined && x[f] !== null && x[f] !== '' && !(Array.isArray(x[f]) && !x[f].length)).length;
+  function memMerge(own, imp) {
+    const pv = (x) => (x && x.seen && x.seen.Profil) || 0;
+    let win, lose;
+    if (pv(imp) !== pv(own)) [win, lose] = pv(imp) > pv(own) ? [imp, own] : [own, imp];
+    else if (memFill(imp) !== memFill(own)) [win, lose] = memFill(imp) > memFill(own) ? [imp, own] : [own, imp];
+    else [win, lose] = [own, imp];
+    const out = pickMem(win);
+    if (win.birth && lose.birth && win.birth.length === lose.birth.length) out.birth = win.birth.map((b, i) => intersect(b, lose.birth[i]) || b);
+    else if (!out.birth && lose.birth) out.birth = lose.birth;
+    for (const f of ['zod', 'body', 'by', 'signup']) if ((out[f] == null || (Array.isArray(out[f]) && !out[f].length)) && lose[f] != null) out[f] = lose[f];
+    out.seen = { ...(lose.seen || {}), ...(win.seen || {}) };
+    return out;
+  }
   async function importMemory() {
     const text = await pickFile();
     if (!text) return;
     let d;
     try { d = JSON.parse(text); } catch { toast('Datei nicht lesbar.'); return; }
     if (d.format !== 'opa-schutz-gedaechtnis') { toast('Das ist kein Gedächtnis-Export.'); return; }
+    const me = Me.get() || await loadMe();
+    const sameProfile = !!(me && d.account && String(d.account.uid) === String(me.uid));
     const members = (d.members || []).filter((x) => x && x.uid);
     const total = members.length;
     const tt = toast('Lese vorhandenes Gedächtnis …', 0);
     await Members.flush();
-    // Ein Cursor-Durchlauf: leichter Index uid→last; lokale Felder (Blockstatus …) nur dort,
-    // wo es welche gibt – statt 100 000 Einzelabfragen während des Imports.
-    const idxLast = new Map(), idxLocal = new Map();
-    await DB.each('members', (m) => {
-      const uid = String(m.uid); idxLast.set(uid, m.last || 0);
-      let loc = null;
-      for (const k of Object.keys(m)) if (k !== 'uid' && !MEM_FIELDS.includes(k)) { (loc = loc || {})[k] = m[k]; }
-      if (loc) idxLocal.set(uid, loc);
-    });
     let neu = 0, erg = 0, eig = 0, done = 0;
     const batch = [];
     const flush = async () => { if (batch.length) await DB.putMany('members', batch.splice(0)); };
     for (const x of members) {
       done++;
       const uid = String(x.uid);
-      const prev = idxLast.get(uid);
-      if (prev !== undefined && (x.last || 0) <= prev) { eig++; }     // vorhandener Datensatz ist neuer/gleich → behalten
+      const own = await DB.get('members', uid);
+      let merged;
+      if (!own) { merged = pickMem(x); neu++; }
       else {
-        const loc = idxLocal.get(uid);
-        const merged = loc ? { ...loc, ...pickMem(x) } : pickMem(x);
-        merged.uid = uid; merged.nl = norm(x.nick);
-        batch.push(merged);
-        if (prev === undefined) neu++; else erg++;
+        merged = memMerge(own, x);
+        for (const k of Object.keys(own)) if (k !== 'uid' && !MEM_FIELDS.includes(k)) merged[k] = own[k];   // lokale Felder behalten
+        if (same(pickMem(own), pickMem(merged))) eig++; else erg++;
       }
-      if (batch.length >= 2000) { tt.textContent = `Mische Gedächtnis … ${fmtN(done)}/${fmtN(total)}`; await flush(); await new Promise((r) => setTimeout(r, 0)); }
+      // „Anschreibbar“: nur aus dem eigenen Profil, die neuere Prüfung gewinnt; fremde Ergebnisse nie übernehmen
+      if (sameProfile && x.msg) {
+        const mm = { ...((own && own.msg) || {}) };
+        for (const [k, v] of Object.entries(x.msg)) if (!mm[k] || (v && v.at > mm[k].at)) mm[k] = v;
+        merged.msg = mm;
+      } else if (own && own.msg) merged.msg = own.msg;
+      merged.uid = uid; merged.nl = norm(merged.nick || x.nick || '');
+      batch.push(merged);
+      if (batch.length >= 1000) { tt.textContent = `Mische Gedächtnis … ${fmtN(done)}/${fmtN(total)}`; await flush(); await new Promise((r) => setTimeout(r, 0)); }
     }
     await flush();
-    // Bilder ebenfalls gechunkt, neuer gewinnt
+    // Bilder gechunkt, neuer gewinnt
     if (d.images && d.images.length) {
       const imgAt = new Map();
       await DB.each('images', (im) => imgAt.set(String(im.uid), im.at || 0));
@@ -5624,7 +5862,8 @@
       if (ibatch.length) await DB.putMany('images', ibatch.splice(0));
     }
     Members.cached().clear();
-    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> aktualisiert, <b>${fmtN(eig)}</b> vorhandene (neuer) behalten.`;
+    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.` +
+      (d.fick || d.templates ? '<br>Fickliste und Textvorlagen der Datei werden noch nicht eingemischt (folgt).' : '');
     setTimeout(() => tt.remove(), 10000);
   }
   // ---------- Umstellung von Version 1.x ----------
@@ -6661,6 +6900,7 @@
     { key: 'ignoriert', label: 'Von mir ignoriert', type: 'bool', derived: 'ign', group: 'Status & Listen' },
     { key: 'ignoriert_mich', label: 'Ignoriert mich', type: 'bool', derived: 'ignByHim', group: 'Status & Listen' },
     { key: 'whitelist', label: 'Auf meiner Whitelist', type: 'bool', derived: 'white', group: 'Status & Listen' },
+    { key: 'anschreibbar', label: 'Anschreibbar', type: 'bool', derived: 'msgok', group: 'Status & Listen' },
   ];
   // Feld-Dropdown nach Herkunfts-Blöcken, innerhalb alphabetisch, mit optgroup-Trennern.
   function grFieldOptionsHtml(fields, selected) {
@@ -7441,6 +7681,7 @@
     if (used.has('whitelist')) { const m = uid ? await Members.get(uid) : null; pr.white = !!whiteReason(m, pr.nick); }
     if (used.has('ignoriert') && uid) pr.ign = (await grMyIgnore()).has(uid);
     if (used.has('ignoriert_mich') && uid) pr.ignByHim = (await grByHim()).has(uid);
+    if (used.has('anschreibbar') && uid) pr.msgok = await msgOkFor(uid, pr.nick).catch(() => false);
     return pr;
   }
 
@@ -8306,7 +8547,7 @@
   // Start
   // =====================================================================================
   loadSettings();
-  if (BK_MODE === 'poppen') installPassiveHooks();
+  if (BK_MODE === 'poppen') { installPassiveHooks(); installMsgHooks(); }
 
   function ensureUi() {
     try { settingsMenu(); } catch (e) { warn('Menü', e); }

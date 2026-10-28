@@ -1,6 +1,20 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.30 (28.10.2026)
+- Profil-Menü: Schalter heißt nur noch „Opa-Schutz“ bzw. „Oma-Schutz“; Symbol Opa/Oma im Kreis – aus als Umriss, an gefüllt mit Schrägstrich (statt des Augen-Symbols von „Unsichtbar“)
+- Oma-Symbol (wie im JOYclub-Skript) überall, wo die Bezeichnung „Oma“ lautet: Kopfleiste, Profil-Menü, Einstellungen
+- Einstellungen: Versionsnummer verlinkt den Changelog, daneben „Anleitung“ (README) und „Fehler melden“ (Issues)
+- Neuer Abschnitt „Sicherung“ (immer offen, vor den Experten-Einstellungen): Alle Daten sichern/wiederherstellen, Gedächtnis exportieren/importieren
+- Neuer Abschnitt „Moppel-Liebhaber“: Schalter „Benutzer ist Moppel-Liebhaber“ (Standard aus), Regler BMI 25–60 mit drei Grenzen und farbigen Stufen (Plus-Size · Kurvig · Üppig · XXL), Bezeichnungen in Ein- und Mehrzahl, Suchradius, Profiltypen. Alle Figur-Funktionen (Umbenennung, Zusatzoptionen, Badges, Vermessung) greifen nur noch bei eingeschaltetem Schalter
+- Mitgliedersuche: Zusatzoptionen im Figur-Filter nach den eigenen Stufen (suchen „Plus-size“ und blenden nur aus, wer nach berechnetem BMI darunter liegt; Unbekannte bleiben), Badges in Stufenfarbe, neue Sortierung „BMI“ zwischen „Entfernung“ und „Alter“ – umsortiert wird nur noch bei „BMI“
+- poppens „Kurvig“ heißt bei eingeschaltetem Schalter „Mollig“; „Plus-size“ bleibt
+- „Anschreibbar“: das Skript merkt sich je eigenem Profil, ob ein Mitglied Nachrichten filtert („Du kannst nur einen Sticker senden“) – passiv bei jedem „Nachricht senden“ und gedrosselt im Hintergrund für Mitglieder ab „Plus-Size“ ohne Ignorier-Kriterien; neues Feld „Anschreibbar“ im Regel-Editor der Beitrittsanfragen
+- Sternzeichen engt den Geburtszeitraum nicht mehr ein (auf poppen frei wählbar, kann falsch sein)
+- Gedächtnis-Export enthält jetzt auch Fickliste (verschlüsselt) und Textvorlagen sowie Anmeldedatum und Entfernung; „Anschreibbar“ nur beim Import ins selbe Profil
+- Gedächtnis-Import mit neuer Mischregel: zuletzt aufgerufenes Profil gewinnt, dann der vollständigere, dann der eigene Eintrag; Geburtszeiträume werden immer geschnitten, Sternzeichen und Größe/Gewicht ergänzt
+- Rekorder: sammelt alle Entfernungen der Suchseite (Stufen des Radius-Reglers)
+
 2.29 (28.10.2026)
 - Einstellungen: neue Zeile „Global“ (übernimmt anfangs die Werte von „Interaktionen“) und Experten-Schalter „Gemeinsame Grenzen für alle Quellen“ (Standard an, direkt unter „Rangfolge der Quellen“). An: eine Regler-Zeile über die volle Breite, die Quellen-Beschriftungen und „Werte der ersten Zeile …“ entfallen; bei getrenntem Alter je eine Zeile für Frau und Mann. Aus: Grenzen wie bisher je Quelle
 - Neue Schalter „Grenzen altern mit mir“ (visuelle Einstufung) und „Grenze altert mit mir“ (Ignorieren) je Gruppe: am eigenen Geburtstag (sonst, sobald das höhere eigene Alter bemerkt wird) steigen die Grenzen um ein Jahr. Dadurch wird nie jemand entsperrt – entsperrt wird nur, wen eine von Hand nach oben geschobene Grenze freigibt

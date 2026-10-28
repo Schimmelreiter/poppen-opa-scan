@@ -220,7 +220,11 @@ Eigene Textbausteine (bis **100**, je bis **8000 Zeichen**), gespeichert im Tamp
 - **Termin-Kurzform:** Beim Einfügen wird eine Zeile `wann - wo - Link` ohne „was“ anhand der Termin-Datei wieder zur vollen Zeile ausgeschrieben.
 - **Export/Import** per Datei oder Zwischenablage, in derselben verschlüsselten Hülle wie die Fickliste (`templates` statt `persons`). Beim Import werden Smileys zwischen JOYclub, poppen.de und Unicode übersetzt (Tabelle fest im Skript); gleiche Vorlagen bleiben unverändert, nur vorne/hinten verlängerte werden ergänzt, sonst Rückfrage. Nicht übersetzbare Smileys stehen im Bericht.
 
-## Mitgliedersuche: Figur
+## Moppel-Liebhaber (Figur)
+
+Alle Figur-Funktionen greifen nur, wenn in den Einstellungen **„Benutzer ist Moppel-Liebhaber“** an ist (Standard: aus). Dort lassen sich drei BMI-Grenzen (Regler 25–60, farbig von rot nach grün), die Bezeichnungen der Stufen (Standard: Kurvig · Üppig · XXL; darunter poppens „Plus-Size“), der Suchradius und die Profiltypen einstellen.
+
+### Mitgliedersuche: Figur (bisherige Beschreibung, Stufen jetzt einstellbar)
 
 - Überall heißt „Kurvig“ jetzt **„Mollig“** und „Plus-size“ **„Mastschwein“**. In der Suche gibt es zusätzlich **„Qualle“** (sucht ebenfalls „Plus-size“).
 - Bei Mollig, Mastschwein und Qualle liest das Skript für **jede sichtbare Trefferkarte** ohne gültige Messung einmal die Profilangaben (`user/info`, gedrosselt) und merkt sich Größe und Gewicht. Hintergrund-Suchen gibt es dafür nicht mehr.
