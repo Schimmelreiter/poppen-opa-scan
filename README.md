@@ -259,6 +259,12 @@ Wartung (neuer Versuch nach 15 Minuten), Werbe-Zwischenseiten (werden übersprun
 
 ---
 
+## Ablage und Datenschutz
+
+- **Gedächtnis, Warteliste, Bilder, Profil-Archiv:** verschlüsselt (AES-GCM) in einer unauffällig benannten Datenbank des Browsers auf poppen.de. poppen.de sieht nur unlesbare Daten. Der Schlüssel liegt im Tampermonkey-Speicher und als Kopie im Briefkasten.
+- **Fickliste und Textvorlagen:** ein gemeinsamer Bestand im Briefkasten (`schimmelreiter.github.io`, für keine Plattform lesbar), den alle Opa-Scan-Skripte benutzen. Format: [FORMAT.md](FORMAT.md).
+- **Rettungsanker:** gepackte Kopie im Tampermonkey-Speicher (übersteht „Website-Daten löschen“). **Einstellungs-Spiegel** im Briefkasten (übersteht eine Neuinstallation).
+
 ## Daten sichern und austauschen
 
 | Funktion | Inhalt |

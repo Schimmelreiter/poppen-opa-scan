@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.31
+// @version      2.32
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -29,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.31';
+  const VERSION = '2.32';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const IN_FRAME = W.top !== W;
@@ -310,16 +310,27 @@
   //  - Gesamtliste aller Mitglieder, Bilder, Profil-Archiv, Warteliste, Fickliste, Rekorder:
   //    Datenbank des Browsers (IndexedDB) – jeder Eintrag wird einzeln gelesen/geschrieben.
   // =====================================================================================
-  const DB_NAME = 'opa-schutz';
+  // ---------- Altbestand (bis 2.31): unverschlüsselte Datenbank „opa-schutz“ – nur noch zum Umzug gelesen ----------
+  const OLD_DB_NAME = 'opa-schutz';
+  const OLD_STORES = ['members', 'images', 'archive', 'queue', 'fick', 'kv'];
+  function openOldDb() {
+    return new Promise((resolve) => {
+      let created = false;
+      const rq = W.indexedDB.open(OLD_DB_NAME);
+      rq.onupgradeneeded = () => { created = true; };            // gab es nicht → leer
+      rq.onsuccess = () => { const d = rq.result; if (created || !d.objectStoreNames.length) { d.close(); if (created) W.indexedDB.deleteDatabase(OLD_DB_NAME); resolve(null); } else resolve(d); };
+      rq.onerror = () => resolve(null);
+    });
+  }
+
+  // ---------- Lokale Datenbank auf poppen.de: verschlüsselt, mit unauffälligem Namen ----------
+  //  Schlüssel (AES-GCM + HMAC) im Tampermonkey-Speicher und als Kopie im Briefkasten (für eine Neuinstallation).
+  //  Datensatz: { i: HMAC(Schlüssel), n?: HMAC(Nick-Index), d: IV + Chiffrat }. poppen.de sieht nur unlesbare Bytes.
+  const DB_NAME = 'keyval-cache';
   const DB_VER = 1;
-  const STORES = {
-    members: { keyPath: 'uid', indexes: [['nl', 'nl']] },
-    images: { keyPath: 'uid' },
-    archive: { keyPath: 'id', autoIncrement: true, indexes: [['uid', 'uid']] },
-    queue: { keyPath: 'uid' },
-    fick: { keyPath: 'id' },
-    kv: { keyPath: 'k' },
-  };
+  const PHYS = { members: 'a', images: 'b', queue: 'c', kv: 'd', archive: 'e' };
+  const KEYPATH = { members: 'uid', images: 'uid', queue: 'uid', kv: 'k', archive: 'id' };
+  const IDXF = { members: 'nl', archive: 'uid' };   // je Ablage ein (gehashter) Suchindex
   let dbP = null;
   function db() {
     if (dbP) return dbP;
@@ -327,10 +338,10 @@
       const rq = W.indexedDB.open(DB_NAME, DB_VER);
       rq.onupgradeneeded = () => {
         const d = rq.result;
-        for (const [name, def] of Object.entries(STORES)) {
-          if (d.objectStoreNames.contains(name)) continue;
-          const st = d.createObjectStore(name, { keyPath: def.keyPath, autoIncrement: !!def.autoIncrement });
-          for (const [iname, kp] of def.indexes || []) st.createIndex(iname, kp, { unique: false });
+        for (const ps of Object.values(PHYS)) {
+          if (d.objectStoreNames.contains(ps)) continue;
+          const st = d.createObjectStore(ps, { keyPath: 'i' });
+          st.createIndex('n', 'n', { unique: false });
         }
       };
       rq.onsuccess = () => resolve(rq.result);
@@ -339,44 +350,123 @@
     return dbP;
   }
   const reqP = (rq) => new Promise((res, rej) => { rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
-  async function tx(store, mode = 'readonly') { return (await db()).transaction(store, mode).objectStore(store); }
+  const B64 = { enc: (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); },
+    dec: (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0)) };
+  const Crypt = (() => {
+    let ready = null, aes = null, mac = null, locked = '';
+    const hcache = new Map();
+    const te = new TextEncoder(), td = new TextDecoder();
+    async function importRaw(raw) {
+      const u = B64.dec(raw);
+      aes = await crypto.subtle.importKey('raw', u.slice(0, 32), 'AES-GCM', false, ['encrypt', 'decrypt']);
+      mac = await crypto.subtle.importKey('raw', u.slice(32, 64), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    }
+    async function load() {
+      let raw = GM_getValue('vaf2_dbk', null);
+      if (!raw) {
+        // Neuinstallation? Schlüssel aus dem Briefkasten holen (dort liegt eine Kopie)
+        try { const r = await BkRpc.call('get', { s: 'meta', k: 'poppen_dbk' }, 20000); if (r && r.v) { raw = r.v; GM_setValue('vaf2_dbk', raw); log('Datenbank-Schlüssel aus dem Briefkasten wiederhergestellt'); } } catch {}
+      }
+      if (!raw) {
+        const d = await db();
+        const n = await reqP(d.transaction(PHYS.members).objectStore(PHYS.members).count()).catch(() => 0);
+        if (n > 0) { locked = 'Schlüssel fehlt – Briefkasten nicht erreichbar'; throw new Error(locked); }
+        const u = crypto.getRandomValues(new Uint8Array(64));
+        raw = B64.enc(u);
+        GM_setValue('vaf2_dbk', raw);
+        GM_setValue('vaf2_dbk_bk', 0);
+      }
+      await importRaw(raw);
+      return true;
+    }
+    return {
+      init() { if (!ready) ready = load().catch((e) => { ready = null; throw e; }); return ready; },
+      get locked() { return locked; },
+      async hk(s) {
+        s = String(s);
+        const c = hcache.get(s); if (c) return c;
+        await this.init();
+        const sig = new Uint8Array(await crypto.subtle.sign('HMAC', mac, te.encode(s)));
+        const out = B64.enc(sig.subarray(0, 18)).replace(/\+/g, '-').replace(/\//g, '_');
+        if (hcache.size > 60000) hcache.clear();
+        hcache.set(s, out);
+        return out;
+      },
+      async enc(obj) {
+        await this.init();
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aes, te.encode(JSON.stringify(obj))));
+        const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+        return out;
+      },
+      async dec(u8) {
+        await this.init();
+        const b = u8 instanceof Uint8Array ? u8 : new Uint8Array(u8);
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b.subarray(0, 12) }, aes, b.subarray(12));
+        return JSON.parse(td.decode(pt));
+      },
+      raw: () => GM_getValue('vaf2_dbk', null),
+    };
+  })();
+  async function encRec(store, val) {
+    if (store === 'archive' && (val.id === undefined || val.id === null)) val.id = `${val.uid}:${val.at || now()}:${Math.random().toString(36).slice(2, 7)}`;
+    const rec = { i: await Crypt.hk(store + ':' + val[KEYPATH[store]]), d: await Crypt.enc(val) };
+    const f = IDXF[store];
+    if (f && val[f] != null && val[f] !== '') rec.n = await Crypt.hk(f + ':' + val[f]);
+    return rec;
+  }
+  const decRec = (r) => (r ? Crypt.dec(r.d) : null);
+  async function tx(store, mode = 'readonly') { await Crypt.init(); return (await db()).transaction(PHYS[store], mode).objectStore(PHYS[store]); }
   const DB = {
-    async get(store, key) { return reqP((await tx(store)).get(key)); },
-    async put(store, val) { return reqP((await tx(store, 'readwrite')).put(val)); },
-    async del(store, key) { return reqP((await tx(store, 'readwrite')).delete(key)); },
+    async get(store, key) { const k = await Crypt.hk(store + ':' + key); const r = await reqP((await tx(store)).get(k)); return r ? decRec(r) : undefined; },
+    async put(store, val) { const rec = await encRec(store, val); return reqP((await tx(store, 'readwrite')).put(rec)); },
+    async del(store, key) { const k = await Crypt.hk(store + ':' + key); return reqP((await tx(store, 'readwrite')).delete(k)); },
     async clear(store) { return reqP((await tx(store, 'readwrite')).clear()); },
-    async all(store) { return reqP((await tx(store)).getAll()); },
-    async keys(store) { return reqP((await tx(store)).getAllKeys()); },
+    async all(store) { const l = await reqP((await tx(store)).getAll()); const out = []; for (let i = 0; i < l.length; i += 500) out.push(...await Promise.all(l.slice(i, i + 500).map(decRec))); return out; },
     async count(store) { return reqP((await tx(store)).count()); },
-    async byIndex(store, index, key) { return reqP((await tx(store)).index(index).getAll(key)); },
+    async byIndex(store, index, key) { const l = await reqP((await tx(store)).index('n').getAll(await Crypt.hk(index + ':' + key))); return Promise.all(l.map(decRec)); },
     async putMany(store, vals) {
       if (!vals.length) return;
+      const recs = [];
+      for (let i = 0; i < vals.length; i += 500) recs.push(...await Promise.all(vals.slice(i, i + 500).map((v) => encRec(store, v))));
       const d = await db();
       await new Promise((res, rej) => {
-        const t = d.transaction(store, 'readwrite');
-        const st = t.objectStore(store);
-        for (const v of vals) st.put(v);
+        const t = d.transaction(PHYS[store], 'readwrite');
+        const st = t.objectStore(PHYS[store]);
+        for (const r of recs) st.put(r);
         t.oncomplete = res; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
       });
     },
     async delMany(store, keys) {
       if (!keys.length) return;
+      const ks = await Promise.all(keys.map((k) => Crypt.hk(store + ':' + k)));
       const d = await db();
       await new Promise((res, rej) => {
-        const t = d.transaction(store, 'readwrite');
-        const st = t.objectStore(store);
-        for (const k of keys) st.delete(k);
+        const t = d.transaction(PHYS[store], 'readwrite');
+        const st = t.objectStore(PHYS[store]);
+        for (const k of ks) st.delete(k);
         t.oncomplete = res; t.onerror = () => rej(t.error);
       });
     },
-    // Alle Einträge durchgehen, ohne alles auf einmal in den Speicher zu laden
+    // Alle Einträge durchgehen, ohne alles auf einmal zu entschlüsseln (Blöcke zu 2000)
     async each(store, fn) {
+      await Crypt.init();
       const d = await db();
-      await new Promise((res, rej) => {
-        const rq = d.transaction(store).objectStore(store).openCursor();
-        rq.onsuccess = () => { const c = rq.result; if (!c) return res(); try { fn(c.value); } catch (e) { warn(e); } c.continue(); };
-        rq.onerror = () => rej(rq.error);
-      });
+      let last = null;
+      for (;;) {
+        const batch = await new Promise((res, rej) => {
+          const out = [];
+          const range = last == null ? null : IDBKeyRange.lowerBound(last, true);
+          const rq = d.transaction(PHYS[store]).objectStore(PHYS[store]).openCursor(range);
+          rq.onsuccess = () => { const c = rq.result; if (!c || out.length >= 2000) return res(out); out.push(c.value); c.continue(); };
+          rq.onerror = () => rej(rq.error);
+        });
+        if (!batch.length) break;
+        last = batch[batch.length - 1].i;
+        const vals = await Promise.all(batch.map(decRec));
+        for (const v of vals) { try { fn(v); } catch (e) { warn(e); } }
+        if (batch.length < 2000) break;
+      }
     },
   };
   const KV = {
@@ -439,6 +529,7 @@
         fn(m);
         if (m.nick) m.nl = norm(m.nick);
         cache.set(uid, m);
+        if (typeof mirMark === 'function') mirMark(uid);
         dirty.add(uid); sched();
         return m;
       },
@@ -485,6 +576,40 @@
     set: (k, v) => GM_setValue('vaf2_' + k, v),
     del: (k) => GM_deleteValue('vaf2_' + k),
   };
+
+  // ---------- Briefkasten-Aufrufe (Seite → unsichtbarer Rahmen auf github.io) ----------
+  //  Weg über den Tampermonkey-Speicher (nur die Skript-Instanzen sehen ihn, poppen.de nicht):
+  //  Anfragen in vaf2_rpcq_<Tab>, Antworten in vaf2_rpcr_<Tab>; der Rahmen dieses Tabs bearbeitet sie.
+  const BkRpc = (() => {
+    const qk = 'rpcq_' + TAB_ID, rk = 'rpcr_' + TAB_ID, ak = 'rpca_' + TAB_ID;
+    const pend = new Map();
+    let seq = 0, listening = false;
+    function listen() {
+      if (listening) return; listening = true;
+      try {
+        GM_addValueChangeListener('vaf2_' + rk, (n, o, v) => {
+          const done = [];
+          for (const r of v || []) { const p = pend.get(r.id); if (!p) continue; pend.delete(r.id); done.push(r.id); if (r.err) p.rej(Object.assign(new Error(r.err), { code: r.code })); else p.res(r.v); }
+          if (done.length) { const q = (G.get(qk, []) || []).filter((x) => !done.includes(x.id) && pend.has(x.id)); G.set(qk, q); }
+        });
+      } catch (e) { warn('Briefkasten-Aufrufe', e); }
+      W.addEventListener('pagehide', () => { try { G.del(qk); G.del(rk); G.del(ak); } catch {} });
+    }
+    const alive = () => now() - (G.get(ak, 0) || 0) < 15000;
+    async function waitAlive(ms) { const t0 = now(); while (!alive()) { if (now() - t0 > ms) return false; await sleep(250); } return true; }
+    async function call(op, args, timeout = 15000) {
+      listen();
+      if (typeof bkEmbed === 'function') bkEmbed(true);
+      if (!(await waitAlive(timeout))) throw Object.assign(new Error('Briefkasten nicht erreichbar'), { code: 'offline' });
+      return new Promise((res, rej) => {
+        const id = (++seq) + '.' + now().toString(36);
+        pend.set(id, { res, rej });
+        const q = G.get(qk, []) || []; q.push({ id, op, args }); G.set(qk, q);
+        setTimeout(() => { if (pend.has(id)) { pend.delete(id); const q2 = (G.get(qk, []) || []).filter((x) => x.id !== id); G.set(qk, q2); rej(Object.assign(new Error('Briefkasten antwortet nicht'), { code: 'timeout' })); } }, timeout);
+      });
+    }
+    return { call, alive, waitAlive, tab: TAB_ID };
+  })();
 
   // =====================================================================================
   // Schnittstellen (v2-api)
@@ -3570,6 +3695,14 @@
       const btnS = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
       const cs = card(body, 'Sicherung');
       row(cs, 'Alle Daten', 'Einstellungen, Gedächtnis, Warteliste, Fickliste (verschlüsselt) …', btnS('Alle Daten sichern', () => backupAll()), btnS('Alle Daten wiederherstellen', () => restoreAll()));
+      {
+        const mst = document.createElement('span'); mst.className = 'vaf-mini';
+        const mi = () => { const mm = G.get('mir_meta', null); mst.textContent = mm && mm.at ? `Stand ${deDateTime(mm.at)} · ${fmtN(mm.n || 0)} Mitglieder · Fickliste ${fmtN(mm.fick || 0)} · ${(Math.round((mm.size || 0) / 1024 / 102.4) / 10).toLocaleString('de-DE')} MB` : 'noch nicht angelegt'; };
+        mi();
+        row(cs, 'Rettungsanker', 'gepackte Kopie im Tampermonkey-Speicher – übersteht das Löschen von Website-Daten',
+          mst, btnS('Jetzt aktualisieren', async () => { mst.textContent = 'aktualisiere …'; await mirrorRun(true).catch((e) => toast(esc(e.message))); mi(); }),
+          btnS('Aus Rettungsanker wiederherstellen', async () => { if (W.confirm('Daten aus dem Rettungsanker wiederherstellen? Neuere vorhandene Einträge bleiben erhalten.')) await mirrorRestore(false); }));
+      }
       row(cs, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder samt Fickliste und Textvorlagen (z. B. für ein zweites Profil)', btnS('Exportieren ohne Bilder', () => exportMemory(false)), btnS('mit Bildern', () => exportMemory(true)), btnS('Importieren (mischen)', () => importMemory()));
 
       // ---- Experten ----
@@ -4539,10 +4672,18 @@
 
   // ---------- Datenhaltung ----------
   const Fick = {
-    async get(id) { return DB.get('fick', id); },
-    async all() { return DB.all('fick'); },
-    async put(p) { p.updated = now(); await DB.put('fick', p); chan.post({ t: 'fick' }); Bus.emit('fick'); try { if (typeof bkSendPerson === 'function' && !p.__fromBk) bkSendPerson(p); } catch {} return p; },
-    async del(id) { await DB.del('fick', id); Bus.emit('fick'); },
+    // gemeinsame Fickliste im Briefkasten (siehe FickStore); der Abgleich per Nachricht läuft für ältere JOYclub-Skripte weiter
+    async get(id) { return FickStore.get(id); },
+    async all() { return FickStore.all(); },
+    async put(p) {
+      p.updated = now();
+      const fromBk = p.__fromBk;
+      try { await FickStore.put(p); } catch (e) { toast(esc(e.message || String(e))); throw e; }
+      chan.post({ t: 'fick' }); Bus.emit('fick');
+      try { if (typeof bkSendPerson === 'function' && !fromBk) bkSendPerson(p); } catch {}
+      return p;
+    },
+    async del(id) { await FickStore.del(id); Bus.emit('fick'); },
     idOf: (uid) => 'p:' + uid,
     async forMember(uid, nick) {
       let p = await Fick.get(Fick.idOf(uid));
@@ -5791,7 +5932,7 @@
     for (const k of GM_listValues()) if (k.startsWith('vaf2_') && !k.startsWith('vaf2_lock_')) gm[k] = GM_getValue(k);
     const out = { format: 'opa-schutz-backup', version: VERSION, at: new Date().toISOString(), account: me.nick, gm, stores: {} };
     for (const st of ['members', 'queue', 'kv', 'images', 'archive']) out.stores[st] = await DB.all(st);
-    out.fick = await encryptJSON(await DB.all('fick'), me.nick);
+    out.fick = await encryptJSON(await Fick.all(), me.nick);
     download(`opa-schutz-sicherung-${stamp()}.json`, JSON.stringify(out));
     tt.innerHTML = `Gesichert: ${fmtN(out.stores.members.length)} Mitglieder, ${fmtN(out.stores.queue.length)} auf der Warteliste.`;
     setTimeout(() => tt.remove(), 6000);
@@ -5816,7 +5957,7 @@
     // kleine Stores sofort, große gechunkt mit Yield (kein Einfrieren bei vielen Mitgliedern)
     const tt2 = toast('Stelle Daten wieder her …', 0);
     for (const st of ['kv', 'queue']) { await DB.clear(st); await DB.putMany(st, d.stores[st] || []); }
-    if (fick) { await DB.clear('fick'); await DB.putMany('fick', fick); }
+    if (fick) { try { await BkRpc.call('putMany', { s: 'fick', list: fick.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || now() })) }, 60000); FickStore.invalidate(); } catch (e) { toast('Fickliste konnte nicht in den Briefkasten geschrieben werden: ' + esc(e.message)); } }
     for (const st of ['members', 'images', 'archive']) {
       await DB.clear(st);
       const arr = d.stores[st] || [];
@@ -5918,8 +6059,21 @@
       if (ibatch.length) await DB.putMany('images', ibatch.splice(0));
     }
     Members.cached().clear();
-    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.` +
-      (d.fick || d.templates ? '<br>Fickliste und Textvorlagen der Datei werden noch nicht eingemischt (folgt).' : '');
+    let fickNote = '';
+    if (d.fick && d.account && d.account.nick) {
+      let persons = null;
+      try { persons = await decryptJSON(d.fick, d.account.nick); } catch (e) { warn('Fickliste der Datei nicht lesbar', e); }
+      if (persons && sameProfile) {
+        // eigene Sicherung: neuere Einträge gewinnen
+        try { await BkRpc.call('putMany', { s: 'fick', list: persons.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || 0 })) }, 60000); FickStore.invalidate(); fickNote = `<br>Fickliste: ${fmtN(persons.length)} Einträge abgeglichen.`; } catch (e) { fickNote = '<br>Fickliste: Briefkasten nicht erreichbar.'; }
+        if (Array.isArray(d.templates)) { const byId = new Map(getTpls().map((t) => [t.id, t])); for (const t of d.templates) { const l = byId.get(t.id); if (!l || (t.updatedAt || 0) > (l.updatedAt || 0)) byId.set(t.id, t); } setTpls([...byId.values()]); }
+      } else if (persons) {
+        tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.`;
+        const n = await fickImportForeign(persons, d.account, d.templates).catch((e) => { warn('Fickliste-Import', e); return 0; });
+        fickNote = n ? `<br>Fickliste von ${esc(d.account.nick)}: übernommen.` : '';
+      }
+    }
+    tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.` + fickNote;
     setTimeout(() => tt.remove(), 10000);
   }
   // ---------- Umstellung von Version 1.x ----------
@@ -6188,7 +6342,7 @@
   const TPL_MAX = 100, TPL_LEN = 8000;
   const K_TPL = 'vaf2_templates';
   const getTpls = () => { const l = GM_getValue(K_TPL, []); return Array.isArray(l) ? l : []; };
-  const setTpls = (l) => { GM_setValue(K_TPL, l); Bus.emit('tpl'); };
+  const setTpls = (l) => { GM_setValue(K_TPL, l); Bus.emit('tpl'); try { if (typeof TplSync !== 'undefined' && !TplSync.pulling) TplSync.push(l).catch(() => {}); } catch {} };
   // Beim Speichern einer Vorlage: Metadaten setzen und über den Briefkasten senden (falls aktiv)
   function saveTemplate(list, t, isNew) {
     if (typeof tplEnsureMeta === 'function') tplEnsureMeta(t);
@@ -6624,22 +6778,136 @@
   function tplPurgeTrash() { const tr = bkTrashStore().filter((x) => now() - (x.deletedAt || 0) < 30 * DAY); G.set('tpl_trash', tr); }
 
   // ---------- iframe einbetten (poppen.de und joyclub.de) ----------
-  function bkEmbed() {
-    setTimeout(() => {
+  let bkEmbedded = false;
+  function bkEmbed(now0) {
+    if (bkEmbedded) return;
+    bkEmbedded = true;
+    const go = () => {
       try {
         if (document.getElementById('opa-briefkasten')) return;
         const f = document.createElement('iframe');
         f.id = 'opa-briefkasten';
-        f.src = BK_URL + '#host=' + location.hostname;
+        f.src = BK_URL + '#host=' + location.hostname + '&tab=' + encodeURIComponent(TAB_ID);
         f.setAttribute('aria-hidden', 'true'); f.tabIndex = -1;
         f.style.cssText = 'position:fixed;width:0;height:0;border:0;left:-9999px;top:-9999px;visibility:hidden';
         (document.documentElement || document.body).appendChild(f);
-      } catch (e) { warn('Briefkasten einbetten', e); }
-    }, Math.random() * 1500);
+      } catch (e) { warn('Briefkasten einbetten', e); bkEmbedded = false; }
+    };
+    if (now0 || !document.documentElement) setTimeout(go, now0 ? 0 : 500); else setTimeout(go, Math.random() * 1500);
+  }
+
+  // ---------- Gemeinsame Ablage im Briefkasten (IndexedDB auf github.io, für alle Skripte) ----------
+  //  Datenbank „opa-gemeinsam“, Formatdefinition: FORMAT.md im Repo. Ablagen:
+  //   meta  { k, … }                      Formatversion (schema/minRead), Schlüssel-/Einstellungs-Kopien je Skript
+  //   fick  { id, rev, updatedAt, updatedBy, deleted?, … }   gemeinsame Fickliste
+  //   tpl   { id, rev, updatedAt, updatedBy, deleted?, name, text }   gemeinsame Textvorlagen
+  //   ich   { id: '<plattform>:<uid>', pf, uid, nick, url, at }  eigene Profile („Ich“)
+  //   arch  { id (auto), uid, … }         Profil-Archiv (poppen)
+  const SHARED_DB = 'opa-gemeinsam';
+  const SHARED_SCHEMA = 1;
+  const SHARED_STORES = { meta: { keyPath: 'k' }, fick: { keyPath: 'id' }, tpl: { keyPath: 'id' }, ich: { keyPath: 'id' }, arch: { keyPath: 'id', autoIncrement: true, index: 'uid' } };
+  function bkServer(parentTab) {
+    let dbp = null;
+    const sdb = () => dbp || (dbp = new Promise((resolve, reject) => {
+      const rq = indexedDB.open(SHARED_DB, 1);
+      rq.onupgradeneeded = () => {
+        const d = rq.result;
+        for (const [n, def] of Object.entries(SHARED_STORES)) {
+          if (d.objectStoreNames.contains(n)) continue;
+          const st = d.createObjectStore(n, { keyPath: def.keyPath, autoIncrement: !!def.autoIncrement });
+          if (def.index) st.createIndex(def.index, def.index, { unique: false });
+        }
+      };
+      rq.onsuccess = () => resolve(rq.result);
+      rq.onerror = () => reject(rq.error);
+    }));
+    const rp = (rq) => new Promise((res, rej) => { rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+    let bc = null; try { bc = new BroadcastChannel('opa-gemeinsam'); bc.onmessage = (e) => { const m = e.data || {}; if (m.store) G.set('bkv_' + m.store, now()); }; } catch {}
+    const notify = (store) => { G.set('bkv_' + store, now()); try { bc && bc.postMessage({ store, at: now(), by: 'poppen' }); } catch {} };
+    const VERSIONED = new Set(['fick', 'tpl']);
+    async function op(o, a) {
+      const d = await sdb();
+      const store = a && a.s;
+      if (store && !SHARED_STORES[store]) throw new Error('unbekannte Ablage ' + store);
+      if (o === 'get') return rp(d.transaction(store).objectStore(store).get(a.k));
+      if (o === 'all') return rp(d.transaction(store).objectStore(store).getAll());
+      if (o === 'byIndex') return rp(d.transaction(store).objectStore(store).index(a.i).getAll(a.k));
+      if (o === 'put' || o === 'del') {
+        // Lesen und Schreiben in EINER Transaktion; versionierte Ablagen mit Versionszähler (rev) gegen gleichzeitiges Schreiben
+        return new Promise((res, rej) => {
+          const t = d.transaction(store, 'readwrite'); const st = t.objectStore(store);
+          let out = null;
+          const key = o === 'del' ? a.k : a.v[SHARED_STORES[store].keyPath];
+          const doWrite = (cur) => {
+            if (VERSIONED.has(store)) {
+              const curRev = (cur && cur.rev) || 0;
+              if ('expect' in a && a.expect !== null && a.expect !== curRev) { out = { conflict: cur }; return; }
+              if ('expect' in a && a.expect === null && cur && !cur.deleted) { out = { conflict: cur }; return; }
+              const v = o === 'del' ? { ...(cur || { [SHARED_STORES[store].keyPath]: key }), deleted: true } : { ...a.v };
+              if (o !== 'del') delete v.deleted;
+              v.rev = curRev + 1; v.updatedAt = now(); v.updatedBy = a.by || { pf: 'poppen', ver: VERSION };
+              st.put(v); out = { ok: true, rev: v.rev, v };
+            } else if (o === 'del') { st.delete(key); out = { ok: true }; }
+            else { st.put(a.v); out = { ok: true }; }
+          };
+          if (key === undefined || key === null) { const r = st.put(a.v); r.onsuccess = () => { out = { ok: true, id: r.result }; }; }
+          else { const g = st.get(key); g.onsuccess = () => doWrite(g.result); }
+          t.oncomplete = () => { if (out && out.ok && store !== 'meta') notify(store); res(out); };
+          t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+        });
+      }
+      if (o === 'putMany') {
+        // Umzug/Wiederherstellung: neuere Stände gewinnen (updatedAt), Versionszähler wird fortgeschrieben
+        return new Promise((res, rej) => {
+          const t = d.transaction(store, 'readwrite'); const st = t.objectStore(store);
+          let n = 0;
+          for (const v of a.list || []) {
+            if (!VERSIONED.has(store)) { st.put(v); n++; continue; }
+            const g = st.get(v[SHARED_STORES[store].keyPath]);
+            g.onsuccess = () => { const cur = g.result; if (cur && (cur.updatedAt || 0) >= (v.updatedAt || v.updated || 0)) return; st.put({ ...v, rev: ((cur && cur.rev) || 0) + 1, updatedAt: v.updatedAt || v.updated || now(), updatedBy: v.updatedBy || { pf: 'poppen', ver: VERSION } }); n++; };
+          }
+          t.oncomplete = () => { if (store !== 'meta') notify(store); res({ ok: true, n }); };
+          t.onerror = () => rej(t.error);
+        });
+      }
+      if (o === 'count') return rp(d.transaction(store).objectStore(store).count());
+      if (o === 'clear') { await rp(d.transaction(store, 'readwrite').objectStore(store).clear()); notify(store); return { ok: true }; }
+      throw new Error('unbekannter Aufruf ' + o);
+    }
+    (async () => {   // Formatversion festhalten (nur erhöhen, nie senken)
+      try { const d = await sdb(); const cur = await rp(d.transaction('meta').objectStore('meta').get('schema')); if (!cur || cur.schema < SHARED_SCHEMA) await rp(d.transaction('meta', 'readwrite').objectStore('meta').put({ k: 'schema', schema: SHARED_SCHEMA, minRead: Math.max(1, (cur && cur.minRead) || 1) })); } catch (e) { warn('Briefkasten-Format', e); }
+    })();
+    if (!parentTab) return;
+    const qk = 'rpcq_' + parentTab, rk = 'rpcr_' + parentTab, ak = 'rpca_' + parentTab;
+    const doneIds = new Set();
+    let busy = false, again = false;
+    async function pump() {
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        do {
+          again = false;
+          const q = G.get(qk, []) || [];
+          for (const r of q) {
+            if (doneIds.has(r.id)) continue;
+            doneIds.add(r.id);
+            let ans;
+            try { ans = { id: r.id, v: await op(r.op, r.args) }; } catch (e) { ans = { id: r.id, err: (e && e.message) || String(e) }; }
+            const out = (G.get(rk, []) || []).slice(-40); out.push(ans); G.set(rk, out);
+          }
+        } while (again);
+      } finally { busy = false; }
+    }
+    try { GM_addValueChangeListener('vaf2_' + qk, () => pump()); } catch {}
+    const beat = () => G.set(ak, now());
+    beat(); setInterval(beat, 5000);
+    setInterval(pump, 3000);
+    pump();
   }
 
   // ---------- Briefkasten-Instanz (läuft im iframe auf github.io) ----------
   function bkIframeMain() {
+    try { const mt = /tab=([^&]+)/.exec(location.hash || ''); bkServer(mt ? decodeURIComponent(mt[1]) : ''); } catch (e) { warn('Briefkasten-Ablage', e); }
     const LS = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } } };
     const mine = PLAT === 'bk' ? bkIframeHost() : 'poppen';
     function bkIframeHost() { const m = /host=([^&]+)/.exec(location.hash || ''); const h = m ? decodeURIComponent(m[1]) : ''; return /joyclub/.test(h) ? 'joyclub' : 'poppen'; }
@@ -8866,6 +9134,452 @@
   function initXxl() { xxlTick(); setInterval(xxlTick, 1000); W.addEventListener('hashchange', xxlTick); }
 
   // =====================================================================================
+  // Gemeinsame Ablage (Briefkasten), Umzug 2.32, Rettungsanker, Einstellungs-Spiegel
+  // =====================================================================================
+
+  // ---------- gzip ↔ Text (für den Rettungsanker im Tampermonkey-Speicher) ----------
+  async function gzB64(str) {
+    const cs = new CompressionStream('gzip');
+    const buf = await new Response(new Blob([str]).stream().pipeThrough(cs)).arrayBuffer();
+    return B64.enc(new Uint8Array(buf));
+  }
+  async function unGzB64(s) {
+    const ds = new DecompressionStream('gzip');
+    return new Response(new Blob([B64.dec(s)]).stream().pipeThrough(ds)).text();
+  }
+
+  // ---------- Fickliste: EINE Liste für alle Skripte, im Briefkasten ----------
+  //  Lesen aus einem Zwischenspeicher je Tab (wird bei Änderungen aus anderen Tabs/Skripten verworfen),
+  //  Schreiben mit Versionszähler: Hat ein anderes Skript den Eintrag inzwischen geändert, wird die eigene
+  //  Änderung auf den neuen Stand gemischt (mergeFick) statt ihn zu überschreiben.
+  //  Briefkasten nicht erreichbar → nur lesen, aus dem Rettungsanker.
+  const FickStore = (() => {
+    let cache = null, loading = null, readOnly = false;
+    const clone = (x) => (x ? JSON.parse(JSON.stringify(x)) : x);
+    async function load() {
+      try {
+        const l = await BkRpc.call('all', { s: 'fick' }, 20000);
+        readOnly = false;
+        const m = new Map(); for (const p of l || []) if (p && !p.deleted) m.set(p.id, p);
+        return m;
+      } catch (e) {
+        readOnly = true;
+        warn('Fickliste: Briefkasten nicht erreichbar – lese den Rettungsanker', e && e.message);
+        const m = new Map();
+        try { const raw = G.get('mir_fick', ''); if (raw) for (const p of JSON.parse(await unGzB64(raw))) if (p && !p.deleted) m.set(p.id, p); } catch {}
+        setTimeout(() => { cache = null; }, 30000);
+        return m;
+      }
+    }
+    async function ensure() { if (cache) return cache; if (!loading) loading = load().then((m) => (cache = m)).finally(() => { loading = null; }); return loading; }
+    try { GM_addValueChangeListener('vaf2_bkv_fick', () => { cache = null; Bus.emit('fick'); }); } catch {}
+    const by = () => ({ pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' });
+    return {
+      get readOnly() { return readOnly; },
+      async get(id) { return clone((await ensure()).get(id)) || undefined; },
+      async all() { return [...(await ensure()).values()].map(clone); },
+      async put(p) {
+        let c = await ensure();
+        if (readOnly) throw new Error('Briefkasten nicht erreichbar – die Fickliste kann gerade nicht gespeichert werden.');
+        let v = clone(p); delete v.__fromBk;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          c = cache || c;
+          const known = c.get(v.id);
+          const expect = v.rev != null ? v.rev : known ? known.rev || 0 : null;
+          const r = await BkRpc.call('put', { s: 'fick', v, expect, by: by() });
+          if (r && r.ok) { if (cache) cache.set(v.id, r.v); p.rev = r.v.rev; p.updatedAt = r.v.updatedAt; return p; }
+          const cur = r && r.conflict;
+          if (!cur) throw new Error('Fickliste: Speichern fehlgeschlagen');
+          if (cur.deleted) { v.rev = cur.rev; continue; }
+          const merged = clone(cur);
+          mergeFick(merged, v);                       // fremde Änderung behalten, eigene darauf anwenden
+          for (const k of Object.keys(v)) if (!(k in merged)) merged[k] = v[k];
+          merged.rev = cur.rev;
+          v = merged;
+          log(`Fickliste: gleichzeitige Änderung an ${v.id} zusammengeführt`);
+        }
+        throw new Error('Fickliste: zu viele gleichzeitige Änderungen');
+      },
+      async del(id) {
+        await ensure();
+        if (readOnly) throw new Error('Briefkasten nicht erreichbar');
+        await BkRpc.call('del', { s: 'fick', k: id, by: by() });
+        if (cache) cache.delete(id);
+      },
+      invalidate() { cache = null; },
+    };
+  })();
+
+  // ---------- Textvorlagen: Briefkasten = gemeinsamer Bestand, Tampermonkey-Speicher = Zwischenspeicher ----------
+  const TplSync = {
+    pulling: false,
+    async push(list) {
+      if (this.pulling) return;
+      const sent = { ...(G.get('tpl_pushed', {}) || {}) };
+      const ids = new Set();
+      for (const t of list || []) {
+        if (!t || !t.id) continue;
+        ids.add(t.id);
+        if (sent[t.id] && sent[t.id] >= (t.updatedAt || 0)) continue;
+        try { await BkRpc.call('putMany', { s: 'tpl', list: [{ ...t, updatedAt: t.updatedAt || now() }] }); sent[t.id] = t.updatedAt || now(); } catch (e) { warn('Textvorlage teilen', e && e.message); return; }
+      }
+      for (const id of Object.keys(sent)) if (!ids.has(id)) { try { await BkRpc.call('del', { s: 'tpl', k: id, by: { pf: 'poppen', ver: VERSION } }); delete sent[id]; } catch {} }
+      G.set('tpl_pushed', sent);
+    },
+    async pull() {
+      let remote;
+      try { remote = await BkRpc.call('all', { s: 'tpl' }, 20000); } catch { return; }
+      const local = getTpls();
+      const byId = new Map(local.map((t) => [t.id, t]));
+      let changed = false;
+      const sent = { ...(G.get('tpl_pushed', {}) || {}) };
+      for (const r of remote || []) {
+        const l = byId.get(r.id);
+        if (r.deleted) { if (l && (l.updatedAt || 0) <= (r.updatedAt || 0)) { byId.delete(r.id); changed = true; } delete sent[r.id]; continue; }
+        if (!l || (r.updatedAt || 0) > (l.updatedAt || 0)) { const { rev, deleted, ...t } = r; byId.set(r.id, { ...(l || {}), ...t }); changed = true; }
+        sent[r.id] = Math.max(sent[r.id] || 0, r.updatedAt || 0);
+      }
+      G.set('tpl_pushed', sent);
+      if (changed) { this.pulling = true; try { setTpls([...byId.values()]); } finally { this.pulling = false; } }
+      // lokal neuere/neue Vorlagen hochladen
+      await this.push(getTpls());
+    },
+  };
+
+  // ---------- „Ich“: eigene Profile aller Plattformen ----------
+  async function registerIch() {
+    const me = Me.get(); if (!me || !me.uid) return;
+    try { await BkRpc.call('put', { s: 'ich', v: { id: 'poppen:' + me.uid, pf: 'poppen', uid: String(me.uid), nick: me.nick, url: 'https://www.poppen.de' + pathOfName(me.nick), at: now() } }); } catch {}
+  }
+  async function ichList() {
+    try { return (await BkRpc.call('all', { s: 'ich' })) || []; } catch { const me = Me.get(); return me ? [{ pf: 'poppen', uid: String(me.uid), nick: me.nick, url: 'https://www.poppen.de' + pathOfName(me.nick) }] : []; }
+  }
+
+  // ---------- Schlüssel- und Einstellungs-Kopie im Briefkasten ----------
+  const GM_SKIP = /^vaf2_(lock_|rpc[qra]_|mir_|bk_|bkv_|scan_state|blk_state|search_open|search_left|dbk|qcount|tpl_pushed|mig232)/;
+  async function mirrorKeyToBk() {
+    const raw = Crypt.raw(); if (!raw || G.get('dbk_bk', 0)) return;
+    try { await BkRpc.call('put', { s: 'meta', v: { k: 'poppen_dbk', v: raw, at: now() } }); G.set('dbk_bk', now()); } catch {}
+  }
+  async function mirrorSettingsToBk() {
+    const data = {};
+    for (const k of GM_listValues()) if (k.startsWith('vaf2_') && !GM_SKIP.test(k)) data[k] = GM_getValue(k);
+    try { await BkRpc.call('put', { s: 'meta', v: { k: 'poppen_gm', at: now(), ver: VERSION, data } }); G.set('gm_bk_at', now()); } catch {}
+  }
+  // Neuinstallation: Tampermonkey-Speicher leer, aber Kopie im Briefkasten → anbieten
+  async function offerSettingsRestore() {
+    if (GM_getValue('vaf2_settings', null) || GM_getValue('vaf2_me', null) || G.get('gm_restore_asked', 0)) return;
+    let r = null;
+    try { r = await BkRpc.call('get', { s: 'meta', k: 'poppen_gm' }, 20000); } catch { return; }
+    G.set('gm_restore_asked', now());
+    if (!r || !r.data || !Object.keys(r.data).length) return;
+    const ok = await ask('Frühere Einstellungen gefunden', `<p>Im Briefkasten liegt eine Kopie deiner Einstellungen und Listen vom ${esc(deDateTime(r.at))} (Version ${esc(r.ver || '?')}).</p><p>Übernehmen?</p>`,
+      [{ label: 'Übernehmen', value: true, primary: true, focus: true }, { label: 'Nicht übernehmen', value: false, cancel: true }]);
+    if (!ok) return;
+    for (const [k, v] of Object.entries(r.data)) if (k.startsWith('vaf2_') && !GM_SKIP.test(k)) GM_setValue(k, v);
+    toast('Einstellungen übernommen. Seite wird neu geladen …');
+    setTimeout(() => location.reload(), 1200);
+  }
+
+  // ---------- Umzug 2.32: Altbestand → verschlüsselte Datenbank + Briefkasten ----------
+  //  Läuft einmal, vor allem anderen (andere Tabs warten). Der Altbestand bleibt 14 Tage liegen, dann wird er gelöscht.
+  async function migrate232() {
+    const st = G.get('mig232', null);
+    if (st && st.done) {
+      if (st.fickPending) migrateFick232().catch(() => {});
+      if (now() - st.done > 14 * DAY && !st.oldDeleted) { try { W.indexedDB.deleteDatabase(OLD_DB_NAME); G.set('mig232', { ...st, oldDeleted: now() }); log('Altbestand „opa-schutz“ gelöscht (Umzug vor 14 Tagen)'); } catch {} }
+      return;
+    }
+    if (!(await Lock.take('mig232', 'Umzug'))) {
+      for (let i = 0; i < 240 && !(G.get('mig232', null) || {}).done; i++) await sleep(500);      // anderer Tab zieht um
+      return;
+    }
+    const tt = toast('Opa-Schutz zieht um (verschlüsselte Ablage) …', 0);
+    try {
+      await Crypt.init();
+      const old = await openOldDb();
+      const counts = {};
+      if (old) {
+        const readBatches = (store, fn) => new Promise((res, rej) => {
+          if (!old.objectStoreNames.contains(store)) return res();
+          let buf = [];
+          const rq = old.transaction(store).objectStore(store).openCursor();
+          rq.onsuccess = () => { const c = rq.result; if (!c) { res(buf.length ? fn(buf) : null); return; } buf.push(c.value); c.continue(); };
+          rq.onerror = () => rej(rq.error);
+        });
+        for (const store of ['members', 'images', 'queue', 'kv', 'archive']) {
+          let n = 0;
+          await readBatches(store, async (all) => {
+            for (let i = 0; i < all.length; i += 2000) {
+              await DB.putMany(store, all.slice(i, i + 2000));
+              n += Math.min(2000, all.length - i);
+              tt.textContent = `Opa-Schutz zieht um: ${store} ${fmtN(n)}/${fmtN(all.length)}`;
+              await sleep(0);
+            }
+          });
+          counts[store] = n;
+        }
+        // Fickliste in den Briefkasten (wenn der gerade nicht erreichbar ist: beim nächsten Start)
+        let fick = [];
+        await readBatches('fick', (all) => { fick = all; });
+        counts.fick = fick.length;
+        await KV.set('mig232_fick', fick);
+        old.close();
+      }
+      G.set('mig232', { done: now(), counts, fickPending: !!counts.fick });
+      Members.cached().clear();
+      if (counts.fick) await migrateFick232();
+      tt.textContent = old ? `Umzug fertig: ${fmtN(counts.members || 0)} Mitglieder, ${fmtN(counts.fick || 0)} Fickliste-Einträge.` : 'Opa-Schutz bereit.';
+      setTimeout(() => tt.remove(), 6000);
+    } catch (e) {
+      tt.textContent = 'Umzug fehlgeschlagen: ' + (e && e.message) + ' – der Altbestand bleibt unverändert, neuer Versuch beim nächsten Laden.';
+      warn('Umzug 2.32', e);
+      setTimeout(() => tt.remove(), 15000);
+      G.del('mig232');
+    } finally { Lock.release('mig232'); }
+  }
+  async function migrateFick232() {
+    const list = await KV.get('mig232_fick', null);
+    if (!list || !list.length) { const st = G.get('mig232', {}); G.set('mig232', { ...st, fickPending: false }); return; }
+    await BkRpc.call('putMany', { s: 'fick', list: list.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || now() })) }, 60000);
+    await KV.set('mig232_fick', null);
+    const st = G.get('mig232', {}); G.set('mig232', { ...st, fickPending: false });
+    FickStore.invalidate(); Bus.emit('fick');
+    log(`Fickliste in den Briefkasten übernommen: ${list.length} Einträge`);
+  }
+
+  // ---------- Rettungsanker: gepackte Kopie im Tampermonkey-Speicher ----------
+  //  Mitglieder in 32 Blöcken (täglich nur geänderte, wöchentlich alle), Warteliste und Archiv täglich,
+  //  Fickliste kurz nach jeder Änderung. Überlebt „Website-Daten löschen“.
+  const MIR_BUCKETS = 32;
+  const MIR_FIELDS = ['uid', 'nick', 'nl', 'nicks', 'g', 'ages', 'ageAt', 'birth', 'by', 'zod', 'pay', 'city', 'first', 'last', 'lastLogin', 'signup', 'dist', 'body', 'bodyUnk', 'figc', 'blk', 'unblk', 'auto', 'friend', 'pstate', 'msg', 'seen', 'del', 'avatar', 'tr', 'lf', 'fake'];
+  const mirBucket = (uid) => { let h = 0; for (const c of String(uid)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % MIR_BUCKETS; };
+  const mirDirty = new Set();
+  let mirDirtyT = null;
+  function mirMark(uid) {
+    mirDirty.add(mirBucket(uid));
+    clearTimeout(mirDirtyT);
+    mirDirtyT = setTimeout(() => { const s2 = new Set([...(G.get('mir_dirty', []) || []), ...mirDirty]); mirDirty.clear(); G.set('mir_dirty', [...s2]); }, 5000);
+  }
+  async function mirrorRun(force = false) {
+    const meta = G.get('mir_meta', null) || {};
+    if (!force && now() - (meta.at || 0) < 20 * 3600000) return meta;
+    if (!(await Lock.take('mirror', 'Rettungsanker'))) return meta;
+    try {
+      const full = force || now() - (meta.full || 0) > 7 * DAY;
+      const dirty = new Set(full ? [...Array(MIR_BUCKETS).keys()] : (G.get('mir_dirty', []) || []));
+      let n = 0;
+      if (dirty.size) {
+        const buckets = new Map([...dirty].map((b) => [b, []]));
+        await DB.each('members', (m) => { n++; const b = mirBucket(m.uid); const arr = buckets.get(b); if (arr) { const o = {}; for (const f of MIR_FIELDS) if (m[f] !== undefined) o[f] = m[f]; arr.push(o); } });
+        for (const [b, arr] of buckets) { G.set('mir_m_' + b, await gzB64(JSON.stringify(arr))); await sleep(0); }
+      } else n = meta.n || 0;
+      G.set('mir_dirty', []);
+      G.set('mir_q', await gzB64(JSON.stringify(await DB.all('queue'))));
+      // Archiv: je Mitglied nur die letzten 5 Stände
+      const arch = await DB.all('archive');
+      const byU = new Map(); for (const a of arch) { const l = byU.get(a.uid) || []; l.push(a); byU.set(a.uid, l); }
+      const keep = []; for (const l of byU.values()) keep.push(...l.sort((x, y) => x.at - y.at).slice(-5));
+      G.set('mir_arch', await gzB64(JSON.stringify(keep)));
+      await mirrorFick();
+      let size = 0; for (const k of GM_listValues()) if (k.startsWith('vaf2_mir_')) { const v = GM_getValue(k, ''); size += typeof v === 'string' ? v.length : 0; }
+      const out = { at: now(), full: full ? now() : (meta.full || 0), n, size, fick: (G.get('mir_fick_n', 0) || 0) };
+      G.set('mir_meta', out);
+      return out;
+    } finally { Lock.release('mirror'); }
+  }
+  let mirFickT = null;
+  async function mirrorFick() {
+    if (FickStore.readOnly) return;
+    try { const l = await Fick.all(); G.set('mir_fick', await gzB64(JSON.stringify(l))); G.set('mir_fick_n', l.length); } catch (e) { warn('Rettungsanker Fickliste', e); }
+  }
+  // Wiederherstellen aus dem Rettungsanker
+  async function mirrorRestore(silentCheck = false) {
+    const meta = G.get('mir_meta', null);
+    if (!meta || !meta.at) { if (!silentCheck) toast('Kein Rettungsanker vorhanden.'); return false; }
+    if (silentCheck) {
+      const n = await DB.count('members').catch(() => -1);
+      if (n < 0 || n >= Math.max(1, (meta.n || 0) * 0.5) || G.get('mir_restore_asked', 0) > meta.at) return false;
+      G.set('mir_restore_asked', now());
+      const ok = await ask('Daten gelöscht?', `<p>Dein Gedächtnis ist ${n ? 'deutlich kleiner als' : 'leer, aber'} der Rettungsanker vom ${esc(deDateTime(meta.at))} enthält ${fmtN(meta.n || 0)} Mitglieder.</p><p>Wahrscheinlich wurden Website-Daten gelöscht. Aus dem Rettungsanker wiederherstellen?</p>`,
+        [{ label: 'Wiederherstellen', value: true, primary: true, focus: true }, { label: 'Nein', value: false, cancel: true }]);
+      if (!ok) return false;
+    }
+    const tt = toast('Stelle aus dem Rettungsanker wieder her …', 0);
+    try {
+      let n = 0;
+      for (let b = 0; b < MIR_BUCKETS; b++) {
+        const raw = G.get('mir_m_' + b, ''); if (!raw) continue;
+        const arr = JSON.parse(await unGzB64(raw));
+        const fresh = [];
+        for (const x of arr) { const cur = await DB.get('members', x.uid); if (!cur || (cur.last || 0) < (x.last || 0)) fresh.push({ ...(cur || {}), ...x }); }
+        await DB.putMany('members', fresh); n += fresh.length;
+        tt.textContent = `Rettungsanker: Block ${b + 1}/${MIR_BUCKETS} …`;
+      }
+      const q = G.get('mir_q', ''); if (q) { const l = JSON.parse(await unGzB64(q)); for (const it of l) if (!(await DB.get('queue', it.uid))) await DB.put('queue', it); }
+      const a = G.get('mir_arch', ''); if (a) await DB.putMany('archive', JSON.parse(await unGzB64(a)));
+      const f = G.get('mir_fick', '');
+      if (f) { const l = JSON.parse(await unGzB64(f)); try { await BkRpc.call('putMany', { s: 'fick', list: l }, 60000); FickStore.invalidate(); } catch (e) { warn('Rettungsanker Fickliste', e); } }
+      Members.cached().clear();
+      tt.textContent = `Wiederhergestellt: ${fmtN(n)} Mitglieder${f ? ' und die Fickliste' : ''}.`;
+      setTimeout(() => tt.remove(), 8000);
+      return true;
+    } catch (e) { tt.textContent = 'Wiederherstellen fehlgeschlagen: ' + (e && e.message); setTimeout(() => tt.remove(), 10000); return false; }
+  }
+
+  function initShared() {
+    Bus.on('fick', () => { clearTimeout(mirFickT); mirFickT = setTimeout(() => mirrorFick(), 60000); });
+    Bus.on('settings', () => { clearTimeout(initShared.st); initShared.st = setTimeout(mirrorSettingsToBk, 5000); });
+    try { GM_addValueChangeListener('vaf2_bkv_tpl', () => TplSync.pull().catch(() => {})); } catch {}
+    setTimeout(async () => {
+      if (!(await BkRpc.waitAlive(30000))) { warn('Briefkasten nicht erreichbar – gemeinsame Ablage vorerst nur lesend'); return; }
+      await offerSettingsRestore().catch(() => {});
+      await mirrorKeyToBk().catch(() => {});
+      await registerIch().catch(() => {});
+      await TplSync.pull().catch((e) => warn('Textvorlagen abgleichen', e));
+      if (now() - G.get('gm_bk_at', 0) > 6 * 3600000) mirrorSettingsToBk().catch(() => {});
+    }, 4000);
+    setTimeout(() => mirrorRestore(true).catch(() => {}), 15000);
+    setTimeout(() => mirrorRun().catch((e) => warn('Rettungsanker', e)), 120000);
+    setInterval(() => mirrorRun().catch(() => {}), 3 * 3600000);
+  }
+
+  // =====================================================================================
+  // Import einer FREMDEN Fickliste (aus einem Gedächtnis-Export eines anderen Profils)
+  //  Übernommen wird nur, wo man selbst „der Fick“ ist (Partner = eines der eigenen Profile aus „Ich“).
+  //  Je nach eigenem und fremdem Status erscheint ein Dialog (Fälle siehe FORMAT.md / Changelog 2.32).
+  // =====================================================================================
+  const FS_RANK = { no: 0, want: 1, done: 2, never: 3 };
+  const fiNorm = (s) => norm(String(s || ''));
+  // Gehört ein Eintrag der fremden Liste zu mir? (poppen-ID/Nick oder irgendein Profil aus „Ich“, z. B. JOYclub)
+  function fiIsMe(p, ich) {
+    const keys = new Set(), uids = new Set(), nicks = new Set();
+    for (const i of ich) { if (i.url) keys.add(linkKey({ url: i.url })); if (i.uid) uids.add(i.pf + ':' + String(i.uid)); if (i.nick) nicks.add(i.pf + ':' + fiNorm(i.nick)); }
+    const profs = [...(p.profiles || [])];
+    if (p.main) profs.push({ ...p.main, name: p.main.nick, url: p.main.url || (p.main.pf === 'poppen' || !p.main.pf ? 'https://www.poppen.de' + pathOfName(p.main.nick || '') : '') });
+    return profs.some((x) => {
+      const pf = x.pf || 'poppen';
+      if (x.uid && uids.has(pf + ':' + String(x.uid))) return true;
+      if ((x.name || x.nick) && nicks.has(pf + ':' + fiNorm(x.name || x.nick))) return true;
+      const k = x.url ? linkKey(x) : ''; return !!(k && keys.has(k));
+    });
+  }
+  // Ort eines Treffens zum Vergleich: Club/Ort bzw. Link
+  const fiPlace = (t) => fiNorm(t.club) || (t.link ? linkKey({ url: t.link }) : '') || fiNorm(t.where);
+  const fiSamePlace = (a, b) => { const pa = fiPlace(a), pb = fiPlace(b); if (!pa || !pb) return false; return pa === pb || (a.link && b.link && linkKey({ url: a.link }) === linkKey({ url: b.link })); };
+  // zukünftige Termine aus der fremden Textvorlage „Termine“
+  function fiTerms(tpls) {
+    const t = (tpls || []).find((x) => x && !x.deletedAt && fiNorm(x.name) === 'termine');
+    if (!t || typeof upcomingTerms !== 'function') return [];
+    return upcomingTerms(t.text || '').list;
+  }
+  const fiTermsHtml = (head, terms) => (terms.length ? `<h3>${esc(head)}</h3>` + terms.map((x) => `<div class="vaf-fi-term">${esc([x.wann, x.wo].filter(Boolean).join(' · '))}${x.was ? ' · ' + (x.link ? `<a href="${esc(/^https?:/i.test(x.link) ? x.link : 'https://' + x.link)}" target="_blank" rel="noopener">${esc(x.was)} ↗</a>` : `<span>${esc(x.was)}</span>`) : (x.link ? ` · <a href="${esc(/^https?:/i.test(x.link) ? x.link : 'https://' + x.link)}" target="_blank" rel="noopener">Link ↗</a>` : '')}</div>`).join('') : '');
+  function fiStyle() {
+    if (document.getElementById('vaf-fi-style')) return;
+    const st = document.createElement('style'); st.id = 'vaf-fi-style';
+    st.textContent = `.vaf-fi-tr{display:flex;gap:10px;align-items:flex-start;background:#2a2a2a;border-radius:10px;padding:9px 12px;margin-bottom:6px}
+      .vaf-fi-tr .vaf-sw{width:34px;height:19px;border-radius:10px;background:#555;position:relative;flex:none;margin-top:2px;border:0;cursor:pointer}
+      .vaf-fi-tr .vaf-sw::after{content:'';position:absolute;left:2px;top:2px;width:15px;height:15px;border-radius:50%;background:#fff;transition:left .15s}
+      .vaf-fi-tr .vaf-sw.on{background:#ffc21a}.vaf-fi-tr .vaf-sw.on::after{left:17px}
+      .vaf-fi-tr small{display:block;color:#a6a6a6;font-size:12px}.vaf-fi-chg{background:rgba(255,194,26,.18);color:#ffd35c;border-radius:4px;padding:0 3px}
+      .vaf-fi-warn{color:#ff7875;font-size:12px;display:block;margin-top:2px}
+      .vaf-fi-term{padding:3px 0}.vaf-fi-term a{color:#ffc21a;text-decoration:none}.vaf-fi-term span{color:#a6a6a6}
+      .vaf-fi-big{font-size:1.15em}`;
+    document.head.appendChild(st);
+  }
+  // Treffen-Liste mit Schaltern; liefert die ausgewählten (zusammengeführten) Treffen
+  function fiMeetsUi(box, cands, myAll, exporter) {
+    const rows = cands.map((t) => {
+      const sameDay = myAll.filter((x) => x.t.date && x.t.date === t.date);
+      const same = sameDay.find((x) => fiSamePlace(x.t, t));
+      const other = sameDay.find((x) => !fiSamePlace(x.t, t));
+      const merged = { ...t };
+      const changed = [];
+      if (same) for (const f of ['time', 'where', 'club', 'link', 'note']) if (!merged[f] && same.t[f]) { merged[f] = same.t[f]; changed.push(f); }
+      return { t, merged, changed, same, other, on: !other || !!same };
+    });
+    const fmt = (r) => {
+      const v = r.merged; const c = (f, txt) => (r.changed.includes(f) ? `<span class="vaf-fi-chg">${esc(txt)}</span>` : esc(txt));
+      const parts = [v.where ? 'Was: ' + c('where', v.where) : '', v.club ? 'Wo: ' + c('club', v.club) : '', v.link ? 'Link: ' + c('link', v.link.replace(/^https?:\/\//, '')) : '', v.note ? 'Notiz: ' + c('note', '„' + v.note + '“') : ''].filter(Boolean);
+      return parts.join(' · ');
+    };
+    box.innerHTML = rows.map((r, i) => `<div class="vaf-fi-tr"><button type="button" class="vaf-sw${r.on ? ' on' : ''}" data-i="${i}"></button><div><b>${esc(r.t.date ? deDate(new Date(r.t.date + 'T12:00')) : 'ohne Datum')}${r.t.time ? ' ' + esc(r.t.time) : ''}${r.t.club || r.t.where ? ' · ' + esc(r.t.club || r.t.where) : ''}</b>
+      <small>${r.same ? `Du warst laut Fickliste am selben Ort (Treffen mit ${esc(r.same.who)}) → so würde Dein neues Treffen mit ${esc(exporter)} aussehen:` : r.other ? '' : 'neu – an dem Tag hast Du nichts eingetragen'}</small>
+      <small>${fmt(r)}</small>${r.other ? `<span class="vaf-fi-warn">Laut Deiner Fickliste warst Du an dem Tag woanders (${esc(r.other.t.club || r.other.t.where || 'anderer Ort')}, mit ${esc(r.other.who)}).</span>` : ''}</div></div>`).join('');
+    box.querySelectorAll('.vaf-sw').forEach((b) => b.addEventListener('click', () => { const r = rows[+b.dataset.i]; r.on = !r.on; b.classList.toggle('on', r.on); }));
+    return () => rows.filter((r) => r.on).map((r) => ({ ...r.merged, id: 'm' + Math.random().toString(36).slice(2, 9), pf: r.merged.pf || 'poppen', at: now(), imported: exporter }));
+  }
+  // Ein Dialog; liefert { status?, meets? } oder null (nichts tun)
+  function fiDialog({ title, sub, terms, termsHead, meets, myAll, exporter, buttons }) {
+    fiStyle();
+    return new Promise((resolve) => {
+      const m = modal({ title: '', closable: false });
+      m.md.querySelector('.vaf-body').innerHTML = `<h2 style="margin:0 0 6px">${title}</h2>${sub ? `<div class="vaf-sub">${esc(sub)}</div>` : ''}<div data-meets></div>${fiTermsHtml(termsHead, terms)}`;
+      let pick = () => [];
+      if (meets && meets.length) pick = fiMeetsUi(m.body.querySelector('[data-meets]'), meets, myAll, exporter);
+      m.buttons(buttons.map((b, i) => ({ label: b.label, primary: i === 0, focus: i === 0, fn: () => { m.close(); resolve(b.status === undefined && !b.meets ? null : { status: b.status, meets: b.meets ? pick() : [] }); } })), buttons.length > 1);
+    });
+  }
+  async function fickImportForeign(persons, account, tpls) {
+    const ich = await ichList();
+    const me = Me.get();
+    if (me && !ich.some((i) => i.pf === 'poppen' && String(i.uid) === String(me.uid))) ich.push({ pf: 'poppen', uid: String(me.uid), nick: me.nick, url: 'https://www.poppen.de' + pathOfName(me.nick) });
+    const mine = (persons || []).filter((p) => p && !p.deleted && fiIsMe(p, ich));
+    if (!mine.length || !account || !account.uid) return 0;
+    // I: mehrfach eingetragen → zusammenfassen, höchster Status
+    const foreign = { status: null, meets: [] };
+    for (const p of mine) {
+      if (p.status && (foreign.status == null || FS_RANK[p.status] > FS_RANK[foreign.status])) foreign.status = p.status;
+      foreign.meets.push(...(p.meets || []));
+    }
+    if (!foreign.status && foreign.meets.length) foreign.status = 'done';      // H: ohne Status, aber mit Treffen
+    if (!foreign.status || foreign.status === 'no') return 0;                    // G: „Nein, danke!“ → nichts
+    const E = account.nick || ('Profil ' + account.uid);
+    let own = await Fick.adopt(account.uid, account.nick).catch(() => null) || await Fick.get(Fick.idOf(account.uid));
+    if (!own) own = await Fick.forMember(account.uid, account.nick);
+    const S0 = own.status || null;
+    const terms = fiTerms(tpls);
+    // eigene Treffen aller Personen (für den Widerspruchs-Abgleich)
+    const myAll = [];
+    for (const q of await Fick.all()) for (const t of q.meets || []) myAll.push({ t, who: (q.main && q.main.nick) || (q.ext && q.ext.name) || '?', id: q.id });
+    const mk = (t) => `${t.date || ''}|${fiPlace(t)}`;
+    const have = new Set((own.meets || []).map(mk));
+    const newMeets = foreign.meets.filter((t) => !have.has(mk(t))).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const F = foreign.status;
+    const GRIN = '<span class="vaf-fi-big">😁</span>', WOW = '<span class="vaf-fi-big">😳</span>';
+    const B4 = [{ label: 'Ja, gerne wieder', status: 'done', meets: true }, { label: 'Ja, einmal ist keinmal', status: 'never', meets: true }, { label: 'Im Leben nicht', status: 'no' }, { label: 'Stimmt nicht' }];
+    let res = null;
+    if (F === 'want') {
+      if (!S0) res = await fiDialog({ title: `${esc(E)} will Dich ficken! ${GRIN}`, sub: `Du hast ${E} noch nicht in Deiner Fickliste.`, terms, termsHead: 'Hier hättet Ihr die Gelegenheit dazu:', buttons: [{ label: 'Will ich auch!', status: 'want' }, { label: 'Nein, danke!', status: 'no' }, { label: 'Mal sehen' }] });
+      else if (S0 === 'want') res = await fiDialog({ title: `<b>${esc(E)} will Dich auch ficken! ${GRIN}</b>`, terms, termsHead: 'Hier hättet Ihr die Gelegenheit dazu:', buttons: [{ label: 'OK' }] });
+      else if (S0 === 'done') res = await fiDialog({ title: `${esc(E)} will Dich ficken! ${GRIN}`, sub: `Ihr hattet laut Deiner Fickliste schon das Vergnügen – ${E} hat es offenbar noch nicht eingetragen.`, terms, termsHead: 'Hier hättet Ihr erneut die Gelegenheit dazu:', buttons: [{ label: 'OK' }] });
+      else if (S0 === 'never') res = await fiDialog({ title: `${esc(E)} will Dich ficken! ${WOW}`, sub: '... aber eine Wiederholung ist eigentlich überflüssig.', terms, termsHead: 'Hier hättet Ihr erneut die Gelegenheit dazu:', buttons: [{ label: 'OK' }] });
+      else if (S0 === 'no') res = await fiDialog({ title: `${esc(E)} will Dich ficken! ${WOW}`, sub: '... das beruht nicht auf Gegenseitigkeit.', terms, termsHead: 'Hier hättet Ihr die Gelegenheit dazu:', buttons: [{ label: 'Doch, will ich!', status: 'want' }, { label: 'Bleibt dabei' }] });
+    } else {                                                                     // fremd: Gefickt / Nie wieder
+      const sub0 = `${E} hat diese Treffen mit Dir eingetragen. Ausgewählte werden als eigene Treffen mit ${E} übernommen.`;
+      if (!S0 || S0 === 'want') {
+        res = await fiDialog({ title: `${esc(E)} hat wohl schon mit Dir gefickt!?`, sub: S0 === 'want' && F === 'never' ? '... fand es aber nicht so toll.' : sub0, meets: newMeets, myAll, exporter: E, terms, termsHead: 'Hier hättet Ihr erneut die Gelegenheit dazu:', buttons: B4 });
+      } else if (S0 === 'no') {
+        res = await fiDialog({ title: `${esc(E)} hat wohl schon mit Dir gefickt!? ${WOW}`, sub: `Dabei steht ${E} bei Dir auf „Nein, danke!“.`, meets: newMeets, myAll, exporter: E, terms, termsHead: 'Hier hättet Ihr erneut die Gelegenheit dazu:', buttons: B4 });
+      } else {                                                                   // eigen: Gefickt / Nie wieder
+        if (!newMeets.length && !terms.length) return 0;
+        const sub = S0 === 'never' && F === 'never' ? `${E} fand es auch nicht so toll.` : S0 === 'done' && F === 'never' ? 'Beim nächsten Mal mehr Mühe geben!' : S0 === 'never' && F === 'done' ? 'Hätte aber nicht sein müssen ...' : 'Immer wieder gerne 😁';
+        res = await fiDialog({ title: 'Erneut gelandet!', sub, meets: newMeets, myAll, exporter: E, terms, termsHead: `${E} wäre hier wieder fickbar:`,
+          buttons: newMeets.length ? [{ label: 'Ja, gerne wieder', status: 'done', meets: true }, { label: 'Ja, wieder nicht aufgepasst', status: 'never', meets: true }, { label: 'Im Leben nicht', status: 'no' }, { label: 'Stimmt nicht' }] : [{ label: 'OK' }] });
+      }
+    }
+    if (!res) return 0;
+    const p = await Fick.get(own.id) || own;
+    if (res.meets && res.meets.length) {
+      p.meets = [...(p.meets || []), ...res.meets];
+      p.history = [...(p.history || []), { at: now(), what: `${res.meets.length} Treffen aus der Fickliste von ${E} übernommen` }];
+    }
+    if (res.status) { await Fick.setStatus(p, res.status); }
+    else if (res.meets && res.meets.length) await Fick.put(p);
+    return 1;
+  }
+
+  // =====================================================================================
   // Start
   // =====================================================================================
   loadSettings();
@@ -8894,6 +9608,8 @@
     ensureStyle();
     await migrateV1().catch((e) => warn('Umstellung', e));
     if (await handleSpecialPage()) return;
+    bkEmbed(true);
+    await migrate232().catch((e) => warn('Umzug', e));
     loadMe().then(() => { headerButton(); ageWithMe().catch((e) => warn('Grenzen altern', e)); return loadSecondHome(); }).catch(() => {});
     setInterval(() => loadMe().then(() => ageWithMe()).catch(() => {}), 3 * 3600000);
     checkReblock().catch((e) => warn('Wiedersperren', e));
@@ -8905,6 +9621,7 @@
     initGroupAuto();
     initResolver();
     initXxl();
+    initShared();
     initGroupRequests();
     Etappe.start();
     Scan.startTimer();
@@ -8973,7 +9690,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

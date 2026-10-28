@@ -1,6 +1,14 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.32 (28.10.2026)
+- Mitglieder-Gedächtnis, Warteliste, Bilder und Profil-Archiv liegen jetzt verschlüsselt (AES-GCM) in einer unauffällig benannten Datenbank – poppen.de sieht nur unlesbare Daten. Schlüssel im Tampermonkey-Speicher und als Kopie im Briefkasten. Der Altbestand wird beim ersten Start umgezogen und nach 14 Tagen gelöscht
+- Fickliste und Textvorlagen liegen als EIN gemeinsamer Bestand im Briefkasten (für alle Skripte); Schreiben mit Versionszähler, gleichzeitige Änderungen werden zusammengeführt statt überschrieben; Löschmarken statt Löschen; Formatdefinition in FORMAT.md. Der bisherige Abgleich mit dem JOYclub-Skript läuft weiter, bis es umgestellt ist
+- „Ich“-Liste im Briefkasten: jedes Skript trägt sein eigenes Profil ein
+- Rettungsanker: gepackte Kopie von Gedächtnis, Warteliste, Archiv und Fickliste im Tampermonkey-Speicher (übersteht „Website-Daten löschen“); Rückfrage beim Start, wenn das Gedächtnis leer oder deutlich kleiner ist; Stand und Knöpfe im Abschnitt „Sicherung“
+- Einstellungen und kleine Listen zusätzlich im Briefkasten gespiegelt; nach einer Neuinstallation wird die Übernahme angeboten
+- Gedächtnis-Import: fremde Fickliste – übernommen wird nur, wo man selbst „der Fick“ ist (erkannt über alle eigenen Profile, auch den JOYclub-Account); Dialoge je nach eigenem und fremdem Status (Will ich / Gefickt / Nein, danke! / Nie wieder!) mit zukünftigen Terminen aus der Vorlage „Termine“, Treffen mit Schaltern, Vorschau beim Zusammenführen am selben Ort, roter Hinweis bei Widerspruch; eigene Sicherung (selbes Profil) gleicht Fickliste und Vorlagen ab
+
 2.31 (28.10.2026)
 - XXL-Suche als letzte Quelle im Opa-Scan (Standard nach „Moppel-Liebhaber“): je Profiltyp ab 18 aufsteigend bis unter die Ignorier-Grenze, im eingestellten Radius (75 km virtuell), Figur „Plus-size“; jeder Treffer wird vermessen und samt BMI, Figur-Angabe, Entfernung und Anmeldedatum im Gedächtnis gespeichert; Anschreibbar-Prüfung für passende Treffer
 - Neuer Menüpunkt unter „Entdecken“ (nach „Popsters“): benannt nach der höchsten Stufe (Standard „XXL“), Symbol Frau oder Mann je nach eigener Suche
