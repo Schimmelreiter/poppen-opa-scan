@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.34
+// @version      2.35
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.34';
+  const VERSION = '2.35';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -474,6 +474,14 @@
       }
     },
   };
+  // Datei-Griffe (FileSystemFileHandle) lassen sich nicht als JSON verschlüsseln → eigene kleine Datenbank,
+  // in der nur der Griff selbst liegt (kein Inhalt; lesen kann man die Datei nur mit der Browser-Erlaubnis).
+  const HandleStore = (() => {
+    let p = null;
+    const open = () => p || (p = new Promise((res, rej) => { const rq = IDB.open('keyval-cache-h', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('h'); rq.onsuccess = () => res(rq.result); rq.onerror = () => { p = null; rej(rq.error); }; }));
+    const run = async (mode, fn) => { const d = await open(); return new Promise((res, rej) => { const t = d.transaction('h', mode); const r = fn(t.objectStore('h')); t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); }); };
+    return { get: (k) => run('readonly', (s) => s.get(k)), set: (k, v) => run('readwrite', (s) => s.put(v, k)) };
+  })();
   const KV = {
     async get(k, def = null) { const r = await DB.get('kv', k); return r ? r.v : def; },
     async set(k, v) { await DB.put('kv', { k, v }); chan.post({ t: 'kv', k }); },
@@ -6573,7 +6581,20 @@
   async function termHandle() {
     if (termMem) return termMem;
     let h = null;
-    try { h = await KV.get(TERM_KEY, null); } catch {}
+    try { h = await HandleStore.get(TERM_KEY); } catch {}
+    if (!(h && typeof h.getFile === 'function')) {
+      // vor 2.35 lag der Griff in der verschlüsselten Datenbank und ging dort verloren (nicht als JSON speicherbar);
+      // Rettungsversuch aus dem alten, unverschlüsselten Bestand (bleibt nach dem Umzug noch 14 Tage)
+      try {
+        const od = await openOldDb();
+        if (od && od.objectStoreNames.contains('kv')) {
+          const r = await new Promise((res) => { const q = od.transaction('kv').objectStore('kv').get(TERM_KEY); q.onsuccess = () => res(q.result); q.onerror = () => res(null); });
+          od.close();
+          const oh = r && (r.v || r);
+          if (oh && typeof oh.getFile === 'function') { h = oh; try { await HandleStore.set(TERM_KEY, h); } catch {} log('Termine: Datei aus dem alten Bestand wiederhergestellt'); }
+        } else if (od) od.close();
+      } catch {}
+    }
     return h && typeof h.getFile === 'function' ? (termMem = h) : null;
   }
   // Datei wählen (braucht einen Klick)
@@ -6582,7 +6603,7 @@
     try {
       const [h] = await W.showOpenFilePicker({ multiple: false, types: [{ description: 'Textdatei', accept: { 'text/plain': ['.txt', '.text', '.md'] } }] });
       termMem = h;
-      try { await KV.set(TERM_KEY, h); } catch (e) { warn('Termine: Datei merken', e); }
+      try { await HandleStore.set(TERM_KEY, h); } catch (e) { warn('Termine: Datei merken', e); }
       return h;
     } catch (e) { if (e && e.name !== 'AbortError') warn('Termine', e); return null; }
   }
@@ -10497,7 +10518,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

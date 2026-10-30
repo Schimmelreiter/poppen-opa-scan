@@ -1,6 +1,9 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.35 (30.10.2026)
+- Behoben: Die gewählte Termin-Datei (5 Termine im Messenger) wurde seit 2.32 nach jedem Neuladen vergessen. Der Datei-Griff des Browsers lässt sich nicht in der verschlüsselten Datenbank ablegen; er liegt jetzt in einer eigenen kleinen Datenbank (nur der Griff, kein Inhalt). Liegt der alte Griff noch im unverschlüsselten Altbestand, wird er von dort übernommen
+
 2.34 (28.10.2026)
 - WICHTIG: Profilangaben (user/info) zählen bei poppen als Profilbesuch. Die Vermessung für Figur/XXL läuft deshalb ganz ohne Profilaufruf über die Suchfilter Größe/Gewicht (genaue Größe × Gewichtsbänder an den BMI-Stufen, bis etwa 1 BMI-Punkt; grob 2 Suchabfragen je Person). Die Vermessung sichtbarer Suchtreffer über user/info entfällt; Gruppenregeln fragen Profile nur noch unsichtbar ab (still unsichtbar schalten, danach zurück)
 - XXL-Seite: poppens eigene Suche wird dort unterdrückt (keine echte Suche, gespeicherte Suchfilter bleiben); Filter ersetzen poppens Suchfilter in der linken Leiste, im poppen-Design (Klapplisten, Schieberegler für Alter, Radius, Größe 130–220, Gewicht 0–300, Kästchen); neuer Filter Beziehungsstatus; Ergebnisse über die volle Breite; Menüpunkt hervorgehoben statt „Popsters“; neue Messungen aus einem Scan in einem anderen Tab erscheinen von selbst; die XXL-Seite blockiert Hintergrund-Suchen nicht mehr
