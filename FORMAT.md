@@ -54,6 +54,13 @@ lesen neu.
 | `poppen_dbk` | Schlüssel der verschlüsselten poppen-Datenbank (für eine Neuinstallation) |
 | `poppen_gm` | `{ at, ver, data }`: Kopie der Einstellungen und kleinen Listen des poppen-Skripts |
 | `<plattform>_…` | dasselbe für andere Skripte, je mit eigenem Präfix |
+| `termine_file` | gemeinsame Termin-Datei: `{ k, name, size, lastModified, text, at, by:{pf,ver,acc} }` – siehe unten |
+
+**Termin-Datei (`meta.termine_file`):** Der Browser gibt Websites keinen Pfad und lässt den Datei-Griff nicht zwischen Websites teilen; jedes Skript wählt die Datei einmal selbst, geteilt wird der Stand.
+- **Eine Datei für alle:** `name` ist die eingetragene Datei. Wählt ein Skript eine Datei mit anderem Namen, fragt es „Termin-Datei für alle Skripte auf X wechseln?“; nur bei „Ja“ wird überschrieben. Skripte, deren eigene Datei einen anderen Namen hat, nehmen den Stand aus dem Briefkasten und bitten, die Datei neu zu wählen.
+- **Neuere Datei gewinnt:** Hochgeladen wird nur, wenn `lastModified` der eigenen Datei größer ist als im Eintrag (bei gleichem Namen). Ist der Eintrag neuer, gilt der Eintrag.
+- **Text immer roh:** `text` ist der unveränderte Dateiinhalt mit allen vier Angaben je Zeile (`wann - wo - was - Link`). Ein Skript, das eine Angabe nicht anzeigt (JOYclub: „was“ steckt im Link), blendet sie nur in seiner Anzeige aus und lädt trotzdem immer den rohen Dateitext hoch.
+- Wer die Datei nicht lesen darf oder keine gewählt hat, verwendet `text` aus dem Briefkasten.
 
 ### `ich` (Schlüssel `id = "<pf>:<uid>"`)
 Die eigenen Profile. Jedes Skript, das in die Fickliste schreibt, trägt sich beim Start selbst ein:

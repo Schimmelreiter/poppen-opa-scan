@@ -79,7 +79,7 @@ Alle Quellen außer den Profilbesuchern laufen über die Schnittstellen von popp
 | Gruppen (Whitelist) | Leitung aller Gruppen, Mitglieder verwalteter Gruppen (`group/attendee/manage/list`, siehe Whitelist); entfernt besonders böse Popsters aus verwalteten Gruppen; bei „Alle Scans“ standardmäßig an | Gruppen |
 | Gruppen (Blacklist) | Mitglieder der Gruppen, in denen du Mitglied bist (`group/attendee/list`), nach den Regeln; bei „Alle Scans“ standardmäßig aus, Auswahl wird gemerkt | Gruppen |
 | Mitgliedersuche | ganz Deutschland, Alter für Alter ab der Grenze (`user/search`) | Suche |
-| Partygäste (Events) | alle Events weltweit (`event/search`), je Liste „Gehe“ (`event/attendee/list`) und „Vielleicht“ (`event/bookmark/list`); Veranstalter kommen auf die Whitelist | Events |
+| Partygäste (Events) | alle Events weltweit (`event/search`), je Liste „Gehe“ (`event/attendee/list`) und „Vielleicht“ (`event/bookmark/list`); vorerst **nur einlesen und einfärben** (keine Warteliste, keine Whitelist) und den AWO-Faktor berechnen | Events |
 
 **Opa-Scan** (Profil-Menü → *Opa-Scan*): Popup mit allen Scans, zwei Fortschrittsbalken, Statistik und Zusammenfassung.
 
@@ -109,14 +109,15 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 
 ## Oberfläche
 
-- **Kopfleiste:** Opa-Symbol mit der Zahl der Blockierten (Tooltip: „X geblockt, Y in der Warteschlange“); Klick öffnet die Einstellungen. Ein **gelber Punkt** zeigt offene Gruppenanfragen in verwalteten Gruppen; Klick öffnet die Anfragenseite.
+- **Kopfleiste:** Opa-Symbol mit der Zahl der Blockierten (Tooltip: „X geblockt, Y in der Warteschlange“); Klick öffnet immer die Einstellungen (dort steht oben die Warteliste). Läuft ein Scan, öffnet sich danach dort das „Scan läuft“-Fenster. Ein **gelber Punkt** zeigt offene Gruppenanfragen in verwalteten Gruppen; Klick öffnet die Anfragenseite.
 - **Profil-Menü** (Klick auf das eigene Profilbild): *Fickliste* und *Opa-Scan* (vor „Profil bearbeiten“), *Opa-Schutz* (danach, Opa mit Stift; öffnet die Einstellungen) und der Schalter **Opa-Schutz aktiv** (vor „Unsichtbar“) für die Automatik.
 - **Einstellungen:** In der linken Spalte stehen **Meine Fickliste** (nach „Meine Kontaktanzeigen“) und **Opa-Schutz** (vor „Privatsphäre“).
 
 ### Events
 
-- **Veranstalter** eines Events stehen automatisch auf der Whitelist („Event-Veranstalter: …“), bis 30 Tage nach Event-Ende; der Scan entsperrt sie, falls der Opa-Schutz sie geblockt hatte.
-- Die Listen **„Gehe“** und **„Vielleicht“** werden wie Gruppenlisten gekennzeichnet und im Opa-Scan als Quelle *Partygäste* geprüft.
+- Vorerst wird bei Events **nur eingefärbt**: Die Listen **„Gehe“** und **„Vielleicht“** werden gekennzeichnet und im Opa-Scan (Quelle *Partygäste*) ins Gedächtnis gelesen – niemand kommt dadurch auf die Warteliste, Veranstalter kommen nicht auf die Whitelist (2.34 hatte das kurz getan; diese Vermerke wirken seit 2.36 nicht mehr).
+- **AWO-Faktor** (gemeinsame Formel mit dem JOYclub-Skript): Anteil der erwartungsgemäß anwesenden Gäste der Stufe 3 (Opa/Oma/Geronto-Paar) an „Gehe“, je Gruppe gewichtet. Stufe mit den Grenzen der Quelle *Partygäste*; unbekanntes Alter → Stufe 3; Paar mit nur einem Alter → Partner ergänzt (Frau bekannt → Mann +7, Mann bekannt → Frau −7), dann Paar-Regel (einer → höhere, beide → niedrigere Stufe), Sugar Daddy/Mom → Stufe 3. **Unsichtbare** Gäste zählen als Stufe 3; da poppen ihr Geschlecht nicht zeigt, werden sie anteilig wie die sichtbaren Gäste auf Männer/Frauen/Paare verteilt. Erwartete Anwesenheit je Gruppe und Stufe und die Gewichtung stehen in der Karte **AWO-Faktor** der Einstellungen (Standard: Männer 33/66/95 %, Frauen 95 %, Paare 90 %; Gewichtung Männer 67 · Frauen 0 · Paare 33). Berechnet nur, wenn der Party-Scan die Liste vollständig gelesen hat.
+- **Plaketten in der Event-Suche** (`/search/event`, rechts oben auf dem Bild): Datum der letzten vollständigen Prüfung (Opa-Symbol, „--.--.----“ = noch nie) und darunter der AWO-Faktor – unter 10 % hellgrün, unter 25 % grün, unter 35 % orange, ab 35 % rot, „AWO –“ = noch nicht berechnet.
 - Auf jeder Event-Seite: **„Als Treffen in die Fickliste …“** – trägt das Event bei einer Person der Fickliste ein (Was = Event, Wo = Ort/Straße bzw. „Online“, Datum, Uhrzeit, Link); ein Treffen am selben Tag wird ergänzt.
 
 ### Kontobindung
@@ -212,13 +213,18 @@ Inhalt: { format:'fickliste', version:1, platform, exported, persons:[
 
 ---
 
+## Gruppen-Newsfeed
+
+Auf `/groups/feed` bekommt jeder Beitrag einen **Rahmen in der Farbe seines Verfassers** (grün, orange, rot, weiß …); in der Zeile unter dem Gruppennamen steht nach dem Nick die Einstufung mit Alter, bei „Moppel-Liebhaber“ auch die Figur-Stufe („Üppig · BMI 41“). Kommentierende bekommen die Einstufung hinter dem Nick. Das Gruppenbild bleibt unverändert. Verfasser (`feed/groups`, nicht der Gruppenbesitzer) und Kommentierende (`v2/comment/list`) kommen nebenbei ins Gedächtnis (Quelle Gruppen).
+
 ## Messenger: Termine
 
 In der rechten Spalte eines Chats steht zwischen „Aktionen“ und „Anhänge“ der Abschnitt **Termine** (nur Chrome/Edge). Er liest eine lokale Textdatei, die einmal gewählt wird (im Abschnitt selbst oder auf der Seite *Opa-Schutz* unter „Party-Termine“). Jede Zeile hat das Format `wann - wo - was - Link`; `was` und `Link` sind optional, `wann` darf ein Zeitraum sein (`14.09.-23.09.2026`, `14.-23.09.2026`, `28.12.2026 - 02.01.2027`).
 
 - Gelesen wird von oben; vergangene Termine werden übersprungen (ein Zeitraum zählt bis zu seinem letzten Tag), nach den ersten **5 kommenden** ist Schluss. Diese stehen nach Datum sortiert (gleiches Datum: Reihenfolge der Datei).
-- Jeder Termin ist eine Zeile mit „wann - wo - was“ als Beschriftung; ein Klick fügt die vollständige Zeile (mit Link) ins Eingabefeld ein. Abgeschickt wird nichts.
+- Jeder Termin ist eine Zeile mit „wann - wo - was“ als Beschriftung; ein Klick hängt die vollständige Zeile (mit Link) an den Text im Eingabefeld an – steht dort schon etwas, auf einer neuen Zeile (ohne Return) – und **sendet die Nachricht** (z. B. „Da könntest Du mich treffen:“ + Termin). Kommt sie nicht durch, erscheint „Nicht gesendet“.
 - Die Datei wird beim Aufklappen neu gelesen. Chrome fragt gelegentlich, ob der Zugriff weiter erlaubt ist („Zugriff auf die Datei erlauben“).
+- **Eine Datei für alle Skripte:** Der Browser lässt die gewählte Datei nicht zwischen Websites teilen (und verrät keinen Pfad), deshalb liegt im Briefkasten der zuletzt gelesene Stand samt Dateiname und Änderungsdatum. Wer die Datei lesen darf, legt einen **neueren** Stand dort ab; wer sie (noch) nicht lesen darf, nimmt den Stand aus dem Briefkasten („Stand aus dem Briefkasten (gelesen von JOYclub) …“). Wählt man eine Datei mit anderem Namen, fragt das Skript, ob für **alle** Skripte gewechselt werden soll; die anderen zeigen dann „Die Termin-Datei wurde auf X gewechselt – hier neu wählen“. Der Text bleibt immer roh, mit allen vier Angaben.
 
 ## Messenger: Textvorlagen
 

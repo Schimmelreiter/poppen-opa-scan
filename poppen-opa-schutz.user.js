@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.35
+// @version      2.36
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.35';
+  const VERSION = '2.36';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -185,6 +185,8 @@
         labels: ['junges Paar', 'junge Paare', 'Paar', 'Paare', 'Geronto-Paar', 'Geronto-Paare'] },
     },
     // Moppel-Liebhaber: Figur-Stufen nach BMI (Griffe = Beginn Stufe 1/2/3; darunter Stufe 0 „Plus-Size“)
+    // AWO-Faktor der Events (gemeinsame Formel mit dem JOYclub-Skript): Anwesenheitsquote je Gruppe und Stufe, Gewichtung m/w/p
+    awo: { quota: { m: [33, 66, 95], w: [95, 95, 95], p: [90, 90, 90] }, weight: [67, 0, 33] },
     moppel: { on: false, bmi: [25, 40, 45], labels: ['Kurvig', 'Kurvige', 'Üppig', 'Üppige', 'XXL', 'XXL'], radius: 100, types: ['m', 'w'] },
     warnYears: 1,                 // so viele Jahre vor „Ignorieren ab“: dunkelorange + vormerken
     watch: true,
@@ -3378,7 +3380,7 @@
   const SCANS = [
     { k: 'interaktionen', title: 'Interaktionen', sub: 'Likes, Sticker, Nachrichten und Benachrichtigungen', fn: scanInteractions },
     { k: 'besucher', title: 'Profilbesucher', sub: 'Wer dein Profil besucht hat', fn: scanVisitors },
-    { k: 'party', title: 'Partygäste (Events)', sub: '„Gehe“ und „Vielleicht“ aller Events; Veranstalter auf die Whitelist', fn: scanEvents },
+    { k: 'party', title: 'Partygäste (Events)', sub: '„Gehe“ und „Vielleicht“ aller Events einlesen und einfärben, AWO-Faktor berechnen (keine Warteliste)', fn: scanEvents },
     { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
     { k: 'gruppen_bl', src: 'gruppen', title: 'Gruppen (Blacklist)', sub: 'Mitglieder deiner Gruppen nach den Regeln prüfen', fn: scanGroupsBlack, def: false },
     { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
@@ -3671,6 +3673,12 @@
       }
     }
   }
+  // nach dem Klick aufs Kopf-Symbol während eines Scans: in den Einstellungen das „Scan läuft“-Fenster öffnen
+  function openPendingScanProgress() {
+    if (ssGet('vaf_open_scanprog') !== '1') return;
+    ssSet('vaf_open_scanprog', null);
+    try { if (scanActive()) openScanProgress(); } catch (e) { warn('Scan-Fenster', e); }
+  }
   function goHash(hash) {
     if (location.pathname === '/setting/profile') { if (location.hash !== '#' + hash) { location.hash = hash; } else routeSettings(); }
     else location.href = '/setting/profile#' + hash;
@@ -3704,7 +3712,7 @@
       if (!confirmLeaveSync()) { history.replaceState(null, '', '#opa-schutz'); return; }
       settingsDirty = false;
     }
-    if (h === 'opa-schutz') showOwn('opa', renderSettings);
+    if (h === 'opa-schutz') { showOwn('opa', renderSettings); setTimeout(openPendingScanProgress, 600); }
     else if (h === 'fickliste') showOwn('fick', renderFickList);
     else if (h === 'archiv') showOwn('archiv:' + arg, (el) => renderArchive(el, decodeURIComponent(arg || '')));
     else if (h === 'extern') showOwn('extern:' + arg, (el) => renderExternal(el, decodeURIComponent(arg || '')));
@@ -3991,6 +3999,31 @@
           l.append(ch, name); mt.appendChild(l);
         }
         gm(lab('Profiltypen', 'moppel.types'), '', mt).classList.add('vaf-last');
+      }
+
+      // ---- AWO-Faktor (Events) ----
+      {
+        const aw = draft.awo;
+        const ca = card(body, 'AWO-Faktor');
+        const names = { m: 'Männer', w: 'Frauen', p: 'Paare' };
+        for (const gk of ['m', 'w', 'p']) {
+          const lim = limitsOf(gk, 'party', -1, draft);
+          const box = document.createElement('div'); box.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap';
+          [0, 1, 2].forEach((i) => { box.append(numIn(aw.quota[gk][i], (x) => { aw.quota[gk] = [...aw.quota[gk]]; aw.quota[gk][i] = x; touch(); }, 0, 100), document.createTextNode('%')); });
+          row(ca, `Anwesenheitsquote der ${names[gk]} bis ${lim[0]} / ${lim[1]} / ab ${lim[1] + 1}`, '', box);
+        }
+        const AWC = ['#5c8dd6', '#b06ad6', '#e0a33c'];
+        const wrap = document.createElement('div'); wrap.style.cssText = 'width:100%;min-width:260px';
+        const legend = document.createElement('div'); legend.style.cssText = 'display:flex;justify-content:space-around;font-weight:600;margin-bottom:2px';
+        const paint = () => { legend.innerHTML = ['Männer', 'Frauen', 'Paare'].map((n, i) => `<span style="color:${AWC[i]}">${n} ${aw.weight[i]} %</span>`).join(''); };
+        paint();
+        const cuts = [aw.weight[0], aw.weight[0] + aw.weight[1]];
+        const ms = multiSlider(0, 100, cuts, AWC, (x) => { aw.weight = [x[0], x[1] - x[0], 100 - x[1]]; paint(); touch(); });
+        ms.querySelectorAll('.v').forEach((v) => { v.style.display = 'none'; });   // Griffe ohne Zahl (Anteile stehen darüber)
+        const hint = document.createElement('div'); hint.className = 'vaf-d';
+        hint.textContent = 'Anteil am gesamten Balken (zusammen immer 100 %). Anteil je Gruppe = erwartete Anwesende der Stufe 3 ÷ alle erwarteten Anwesenden; AWO = gewichtete Summe. Gruppen ohne Anmeldungen geben ihr Gewicht anteilig ab. Gezählt wird „Gehe“; unsichtbare Gäste zählen als Stufe 3.';
+        wrap.append(legend, ms, hint);
+        row(ca, 'Gewichtung Männer / Frauen / Paare', '', wrap);
       }
 
       // ---- Sicherung (immer offen) ----
@@ -4353,7 +4386,11 @@
         wrap.innerHTML = `<a href="#" class="ant-btn ant-theme ant-btn-circle ant-btn-text ant-btn-color-default ant-btn-variant-text ant-btn-icon-only" tabindex="0"><span class="ant-btn-icon">${oldManSvg()}</span></a>` +
           '<sup data-show="true" class="ant-scroll-number ant-badge-count"><bdi></bdi></sup><span class="vaf-hdr-dot" style="display:none"></span><span class="vaf-hdr-act" style="display:none"></span>';
         anchor.parentElement.insertBefore(wrap, anchor);
-        wrap.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); try { openScanOrProgress(); } catch (err) { warn('Scan-Einstieg', err); } });
+        wrap.querySelector('a').addEventListener('click', (e) => {
+          // Klick: immer zu den Einstellungen; läuft ein Scan, dort danach das „Scan läuft“-Fenster
+          e.preventDefault();
+          try { if (scanActive()) ssSet('vaf_open_scanprog', '1'); goHash('opa-schutz'); if (location.pathname === '/setting/profile') setTimeout(openPendingScanProgress, 600); } catch (err) { warn('Kopf-Symbol', err); }
+        });
         wrap.querySelector('.vaf-hdr-dot').addEventListener('click', (e) => {
           e.preventDefault(); e.stopPropagation();
           const p = G.get('pending', null);
@@ -4381,8 +4418,8 @@
         act.style.display = ''; act.innerHTML = ERASER_SVG;
         actTip = `Warteliste wird abgearbeitet${bs === 'blockiert' ? '' : bs === 'pause' ? ' (pausiert)' : ''} – ${fmtN(q)} offen`;
       } else act.style.display = 'none';
-      const tip = actTip ? `${actTip} · Klick öffnet die Anzeige`
-        : `${word()}-Schutz${isOn() ? '' : ' (Automatik aus)'}${dry() ? ' – Testlauf' : ''}: ${n == null ? '?' : fmtN(n)} geblockt, ${fmtN(q)} in der Warteschlange${et} – ${word()}-Scan öffnen`;
+      const tip = actTip ? `${actTip} · Klick öffnet die Einstellungen`
+        : `${word()}-Schutz${isOn() ? '' : ' (Automatik aus)'}${dry() ? ' – Testlauf' : ''}: ${n == null ? '?' : fmtN(n)} geblockt, ${fmtN(q)} in der Warteschlange${et} – Einstellungen öffnen`;
       const a = wrap.querySelector('a');
       if (a.title !== tip) { a.title = tip; a.setAttribute('aria-label', tip); }
       a.style.opacity = isOn() ? '' : '.5';
@@ -6602,27 +6639,89 @@
     if (!termSupported()) { toast('Das geht nur in Chrome oder Edge.'); return null; }
     try {
       const [h] = await W.showOpenFilePicker({ multiple: false, types: [{ description: 'Textdatei', accept: { 'text/plain': ['.txt', '.text', '.md'] } }] });
+      // eine Datei für alle Skripte: anderer Name als im Briefkasten → nur nach Rückfrage wechseln
+      const sh = await termShared(true);
+      let force = false;
+      if (sh && sh.name && sh.name !== h.name) {
+        const v = await ask('Termin-Datei wechseln?', `<p>Für alle Opa-Scan-Skripte ist <b>${esc(sh.name)}</b> eingetragen${sh.by && sh.by.pf ? ` (zuletzt gelesen von ${sh.by.pf === 'joyclub' ? 'JOYclub' : esc(sh.by.pf)})` : ''}.</p><p>Termin-Datei für alle Skripte auf <b>${esc(h.name)}</b> wechseln?</p>`,
+          [{ label: 'Für alle wechseln', value: true, primary: true }, { label: 'Abbrechen', value: false, cancel: true, focus: true }]);
+        if (!v) return null;
+        force = true;
+      }
       termMem = h;
+      if (force) { try { const f = await h.getFile(); await termShare({ name: h.name, text: await f.text(), lastModified: f.lastModified || 0, size: f.size || 0 }, true); } catch {} }
       try { await HandleStore.set(TERM_KEY, h); } catch (e) { warn('Termine: Datei merken', e); }
       return h;
     } catch (e) { if (e && e.name !== 'AbortError') warn('Termine', e); return null; }
   }
-  // Inhalt lesen; ask=true darf nach der Erlaubnis fragen (nur aus einem Klick heraus)
+  // ---------- Termin-Datei im Briefkasten (für alle Skripte dieselbe) ----------
+  //  Den Datei-Griff selbst kann der Browser nicht zwischen Websites teilen (jede Seite muss die Datei einmal
+  //  selbst wählen). Geteilt wird deshalb der zuletzt gelesene Inhalt: meta-Eintrag „termine_file“
+  //  { k, name, text, at, by:{pf,ver,acc} }. Wer die Datei lesen darf, schreibt den Stand dorthin; wer sie nicht
+  //  (oder noch nicht) lesen darf, nimmt den Stand aus dem Briefkasten.
+  let termSh = null;      // { at: Abrufzeit, v }
+  async function termShared(force) {
+    if (!force && termSh && now() - termSh.at < 60000) return termSh.v;
+    let v = null;
+    try { v = await BkRpc.call('get', { s: 'meta', k: 'termine_file' }, 2500); } catch { const old = termSh ? termSh.v : null; termSh = { at: now(), v: old }; return old; }   // Briefkasten nicht erreichbar: nicht warten, 60 s merken
+    termSh = { at: now(), v: v || null };
+    return termSh.v;
+  }
+  // Regeln (gemeinsam mit dem JOYclub-Skript): eine Datei für alle (Name im Briefkasten), nur eine NEUERE Datei
+  // (lastModified) überschreibt den Stand, Text immer roh mit allen vier Angaben „wann - wo - was - Link“.
+  async function termShare(r, force = false) {
+    try {
+      const cur = await termShared();
+      if (cur && !force) {
+        if (cur.name && cur.name !== r.name) return;                                          // andere Datei → nicht überschreiben
+        if ((cur.lastModified || 0) >= (r.lastModified || 0) && cur.text === r.text) return;   // nichts Neues
+        if ((cur.lastModified || 0) > (r.lastModified || 0)) return;                          // Briefkasten neuer
+      }
+      const v = { k: 'termine_file', name: r.name, size: r.size || 0, lastModified: r.lastModified || 0, text: String(r.text).slice(0, 200000), at: now(), by: { pf: 'poppen', ver: VERSION, acc: (Me.get() || {}).nick || '' } };
+      await BkRpc.call('put', { s: 'meta', v }, 8000);
+      termSh = { at: now(), v };
+    } catch {}
+  }
+  // Inhalt lesen; ask=true darf nach der Erlaubnis fragen (nur aus einem Klick heraus).
+  // Eigene Datei (falls gewählt und lesbar) → Stand in den Briefkasten; sonst der Stand aus dem Briefkasten.
   async function readTermFile(ask) {
     const h = await termHandle();
-    if (!h) return { state: 'none' };
-    let perm = 'granted';
-    try { perm = await h.queryPermission({ mode: 'read' }); } catch {}
-    if (perm !== 'granted' && ask) { try { perm = await h.requestPermission({ mode: 'read' }); } catch {} }
-    if (perm !== 'granted') return { state: 'perm', name: h.name };
-    try { const f = await h.getFile(); return { state: 'ok', name: h.name, text: await f.text() }; }
-    catch (e) { return { state: 'error', name: h.name, error: e.message || String(e) }; }
+    let local = null;
+    if (h) {
+      let perm = 'granted';
+      try { perm = await h.queryPermission({ mode: 'read' }); } catch {}
+      if (perm !== 'granted' && ask) { try { perm = await h.requestPermission({ mode: 'read' }); } catch {} }
+      if (perm !== 'granted') local = { state: 'perm', name: h.name };
+      else {
+        try {
+          const f = await h.getFile();
+          const r = { state: 'ok', name: h.name, text: await f.text(), lastModified: f.lastModified || 0, size: f.size || 0 };
+          const sh0 = await termShared();
+          if (sh0 && sh0.name && sh0.name !== r.name) local = { state: 'switched', name: h.name, to: sh0.name };     // anderswo gewechselt
+          else if (sh0 && (sh0.lastModified || 0) > r.lastModified && typeof sh0.text === 'string') return { state: 'ok', name: sh0.name, text: sh0.text, shared: true, at: sh0.at, by: sh0.by || null, newer: true };
+          else { termShare(r); return r; }
+        } catch (e) { local = { state: 'error', name: h.name, error: e.message || String(e) }; }
+      }
+    }
+    const sh = await termShared();
+    if (sh && typeof sh.text === 'string') return { state: 'ok', name: sh.name || 'Termine', text: sh.text, shared: true, at: sh.at, by: sh.by || null, local: local && local.state, switchedFrom: local && local.state === 'switched' ? local.name : '' };
+    return local || { state: 'none' };
   }
+  const termSrcNote = (r) => (r && r.shared ? ` · Stand aus dem Briefkasten${r.by && r.by.pf && r.by.pf !== 'poppen' ? ` (gelesen von ${r.by.pf === 'joyclub' ? 'JOYclub' : r.by.pf})` : ''}${r.at ? `, ${deDateTime(r.at)}` : ''}` : '');
 
   // Zeile in das Eingabefeld des Chats einfügen (nicht senden)
-  function insertIntoChat(text) {
+  function insertIntoChat(text, { send = false } = {}) {
     const ta = document.querySelector('main textarea.rc-textarea, main .ant-mentions textarea');
     if (!ta) { toast('Eingabefeld nicht gefunden.'); return; }
+    if (send) {   // Termin ans Ende anhängen (eigene Zeile, ohne Return) und alles zusammen senden
+      const v0 = ta.value || '';
+      const nv0 = v0 + (v0 && !/\n$/.test(v0) ? '\n' : '') + text;
+      Object.getOwnPropertyDescriptor(W.HTMLTextAreaElement.prototype, 'value').set.call(ta, nv0);
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.focus();
+      setTimeout(() => chatSend(ta), 120);
+      return;
+    }
     const v = ta.value || '';
     const pos = typeof ta.selectionStart === 'number' && document.activeElement === ta ? ta.selectionStart : v.length;
     const before = v.slice(0, pos), after = v.slice(pos);
@@ -6634,6 +6733,20 @@
     ta.focus();
     const c = (before + ins).length;
     try { ta.setSelectionRange(c, c); } catch {}
+  }
+
+  // Nachricht im Eingabefeld senden: Return im Feld auslösen (so sendet poppen), notfalls den Senden-Knopf;
+  // danach prüfen, ob das Feld leer ist – sonst Hinweis.
+  async function chatSend(ta) {
+    const fire = (type) => ta.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    fire('keydown'); fire('keypress'); fire('keyup');
+    await sleep(800);
+    if (!(ta.value || '').trim() || !ta.isConnected) return true;
+    const form = ta.closest('form') || ta.closest('main');
+    const btn = form && [...form.querySelectorAll('button')].find((b) => !b.disabled && (b.type === 'submit' || /senden|send/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.title || '') + ' ' + b.textContent)));
+    if (btn) { btn.click(); await sleep(800); if (!(ta.value || '').trim() || !ta.isConnected) return true; }
+    toast('Nicht gesendet – bitte selbst absenden.');
+    return false;
   }
 
   // Abschnitt in der rechten Spalte
@@ -6694,8 +6807,10 @@
       if (r.state === 'error') { ul.appendChild(li(`Datei nicht lesbar: ${esc(r.name)}`, r.error, null, 'color:#ff7875')); ul.appendChild(li('Datei ändern …', '', async () => { if (await pickTermFile()) render(false); }, 'opacity:.7')); return; }
       const { list } = upcomingTerms(r.text);
       if (!list.length) ul.appendChild(li('Keine kommenden Termine', r.name, null, 'opacity:.6'));
-      for (const t of list) ul.appendChild(li(esc(t.label), t.line, () => insertIntoChat(t.line)));
-      ul.appendChild(li('Datei ändern …', `Derzeit: ${r.name}`, async () => { if (await pickTermFile()) render(false); }, 'opacity:.7;font-size:12px'));
+      for (const t of list) ul.appendChild(li(esc(t.label), t.line, () => insertIntoChat(t.line, { send: true })));
+      if (r.switchedFrom) ul.appendChild(li(`Die Termin-Datei wurde auf ${esc(r.name)} gewechselt – hier neu wählen`, `bisher hier: ${r.switchedFrom}`, async () => { if (await pickTermFile()) render(false); }, 'color:#ffb74d;font-size:12px'));
+      ul.appendChild(li(r.shared && r.local !== 'perm' ? 'Datei hier wählen …' : 'Datei ändern …', `Derzeit: ${r.name}${termSrcNote(r)}`, async () => { if (await pickTermFile()) render(false); }, 'opacity:.7;font-size:12px'));
+      if (r.shared && r.local === 'perm') ul.appendChild(li('Zugriff auf die eigene Datei erlauben', 'liest die Datei direkt statt des Stands aus dem Briefkasten', () => render(true), 'opacity:.7;font-size:12px'));
     };
     head.addEventListener('click', (e) => {
       e.preventDefault(); e.stopPropagation();
@@ -6875,7 +6990,7 @@
           else {
             const { list } = upcomingTerms(r.text);
             tl.innerHTML = (list.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">${list.map((t, i) => `<button type="button" class="vaf-btn" data-t="${i}" title="${esc(t.line)}" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.label)}</button>`).join('')}</div>
-              <div style="display:flex;gap:12px;flex-wrap:wrap"><a href="#" data-a="all">Alle übernehmen</a><a href="#" data-a="pick">Datei ändern …</a></div>`
+              <div style="display:flex;gap:12px;flex-wrap:wrap"><a href="#" data-a="all">Alle übernehmen</a><a href="#" data-a="pick">Datei ändern …</a>${r.shared && r.local === 'perm' ? '<a href="#" data-a="perm">Zugriff auf die eigene Datei erlauben</a>' : ''}</div>${r.shared ? `<div class="vaf-mini">${esc(r.name + termSrcNote(r))}</div>` : ''}`
               : '<div class="vaf-mini">Keine kommenden Termine.</div><a href="#" data-a="pick">Datei ändern …</a>');
             const fmt = (t) => [t.wann, t.wo, (t.link ? normJoyLink(t.link) : t.was)].filter(Boolean).join(' - ');
             tl.querySelectorAll('[data-t]').forEach((b) => b.addEventListener('click', () => insertAtCursor(textEl, fmt(list[+b.dataset.t]))));
@@ -10189,14 +10304,15 @@
   }
   // =====================================================================================
   // Events (poppens Gegenstück zu den JOYclub-Partys)
-  //  - Veranstalter (creator) → automatische Whitelist „Event-Veranstalter“, bis 30 Tage nach Event-Ende
-  //  - Listen „Gehe“ (event/attendee/list) und „Vielleicht“ (event/bookmark/list): nebenbei merken,
-  //    auf der Event-Seite kennzeichnen wie Gruppenlisten, im Opa-Scan als Quelle „Partygäste“
+  //  - vorerst NUR einfärben: keine Warteliste (Blacklisting) und keine Veranstalter-Whitelist (seit 2.36)
+  //  - Listen „Gehe“ (event/attendee/list) und „Vielleicht“ (event/bookmark/list): nebenbei merken und kennzeichnen,
+  //    im Opa-Scan als Quelle „Partygäste“ ins Gedächtnis lesen
+  //  - AWO-Faktor je Event (gemeinsame Formel mit dem JOYclub-Skript) + Plaketten auf /search/event
   //  - Event → Treffen in der Fickliste (Knopf auf der Event-Seite)
   // =====================================================================================
   const EVT_GRACE = 30 * DAY;
   const EVT_CATS = [56, 81, 132, 197];        // Stammtisch Event, Clubs, Ausstellung & Kultur, Online-Event
-  const evtWhite = (m) => { const e = m && m.auto && m.auto.evt; if (!e) return ''; const live = Object.values(e).filter((x) => x && (x.end || 0) + EVT_GRACE > now()); return live.length ? 'Event-Veranstalter: ' + live.map((x) => x.name || 'Event').slice(0, 3).join(', ') : ''; };
+  const evtWhite = () => '';   // 2.36: Veranstalter-Whitelist ausgesetzt (vorher: m.auto.evt, bleibt im Gedächtnis)
   const evtInfo = new Map();                  // cms_id → event/profile-Daten (nur im Arbeitsspeicher)
   async function evtMarkCreator(ev) {
     const c = ev && ev.creator;
@@ -10204,10 +10320,7 @@
     const u = normUser(c); if (!u) return null;
     const m = await seen(u, 'Events', { images: false });
     if (!m) return null;
-    const end = +ev.end_time || +ev.start_time || now();
-    const was = !!(m.auto && m.auto.evt && m.auto.evt[String(ev.cms_id)]);
-    await Members.update(u.uid, (x) => { x.auto = x.auto || {}; x.auto.evt = x.auto.evt || {}; x.auto.evt[String(ev.cms_id)] = { end, name: String(ev.name || '').trim().slice(0, 80) }; });
-    return { m: await Members.get(u.uid), fresh: !was };
+    return { m, fresh: false };      // 2.36: nur merken, kein Whitelist-Vermerk mehr
   }
   // nebenbei: Event-Seiten, Event-Suche, Teilnehmerlisten
   onApi(/^event\/profile$/, async (d) => { if (d && d.cms_id) { evtInfo.set(String(d.cms_id), d); await evtMarkCreator(d); } });
@@ -10256,22 +10369,23 @@
       i++;
       ctx.outer && ctx.outer(i - 1, evs.length);
       ctx.phase && ctx.phase(`Event ${i}/${evs.length}: ${ev.name || ev.cms_id}`);
-      // Veranstalter: Whitelist, ggf. vom Opa-Schutz Geblockte entsperren
-      const cr = await evtMarkCreator(ev);
-      const evLive = ((+ev.end_time || +ev.start_time || now()) + EVT_GRACE) > now();
-      if (cr && cr.fresh && evLive) res.whitelisted++;
-      if (evLive && cr && cr.m && cr.m.blk && cr.m.blk.opa && !cr.m.unblk) {
-        const r = await unblockOne(cr.m);
-        if (r === 'ok' || r === 'Test') { res.unblocked++; (ctx.notes || []).push(`${cr.m.nick}: entsperrt, weil Veranstalter von „${ev.name}“`); }
-      }
+      // nur ins Gedächtnis lesen und zählen – keine Warteliste, keine Whitelist (2.36)
+      const going = [];
+      let full = true, inv = 0;
       for (const kind of ['attendee', 'bookmark']) {
-        await evtList(kind, String(ev.cms_id), ctx, async (users) => {
-          const own = users.filter((u) => String(u.uid) !== me);
-          for (const u of own) await seen(u, 'Events', { images: false });
-          addRes(res, await judge(own.map(normUser).filter(Boolean), 'Events'));
-        });
+        try {
+          const r = await evtList(kind, String(ev.cms_id), ctx, async (users) => {
+            const own = users.filter((u) => String(u.uid) !== me);
+            for (const u of own) await seen(u, 'Events', { images: false });
+            if (kind === 'attendee') going.push(...own.map(normUser).filter(Boolean));
+            addRes(res, await judge(own.map(normUser).filter(Boolean), 'Events', { enqueue: false }));
+          });
+          if (kind === 'attendee') { inv = r.invisible || 0; if (r.total && r.n + inv < r.total && going.length + inv < r.total) full = false; }
+        } catch (e) { full = false; ctx.error && ctx.error(`Event ${ev.name || ev.cms_id}`, e); }
+        if (ctx.stop()) full = false;
         await sleep(300);
       }
+      if (full) awoStore(String(ev.cms_id), going, inv);
       ctx.step && ctx.step(i, evs.length, `${fmtN(i)} von ${fmtN(evs.length)} Events`);
     }
     ctx.outer && ctx.outer(evs.length, evs.length);
@@ -10327,7 +10441,87 @@
     await Fick.put(p);
     toast(`Treffen „${meet.where}“ bei ${name(p)} eingetragen.`);
   }
-  function initEvents() { setInterval(() => { evtPageButton().catch(() => {}); }, 1500); }
+  // ---------- AWO-Faktor (gemeinsame Formel mit dem JOYclub-Skript) ----------
+  //  Je „Gehe“-Gast: Gruppe (m/w/p) und Stufe 1–3 mit den Grenzen der Quelle „Partygäste“; Paar-Regel wie eingestellt
+  //  (einer → höhere, beide → niedrigere Stufe), Sugar Daddy/Mom → 3, unbekanntes Alter → 3, Paar mit nur einem Alter →
+  //  Partner ergänzt (Frau bekannt → Mann +7, Mann bekannt → Frau −7). Unsichtbare (nur Anzahl, kein Geschlecht/Alter) →
+  //  Stufe 3, anteilig auf die Gruppen verteilt wie die sichtbaren Gäste. Erwartete Anwesenheit = Quote[Gruppe][Stufe].
+  //  Anteil_g = Σ Quote(Stufe 3) ÷ Σ Quote; AWO = Σ w_g·Anteil_g ÷ Σ w_g (nur Gruppen mit Gästen).
+  function awoStage(u, s = S()) {
+    const gk = groupOf(u.g, s);
+    if (!gk) return null;
+    let x = { ...u, ages: (u.ages || []).filter((a) => a > 0) };
+    if (!x.ages.length) return { gk, st: 3 };
+    if (gk === 'p' && (u.g || []).length === 2 && x.ages.length === 1) {
+      const a = x.ages[0], first = u.g[0];
+      const other = first === 'w' ? a + 7 : first === 'm' ? a - 7 : a;
+      x = { ...x, ages: [a, other] };
+    }
+    const c = classify(x, 'Partygäste', s);
+    return { gk, st: c.sugar ? 3 : Math.max(1, c.stage || 3) };
+  }
+  function awoCalc(guests, invisible, s = S()) {
+    const q = s.awo.quota, W0 = s.awo.weight, gks = ['m', 'w', 'p'];
+    const exp = { m: 0, w: 0, p: 0 }, exp3 = { m: 0, w: 0, p: 0 }, cnt = { m: 0, w: 0, p: 0 };
+    for (const u of guests) {
+      const r = awoStage(u, s); if (!r) continue;
+      const qq = (q[r.gk] || [])[r.st - 1] / 100 || 0;
+      exp[r.gk] += qq; cnt[r.gk]++;
+      if (r.st === 3) exp3[r.gk] += qq;
+    }
+    const vis = cnt.m + cnt.w + cnt.p;
+    if (invisible > 0) {
+      for (const g of gks) {
+        const share = vis ? cnt[g] / vis : 1 / 3;
+        const qq = (q[g] || [])[2] / 100 || 0;
+        exp[g] += invisible * share * qq; exp3[g] += invisible * share * qq;
+      }
+    }
+    let num = 0, den = 0;
+    gks.forEach((g, i) => { if (exp[g] > 0 && (W0[i] || 0) > 0) { num += W0[i] * (exp3[g] / exp[g]); den += W0[i]; } });
+    if (!den) return null;
+    return Math.round((num / den) * 1000) / 10;
+  }
+  const awoAll = () => G.get('evt_awo', {}) || {};
+  function awoStore(cms, guests, invisible) {
+    const m = awoAll();
+    m[cms] = { at: now(), awo: awoCalc(guests, invisible), n: guests.length, inv: invisible || 0 };
+    G.set('evt_awo', m);
+  }
+  const AWO_COLORS = [[10, '#9ccc65', '#000000'], [25, '#43a047', '#ffffff'], [35, '#fb8c00', '#000000'], [Infinity, '#e53935', '#ffffff']];
+  const awoColor = (v) => (v == null ? ['rgba(0,0,0,.75)', '#ffffff'] : AWO_COLORS.find(([t]) => v < t).slice(1));
+  const deNum1 = (v) => String(v.toFixed(1)).replace('.', ',');
+  const ddmmyyyy = (t) => { const d = new Date(t); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`; };
+  const OPA_MINI = () => `<svg viewBox="0 0 640 1280" width="10" height="12" fill="currentColor" style="margin-right:4px;flex:none" aria-hidden="true"><g transform="translate(0,1280) scale(0.1,-0.1)"><path d="${OLD_MAN_PATH}"/></g></svg>`;
+  // Plaketten auf den Event-Karten der Event-Suche
+  function awoBadges() {
+    if (!/^\/search\/event/.test(location.pathname)) return;
+    if (!document.getElementById('vaf-awo-style')) {
+      const st = document.createElement('style'); st.id = 'vaf-awo-style';
+      st.textContent = '.vaf-awo{position:absolute;right:6px;font:bold 11px system-ui,sans-serif;padding:2px 6px;border-radius:10px;z-index:5;pointer-events:none;display:inline-flex;align-items:center;white-space:nowrap;line-height:15px}';
+      document.head.appendChild(st);
+    }
+    const all = awoAll();
+    for (const a of document.querySelectorAll('a[href*="/events/"]')) {
+      const m = /\/events\/[^/]+\/[^/]+\/(\d+)\/?$/.exec(a.getAttribute('href') || ''); if (!m) continue;
+      const box = a.querySelector('div[style*="padding-bottom"]') || a;
+      const r = all[m[1]];
+      const key = r ? `${r.at}|${r.awo}` : '-';
+      if (box.dataset.vafAwo === key) continue;
+      box.dataset.vafAwo = key;
+      if (getComputedStyle(box).position === 'static') box.style.position = 'relative';
+      for (const old of box.querySelectorAll('.vaf-awo')) old.remove();
+      const d = document.createElement('span'); d.className = 'vaf-awo'; d.style.cssText = 'top:6px;background:rgba(0,0,0,.75);color:#fff';
+      d.innerHTML = OPA_MINI() + (r ? ddmmyyyy(r.at) : '--.--.----');
+      d.title = r ? `Opa-Scan zuletzt komplett: ${deDateTime(r.at)}` : 'Opa-Scan: noch nie komplett bearbeitet';
+      const v = r ? r.awo : null; const [bg, fg] = awoColor(v);
+      const w = document.createElement('span'); w.className = 'vaf-awo'; w.style.cssText = `top:28px;background:${bg};color:${fg}`;
+      w.textContent = v == null ? 'AWO –' : `AWO ${deNum1(v)} %`;
+      w.title = v == null ? 'AWO-Faktor noch nicht berechnet' : `AWO-Faktor, berechnet am ${deDateTime(r.at)}${r.inv ? ` · inkl. ${r.inv} unsichtbare Gäste (als Stufe 3)` : ''}`;
+      box.append(d, w);
+    }
+  }
+  function initEvents() { setInterval(() => { evtPageButton().catch(() => {}); try { awoBadges(); } catch (e) { warn('AWO-Plaketten', e); } }, 1500); }
   // =====================================================================================
   // Textvorlagen beim Import einer Sicherungsdatei (gemeinsames Regelwerk, Abschnitt 4)
   //  Fall A (eigenes Konto): ohne Rückfrage, mit Löschen · Fall B (Schalter „Auch Textvorlagen migrieren“):
@@ -10403,6 +10597,67 @@
     if (!report || !report.length) return;
     ask(title || 'Textvorlagen', `<div style="max-height:55vh;overflow:auto"><table style="width:100%;border-collapse:collapse">${report.map(([n, w]) => `<tr><td style="padding:5px 10px 5px 0;color:#fff;font-weight:600;vertical-align:top">${esc(n)}</td><td style="padding:5px 0;color:#c8c8c8">${esc(w)}</td></tr>`).join('')}</table></div>`, [{ label: 'OK', value: true, primary: true }]);
   }
+  // =====================================================================================
+  // Gruppen-Newsfeed (/groups/feed): Quelle „Gruppen“
+  //  - Verfasser (feed_list[].creator – NICHT cms_data.creator, das ist der Gruppenbesitzer) und Kommentierende merken
+  //  - Beitragskasten: Rahmen in der Farbe des Verfassers; Unterzeile nach dem Nick: „· Bezeichnung · Alter“ (+ Moppel-Stufe)
+  //  - Kommentare: „· Bezeichnung · Alter“ hinter dem Nick. Das Gruppenbild bleibt unverändert.
+  // =====================================================================================
+  onApi(/^feed\/groups$/, (d) => seenMany(((d && d.feed_list) || []).map((f) => f && f.creator).filter(validUid), 'Gruppen', { images: false }));
+  onApi(/^v2\/comment\/list$/, (d) => seenMany((Array.isArray(d) ? d : []).map((c) => c && c.creator).filter(validUid), 'Gruppen', { images: false }));
+
+  function feedTagHtml(m, nick) {
+    const info = markInfo({ nick }, 'Gruppen', m);
+    const parts = [];
+    if (info) parts.push(`<span style="color:${info.color};font-weight:700">${esc(info.text)}</span>`);
+    try {
+      if (mopOn() && m && mopTypeOk(m)) {
+        const bi = bodyInfo(m);
+        const st = bi ? mopStage(bi.lo) : -1;
+        if (bi && (st >= 1 || (st === 0 && mopPlusDeclared(m)))) parts.push(`<span style="color:${MOP_COLORS[st]};font-weight:700">${esc(mopLabel(st))} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}</span>`);
+      }
+    } catch {}
+    return { info, html: parts.length ? ' · ' + parts.join(' · ') : '' };
+  }
+  function feedPutTag(after, html) {
+    let t = after.nextElementSibling && after.nextElementSibling.classList.contains('vaf-feedtag') ? after.nextElementSibling : null;
+    if (!html) { if (t) t.remove(); return; }
+    if (!t) { t = document.createElement('span'); t.className = 'vaf-feedtag'; after.after(t); }
+    if (t.innerHTML !== html) t.innerHTML = html;
+  }
+  let feedBusy = false;
+  async function feedMark() {
+    if (feedBusy || !/^\/groups\/feed/.test(location.pathname)) return;
+    feedBusy = true;
+    try {
+      for (const it of document.querySelectorAll('main [data-index]')) {
+        const sub = [...it.querySelectorAll('span.ant-typography-secondary')].find((s) => s.querySelector(':scope > a[href^="/p/"]') && s.querySelector('a[href^="/groups/"]'));
+        if (!sub) continue;
+        it.setAttribute('data-vaf-skip', '1');                       // nicht von der allgemeinen Listen-Markierung erfassen
+        for (const old of it.querySelectorAll(':scope > .vaf-mark')) old.remove();
+        const box = [...it.children].find((c) => !c.classList.contains('vaf-mark')) || it;
+        const a = sub.querySelector(':scope > a[href^="/p/"]');
+        const nick = (a.textContent || '').trim();
+        const m = nick ? await Members.byNick(nick) : null;
+        const { info, html } = feedTagHtml(m, nick);
+        feedPutTag(a, html);
+        if (info) { box.style.outline = `2px solid ${info.color}`; box.style.outlineOffset = '-2px'; if (!box.style.borderRadius) box.style.borderRadius = '16px'; }
+        else box.style.outline = '';
+        // Kommentare: Nick-Links mit Text (nicht die Avatar-Links) außerhalb der Unterzeile
+        for (const ca of it.querySelectorAll('a[href^="/p/"]')) {
+          if (sub.contains(ca) || !(ca.textContent || '').trim() || ca.querySelector('img')) continue;
+          const cn = ca.textContent.trim();
+          const cm = await Members.byNick(cn);
+          feedPutTag(ca, feedTagHtml(cm, cn).html);
+        }
+      }
+    } catch (e) { warn('Newsfeed', e); } finally { feedBusy = false; }
+  }
+  function initFeed() {
+    let t = null;
+    new MutationObserver(() => { clearTimeout(t); t = setTimeout(() => feedMark(), 300); }).observe(document.body, { childList: true, subtree: true });
+    setInterval(() => feedMark(), 4000);
+  }
 
   // =====================================================================================
   // Start
@@ -10449,6 +10704,7 @@
     initResolver();
     initXxl();
     initEvents();
+    initFeed();
     initShared();
     initGroupRequests();
     Etappe.start();
@@ -10518,7 +10774,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, readTermFile, termShare, feedMark, awoCalc, awoStage, awoBadges, chatSend, insertIntoChat, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

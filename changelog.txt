@@ -1,6 +1,14 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.36 (30.10.2026)
+- Termin-Datei für alle Skripte gemeinsam: Stand (Name, Änderungsdatum, roher Text mit allen vier Angaben) im Briefkasten; eine neuere Datei gewinnt, eine Datei mit anderem Namen nur nach Rückfrage „für alle wechseln?“; ohne eigene Datei oder ohne Leseerlaubnis gilt der Stand aus dem Briefkasten
+- Messenger: Klick auf einen Termin hängt ihn an den vorhandenen Text an (eigene Zeile, ohne Return) und sendet die Nachricht; kommt sie nicht durch, erscheint „Nicht gesendet“
+- Gruppen-Newsfeed: Rahmen je Beitrag in der Farbe des Verfassers, Einstufung (und ggf. Figur-Stufe) hinter dem Nick, Kommentierende mit Einstufung; Verfasser und Kommentierende kommen ins Gedächtnis (nicht der Gruppenbesitzer)
+- Events: vorerst nur einfärben – keine Warteliste und keine Veranstalter-Whitelist mehr
+- AWO-Faktor der Events (gemeinsame Formel mit dem JOYclub-Skript) mit neuer Einstellungskarte „AWO-Faktor“ (Anwesenheitsquoten, Gewichtung Männer/Frauen/Paare); Plaketten in der Event-Suche: Datum der letzten vollständigen Prüfung und AWO-Faktor
+- Kopf-Symbol: Klick öffnet immer die Einstellungen (Wartelisten-Fenster entfällt); läuft ein Scan, erscheint danach dort das „Scan läuft“-Fenster
+
 2.35 (30.10.2026)
 - Behoben: Die gewählte Termin-Datei (5 Termine im Messenger) wurde seit 2.32 nach jedem Neuladen vergessen. Der Datei-Griff des Browsers lässt sich nicht in der verschlüsselten Datenbank ablegen; er liegt jetzt in einer eigenen kleinen Datenbank (nur der Griff, kein Inhalt). Liegt der alte Griff noch im unverschlüsselten Altbestand, wird er von dort übernommen
 
