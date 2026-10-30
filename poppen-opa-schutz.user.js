@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.37
+// @version      2.38
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.37';
+  const VERSION = '2.38';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -264,6 +264,8 @@
       setPath(s, p, clone(e.v));
     }
     normalizeSettings(s);
+    // 2.38: nur noch im Quelltext (in der Oberfläche nicht mehr änderbar) – gespeicherte Werte gelten nicht mehr
+    for (const k of ['pauseMin', 'pauseMax', 'bodyValidDays', 'bodyUnknownDays', 'groupGraceDays']) s.expert[k] = DEFAULTS.expert[k];
     SETTINGS = s;
     return s;
   }
@@ -691,6 +693,18 @@
 
   // ---------- Abfragen der Seite unterdrücken (z. B. poppens eigene Suche auf der XXL-Seite) ----------
   //  fn(method, path) → Ersatz-Antwort ({ code, data }) oder null. Die Abfrage geht dann gar nicht erst raus.
+  // Anfragen der Seite vor dem Absenden umschreiben (JSON-Body): fn(method, path, body) → neuer Body oder null
+  const ReqRewrites = [];
+  function rewritePageRequest(fn) { ReqRewrites.push(fn); }
+  function reqRewritten(method, url, bodyText) {
+    if (!ReqRewrites.length || typeof bodyText !== 'string') return null;
+    let path = '';
+    try { path = new URL(url, location.origin).pathname.replace(/^\/v2-api\//, ''); } catch { return null; }
+    let b; try { b = JSON.parse(bodyText); } catch { return null; }
+    let changed = false;
+    for (const fn of ReqRewrites) { try { const nb = fn(String(method || 'GET').toUpperCase(), path, b); if (nb) { b = nb; changed = true; } } catch {} }
+    return changed ? JSON.stringify(b) : null;
+  }
   const PageBlocks = [];
   function blockPageApi(fn) { PageBlocks.push(fn); }
   function pageBlocked(method, url) {
@@ -709,6 +723,7 @@
     let method = (init && init.method) || (input && input.method) || 'GET';
     const fake = pageBlocked(method, url);
     if (fake) return new Response(JSON.stringify(fake), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (init && typeof init.body === 'string') { const nb = reqRewritten(method, url, init.body); if (nb != null) { init = { ...init, body: nb }; } }
     let body = init && init.body;
     try { captureHeaders((init && init.headers) || (input && input.headers)); } catch {}
     if (body == null && input && typeof input.clone === 'function' && method !== 'GET') { try { body = await input.clone().text(); } catch {} }
@@ -730,6 +745,7 @@
     XO.send = function (body) {
       const inf = this.__vaf;
       if (inf && /\/v2-api\//.test(inf.u)) {
+        if (typeof body === 'string') { const nb = reqRewritten(inf.m, inf.u, body); if (nb != null) { body = nb; } }
         const fake = pageBlocked(inf.m, inf.u);
         if (fake) {   // Ersatz-Antwort: gleiche XHR auf eine data:-Adresse umlenken (kein Netzverkehr)
           try { xOpen.call(this, 'GET', 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(fake)), true); return xSend.call(this, null); } catch {}
@@ -755,7 +771,7 @@
         } catch {}
         xhr.addEventListener('readystatechange', ensure);
       }
-      return xSend.apply(this, arguments);
+      return xSend.call(this, body);
     };
   }
   }   // Ende if (ON_POPPEN): Seiten-Hooks nur auf poppen.de
@@ -1113,10 +1129,14 @@
       city: (u.geo_location && u.geo_location.city) || (u.location && u.location.city) || '',
       note: typeof u.note === 'string' ? u.note : undefined,
       active: u.is_active, lastLogin: u.last_visible_login || 0, fake: u.fakecheck,
+      single: u.single_status === undefined || u.single_status === null ? undefined : !!u.single_status,
       signup: u.signup_date || 0, dist: typeof u.distance === 'number' ? u.distance : null,
     };
   }
 
+  // Signierte Bildadressen von poppen enthalten ihr Ablaufdatum („…==,<Sekunden>/…“); abgelaufen = nicht mehr ladbar
+  const avatarExpiry = (u) => { const x = String(u || '').match(/,(\d{9,11})\//); return x ? +x[1] * 1000 : 0; };
+  const avatarExpired = (u) => { const t = avatarExpiry(u); return !!t && t < now() + 3600000; };
   // Gesehenes Mitglied verbuchen. src = „Likes“, „Sticker“, „Nachrichten“, „Besucher“, „Gruppen“, „Suche“, „Profil“, „Blockierliste“ …
   async function seen(u, src, { images = true } = {}) {
     const x = u && u.uid && u.g ? u : normUser(u);
@@ -1149,6 +1169,11 @@
       }
       if (x.lastLogin) m.lastLogin = x.lastLogin;
       if (x.signup) m.signup = x.signup;
+      if (x.fake) m.fake = x.fake;                                                   // Fakecheck-Stand (done/open/denied …)
+      if (x.single !== undefined) {                                                   // single_status aus Vorschauen (Feed, Kommentare, Likes)
+        const cats = m.rel && Array.isArray(m.rel.cats) && (!m.rel.cats.length) === x.single ? m.rel.cats : undefined;   // nur passende Kategorien behalten
+        m.rel = cats ? { cats, single: x.single, at: now() } : { single: x.single, at: now() };
+      }
       if (x.dist != null && isFinite(x.dist)) m.dist = { km: x.dist, at: now() };   // Entfernung, wie poppen sie bei der Sichtung angezeigt hat
       if (m.del && src !== 'Blockierliste') delete m.del;
       m.last = now();
@@ -1203,6 +1228,7 @@
             if (data) {
               await DB.put('images', { uid, data, src: url, at: now() });
               await Members.update(uid, (m) => { m.img = now(); delete m.avatarNew; });
+              Bus.emit('img', uid);
             }
           } catch (e) { /* Bild nicht ladbar – beim nächsten Mal erneut */ }
           await sleep(300);
@@ -3114,37 +3140,78 @@
     return out;
   }
 
-  // Blockierliste still ins Gedächtnis einlesen (ändert nichts auf poppen.de): einmal je Version und danach wöchentlich.
-  // Ohne das kennt das Gedächtnis nach einem Update nur die Mitglieder, die seitdem aufgetaucht sind.
-  const INGEST_KEY = 'bl_ingest';
-  const ingestDue = () => { const g = G.get(INGEST_KEY, null); return !g || g.v !== VERSION || now() - g.at > 7 * DAY; };
-  async function ingestBlocklist(onStep) {
-    const list = await BL.all((count, page) => { if (onStep) onStep(count, page); return true; });
-    G.set('blocked_count', list.length); G.set('blocked_count_at', now());
-    const onList = new Set();
-    let opa = 0, manual = 0;
-    for (const e of list) {
-      if (!e || !e.user || !e.user.uid) continue;
-      const uid = String(e.user.uid);
-      onList.add(uid);
-      await seen(e.user, 'Blockierliste', { images: false });
-      const pn = parseNote(e.note);
-      if (pn) {
-        opa++;
-        await Members.update(uid, (x) => { if (!x.blk || !x.blk.opa || x.unblk) x.blk = { at: pn.at, src: pn.src || 'Sync', note: e.note, opa: true }; else if (!x.blk.note) x.blk.note = e.note; delete x.unblk; });
-      } else {
-        manual++;
-        await Members.update(uid, (x) => { if (!x.blk || x.unblk) { x.blk = { at: now(), note: e.note || '', opa: false }; delete x.unblk; } });
+  // Blockierliste still ins Gedächtnis einlesen (ändert nichts auf poppen.de).
+  //  - Vollständig: beim ersten Mal, nach einer Formatänderung (INGEST_FMT) und monatlich.
+  //  - Sonst schrittweise (täglich bzw. nach einem Update): neueste Einträge lesen, bis nur noch Bekannte kommen;
+  //    Entfernte über die Nummernliste (ignore/uid/list) erkennen. Von Hand geänderte Notizen gleicht „Reparieren“ ab.
+  //  Fortschritt in G „ingest_prog“ (für die Einstellungen, auch aus anderen Tabs sichtbar).
+  const INGEST_KEY = 'bl_ingest', INGEST_FMT = 2;
+  const ingestDue = () => { const g = G.get(INGEST_KEY, null); return !g || g.v !== VERSION || now() - g.at > DAY; };
+  const ingestFullDue = () => { const g = G.get(INGEST_KEY, null); return !g || g.fmt !== INGEST_FMT || !g.full || now() - g.full > 30 * DAY; };
+  const ingestProg = (phase, n, total) => G.set('ingest_prog', { phase, n, total, at: now() });
+  async function ingestEntry(e) {
+    const uid = String(e.user.uid);
+    await seen(e.user, 'Blockierliste', { images: false });
+    const pn = parseNote(e.note);
+    if (pn) {
+      await Members.update(uid, (x) => { if (!x.blk || !x.blk.opa || x.unblk) x.blk = { at: pn.at, src: pn.src || 'Sync', note: e.note, opa: true }; else if (!x.blk.note) x.blk.note = e.note; delete x.unblk; });
+      return 'opa';
+    }
+    await Members.update(uid, (x) => { if (!x.blk || x.unblk) { x.blk = { at: now(), note: e.note || '', opa: false }; delete x.unblk; } });
+    return 'manual';
+  }
+  async function ingestBlocklist(onStep, { full = false } = {}) {
+    full = full || ingestFullDue();
+    let uids = null;
+    try { uids = await BL.uids(); } catch {}
+    const total = uids ? uids.length : G.get('blocked_count', 0) || 0;
+    const onList = uids ? new Set(uids) : new Set();
+    let opa = 0, manual = 0, read = 0;
+    ingestProg('lesen', 0, total);
+    let list = [];
+    if (full) {
+      list = await BL.all((count, page) => { read = count; ingestProg('lesen', count, total); if (onStep) onStep(count, page); return true; });
+      if (!uids) for (const e of list) if (e && e.user && e.user.uid) onList.add(String(e.user.uid));
+    } else {
+      // schrittweise: neueste zuerst, bis eine ganze Seite nur Bekanntes enthält
+      let page = 1;
+      for (let guard = 0; guard < 100000; guard++) {
+        const d = await BL.page(page);
+        const l = (d && d.list) || [];
+        read += l.length; ingestProg('lesen', read, total);
+        let fresh = 0;
+        for (const e of l) {
+          if (!e || !e.user || !e.user.uid) continue;
+          const uid = String(e.user.uid);
+          const m = Members.cached().get(uid) || await Members.get(uid).catch(() => null);
+          if (!m || !m.blk || m.unblk) { list.push(e); fresh++; }
+        }
+        if (!fresh || !l.length || !d.next_page || d.next_page === page) break;
+        page = d.next_page;
       }
     }
-    // von Hand Blockierte, die nicht mehr auf der Liste stehen: Vermerk entfernen (Opa-Sperren bleiben „Reparieren“ überlassen)
-    const stale = [];
-    await Members.each((m) => { if (m.blk && !m.blk.opa && !m.unblk && !onList.has(m.uid)) stale.push(m.uid); });
-    for (const uid of stale) await Members.update(uid, (x) => { x.blk = null; });
-    G.set(INGEST_KEY, { v: VERSION, at: now(), n: list.length, opa, manual });
-    Bus.emit('ingested', { n: list.length, opa, manual });
-    log(`Blockierliste eingelesen: ${list.length} Einträge, davon ${opa} mit ${word()}-Notiz.`);
-    return { n: list.length, opa, manual };
+    const tot2 = list.length;
+    let k = 0;
+    for (const e of list) {
+      if (++k % 100 === 0) ingestProg('verarbeiten', k, tot2);
+      if (!e || !e.user || !e.user.uid) continue;
+      onList.add(String(e.user.uid));
+      if ((await ingestEntry(e)) === 'opa') opa++; else manual++;
+    }
+    // nicht mehr auf der Liste: von Hand Blockierte verlieren den Vermerk (Opa-Sperren bleiben „Reparieren“ überlassen)
+    if (uids || full) {
+      const stale = [];
+      await Members.each((m) => { if (m.blk && !m.blk.opa && !m.unblk && !onList.has(m.uid)) stale.push(m.uid); });
+      for (const uid of stale) await Members.update(uid, (x) => { x.blk = null; });
+    }
+    const n = uids ? uids.length : full ? list.length : total;
+    G.set('blocked_count', n); G.set('blocked_count_at', now());
+    const prev = G.get(INGEST_KEY, null) || {};
+    G.set(INGEST_KEY, { v: VERSION, fmt: INGEST_FMT, at: now(), full: full ? now() : prev.full || 0, n, read, opa, manual });
+    G.del('ingest_prog');
+    Bus.emit('ingested', { n, opa, manual, full });
+    log(`Blockierliste ${full ? 'vollständig' : 'schrittweise'} eingelesen: ${fmtN(read)} Einträge gelesen, ${opa + manual} neu verbucht (${opa} mit ${word()}-Notiz).`);
+    return { n, opa, manual, full, read };
   }
 
   async function runIgnoreJob(kind, opts = {}) {
@@ -3159,7 +3226,7 @@
       const mem = await memoryBlocked();
       let text = '';
       if (kind === 'repair') {
-        let gone = 0, notes = 0, adopted = 0;
+        let gone = 0, notes = 0, adopted = 0, synced = 0;
         // 1. nicht mehr blockiert → aus dem Gedächtnis
         for (const m of mem) if (!onList.has(m.uid)) { await Members.update(m.uid, (x) => { x.unblk = now(); x.blk = null; }); gone++; }
         // 2. Einträge mit Opa-Notiz ins Gedächtnis, fehlende Notizen ergänzen
@@ -3170,14 +3237,24 @@
           let m = await Members.get(uid);
           const pn = parseNote(e.note);
           if (!pn && !e.note && legacy && legacy.done[norm(e.user.nickname)] && !(m && m.legacyDone)) m = await seen(e.user, 'Blockierliste', { images: false });
-          if (pn) { if (!m || !m.blk || !m.blk.opa) { await seen(e.user, 'Blockierliste', { images: false }); await Members.update(uid, (x) => { x.blk = { at: pn.at, src: pn.src, note: e.note, opa: true }; delete x.unblk; }); adopted++; } continue; }
+          if (pn) {
+            if (!m || !m.blk || !m.blk.opa) { await seen(e.user, 'Blockierliste', { images: false }); await Members.update(uid, (x) => { x.blk = { at: pn.at, src: pn.src, note: e.note, opa: true }; delete x.unblk; }); adopted++; }
+            else if (m.blk.note !== e.note) { await Members.update(uid, (x) => { x.blk = { ...x.blk, at: pn.at || x.blk.at, src: pn.src || x.blk.src, note: e.note }; }); synced++; }   // Notiz von Hand geändert
+            continue;
+          }
+          if (!m || !m.blk || m.unblk || (!m.blk.opa && (m.blk.note || '') !== (e.note || ''))) {   // von Hand Blockierte samt Notiz
+            if (!m || !m.blk || m.unblk || !m.blk.opa) { await seen(e.user, 'Blockierliste', { images: false }); await Members.update(uid, (x) => { if (!x.blk || x.unblk || !x.blk.opa) { x.blk = { at: (x.blk && x.blk.at) || now(), note: e.note || '', opa: false }; delete x.unblk; } }); synced++; continue; }
+          }
           if (m && m.blk && m.blk.opa && !e.note && S().expert.writeNote) {
             const t = makeNote(m, m.blk.src, new Date(m.blk.at || now()));
             if (!dry()) { try { await BL.note(uid, t); notes++; } catch {} }
             await Members.update(uid, (x) => { x.blk.note = t; });
           }
         }
-        text = `Reparieren: ${fmtN(list.length)} Einträge, ${gone} nicht mehr blockiert, ${adopted} übernommen, ${notes} Notizen ergänzt`;
+        text = `Reparieren: ${fmtN(list.length)} Einträge, ${gone} nicht mehr blockiert, ${adopted} übernommen, ${synced} abgeglichen, ${notes} Notizen ergänzt`;
+        // Reparieren ersetzt das vollständige Einlesen
+        G.set('blocked_count', list.length); G.set('blocked_count_at', now());
+        { const prev = G.get(INGEST_KEY, null) || {}; G.set(INGEST_KEY, { ...prev, v: VERSION, fmt: INGEST_FMT, at: now(), full: now(), n: list.length }); }
       } else if (kind === 'sync-poppen') {
         let adopted = 0, dropped = 0, notes = 0;
         for (const [uid, e] of onList) {
@@ -3820,7 +3897,7 @@
     settingsDirty = false;
     el.id = 'vaf-set';
     const W1 = word();
-    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <a class="vaf-ver" href="${REPO_URL}/blob/main/changelog.txt" target="_blank" rel="noopener" title="Was ist neu? (Changelog)">${esc(VERSION)}</a><a class="vaf-hlink" href="${REPO_URL}#readme" target="_blank" rel="noopener">Anleitung</a><a class="vaf-hlink" href="${REPO_URL}/issues" target="_blank" rel="noopener">Fehler melden</a></h2><div class="vaf-info"><div>Derzeit blockiert: <b id="vaf-cur-n">…</b></div><div>Warteliste: <b id="vaf-q-n">…</b></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
+    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <a class="vaf-ver" href="${REPO_URL}/blob/main/changelog.txt" target="_blank" rel="noopener" title="Was ist neu? (Changelog)">${esc(VERSION)}</a><a class="vaf-hlink" href="${REPO_URL}#readme" target="_blank" rel="noopener">Anleitung</a><a class="vaf-hlink" href="${REPO_URL}/issues" target="_blank" rel="noopener">Fehler melden</a></h2><div class="vaf-info"><div>Derzeit blockiert: <span id="vaf-cur-n">…</span></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
     const body = el.querySelector('#vaf-set-body');
     const touch = () => { settingsDirty = true; projectLater(); };
     const lab = (text, path) => `<span data-path="${path}">${text}</span>`;
@@ -4020,9 +4097,7 @@
         const cuts = [aw.weight[0], aw.weight[0] + aw.weight[1]];
         const ms = multiSlider(0, 100, cuts, AWC, (x) => { aw.weight = [x[0], x[1] - x[0], 100 - x[1]]; paint(); touch(); });
         ms.querySelectorAll('.v').forEach((v) => { v.style.display = 'none'; });   // Griffe ohne Zahl (Anteile stehen darüber)
-        const hint = document.createElement('div'); hint.className = 'vaf-d';
-        hint.textContent = 'Anteil am gesamten Balken (zusammen immer 100 %). Anteil je Gruppe = erwartete Anwesende der Stufe 3 ÷ alle erwarteten Anwesenden; AWO = gewichtete Summe. Gruppen ohne Anmeldungen geben ihr Gewicht anteilig ab. Gezählt wird „Gehe“; unsichtbare Gäste zählen als Stufe 3.';
-        wrap.append(legend, ms, hint);
+        wrap.append(legend, ms);
         row(ca, 'Gewichtung Männer / Frauen / Paare', '', wrap);
       }
 
@@ -4038,7 +4113,7 @@
           mst, btnS('Jetzt aktualisieren', async () => { mst.textContent = 'aktualisiere …'; await mirrorRun(true).catch((e) => toast(esc(e.message))); mi(); }),
           btnS('Aus Rettungsanker wiederherstellen', async () => { if (W.confirm('Daten aus dem Rettungsanker wiederherstellen? Neuere vorhandene Einträge bleiben erhalten.')) await mirrorRestore(false); }));
       }
-      row(cs, 'Mitglieder-Gedächtnis', 'Wissen über andere Mitglieder samt Fickliste und Textvorlagen (z. B. für ein zweites Profil)', btnS('Exportieren ohne Bilder', () => exportMemory(false)), btnS('mit Bildern', () => exportMemory(true)), btnS('Importieren (mischen)', () => importMemory()));
+      row(cs, 'Gedächtnis', 'Wissen über andere Mitglieder, Fickliste & Textvorlagen', btnS('Exportieren ohne Bilder', () => exportMemory(false)), btnS('mit Bildern', () => exportMemory(true)), btnS('Importieren (mischen)', () => importMemory()));
 
       // ---- Experten ----
       const exp = document.createElement('div'); exp.className = 'vaf-exp'; exp.textContent = '▸ Experten-Einstellungen';
@@ -4046,11 +4121,7 @@
       const ce = document.createElement('div'); ce.className = 'vaf-card'; ce.style.display = 'none'; body.appendChild(ce);
       exp.addEventListener('click', () => { const open = ce.style.display === 'none'; ce.style.display = open ? '' : 'none'; exp.textContent = (open ? '▾' : '▸') + ' Experten-Einstellungen'; });
       const x = draft.expert;
-      row(ce, lab('Debug-Ausgaben', 'expert.debug'), 'zusätzliche Ausgaben in der Konsole (F12)', sw(x.debug, (v) => { x.debug = v; touch(); }));
-      row(ce, lab('Testlauf', 'expert.dryRun'), 'nichts wird verändert, nur protokolliert', sw(x.dryRun, (v) => { x.dryRun = v; touch(); }));
-      row(ce, lab('Obergrenze erster Scan', 'expert.firstScanMax'), 'Profilbesucher / Interaktionen', numIn(x.firstScanMax, (v) => { x.firstScanMax = v; touch(); }, 10, 1000000));
-      const lim = row(ce, lab('Höchstzahl der Einträge auf der Blockierliste', 'expert.limit'), '', numIn(x.limit, (v) => { x.limit = v; touch(); }, 1, 1e9));
-      lim.querySelector('.vaf-num').style.width = '120px';
+      row(ce, lab('Gemeinsame Grenzen für alle Quellen', 'expert.sharedLimits'), 'an: eine Zeile „Global“ für alle Quellen · aus: Grenzen je Quelle', sw(x.sharedLimits, (v) => { x.sharedLimits = v; rerender(); touch(); }));
       const rank = document.createElement('div'); rank.className = 'vaf-rank';
       rank.title = 'Bestimmt, welche Quelle in der Notiz steht und wer auf der Warteliste zuerst drankommt';
       const drawRank = () => {
@@ -4068,10 +4139,6 @@
       };
       drawRank();
       row(ce, lab('Rangfolge der Quellen', 'expert.rank'), 'oben = wichtigste', rank);
-      row(ce, lab('Gemeinsame Grenzen für alle Quellen', 'expert.sharedLimits'), 'an: eine Zeile „Global“ für alle Quellen · aus: Grenzen je Quelle', sw(x.sharedLimits, (v) => { x.sharedLimits = v; rerender(); touch(); }));
-      row(ce, lab('Pause zwischen Sperren', 'expert.pauseMin'), 'zufällig', numIn(x.pauseMin, (v) => { x.pauseMin = Math.min(v, x.pauseMax); touch(); }, 0, 600), 'bis', numIn(x.pauseMax, (v) => { x.pauseMax = Math.max(v, x.pauseMin); touch(); }, 0, 600), 'Sek.');
-      row(ce, lab('Messung gültig', 'expert.bodyValidDays'), 'Größe/Gewicht (Figur-Badges)', numIn(x.bodyValidDays, (v) => { x.bodyValidDays = v; touch(); }, 1, 3650), 'Tage · „UNKNOWN“ erneut prüfen nach', numIn(x.bodyUnknownDays, (v) => { x.bodyUnknownDays = v; touch(); }, 1, 3650), 'Tagen');
-      row(ce, lab('Schonfrist Gruppen-Whitelist', 'expert.groupGraceDays'), '', numIn(x.groupGraceDays, (v) => { x.groupGraceDays = v; touch(); }, 1, 3650), 'Tage');
 
       const recSt = document.createElement('span'); recSt.className = 'vaf-mini';
       Recorder.stats().then((r) => { recSt.textContent = `${r.total} Schnittstellen erfasst, davon ${r.fresh} neu`; });
@@ -4080,13 +4147,6 @@
       const recCl = document.createElement('button'); recCl.type = 'button'; recCl.className = 'vaf-btn'; recCl.textContent = 'Leeren';
       recCl.addEventListener('click', async () => { if (W.confirm('Rekorder leeren?')) { await Recorder.clear(); recSt.textContent = '0 Schnittstellen erfasst'; } });
       row(ce, lab('API-Rekorder', 'expert.recorder'), 'schneidet Abfragen der Seite mit (Sensibles geschwärzt)', sw(x.recorder, (v) => { x.recorder = v; touch(); }), recSt, recEx, recCl);
-      // ID-Auflösung (uid → Nickname): erst nach bestandenem Selbsttest im Einsatz
-      const irSt = document.createElement('span'); irSt.className = 'vaf-mini';
-      const irInfo = () => { const t = G.get('idres_test', null); irSt.textContent = t ? `${t.ok ? 'bestanden' : 'nicht bestanden'} am ${deDateTime(t.at)} · ${(t.details && t.details.summary) || ''}` : 'noch nicht geprüft'; irSt.style.color = t && !t.ok ? '#ff7875' : ''; };
-      irInfo();
-      const irBtn = document.createElement('button'); irBtn.type = 'button'; irBtn.className = 'vaf-btn'; irBtn.textContent = 'Selbsttest';
-      irBtn.addEventListener('click', async () => { irBtn.disabled = true; irSt.textContent = 'prüfe an bekannten Profilen …'; try { await idresSelfTest(); } catch (e) { toast('Selbsttest fehlgeschlagen: ' + esc(e.message)); } irBtn.disabled = false; irInfo(); });
-      row(ce, 'ID-Auflösung', 'ermittelt Nicknames zu Mitglieds-IDs (Blockierende Popsters, böse Popsters, Warteliste)', irSt, irBtn);
       // Daten
       const btn = (t, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn'; b.textContent = t; b.addEventListener('click', fn); return b; };
       // Kontobindung: Daten bewusst an ein anderes Konto übergeben
@@ -4102,16 +4162,16 @@
       });
       if ((Owner.get() || {}).handover) owBtn.textContent = 'Übergabe zurücknehmen';
       row(ce, 'Kontobindung', 'Die Daten in diesem Browser-Profil gehören genau einem poppen-Konto; bei einem anderen bleibt der Opa-Schutz aus', owSt, owBtn);
-      // Abgleich mit JOYclub (Briefkasten)
-      const bkSt = document.createElement('span'); bkSt.className = 'vaf-mini';
-      const bkInfo = () => { const t = G.get('bk_test', null); const at = G.get('bk_full_sent', 0); bkSt.textContent = (t ? t.msg : 'noch nicht geprüft') + (at ? ` · letzter Abgleich ${deDateTime(at)}` : ''); };
-      bkInfo();
-      const bkBtn = btn('Jetzt prüfen', async () => { bkSt.textContent = 'prüfe …'; try { await bkTest(); } catch {} bkInfo(); });
-      row(ce, 'Abgleich mit JOYclub', 'automatisch über den Briefkasten (Fickliste und Textvorlagen)', bkSt, bkBtn);
 
       const work = btn('Jetzt abarbeiten', () => workQueue(work));
       if (Etappe.running && Etappe.manual) work.textContent = 'Anhalten';
       row(ce, 'Warteliste', 'Blockiert wird im Hintergrund; „Jetzt abarbeiten“ arbeitet die Warteliste auch bei ausgeschaltetem Schalter einmal ganz ab', btn('Anzeigen', showQueue), work, btn('Leeren', async () => { if (W.confirm('Warteliste leeren?')) { await Queue.clear(); updateCounts(); } }));
+
+      row(ce, lab('Debug-Ausgaben', 'expert.debug'), 'zusätzliche Ausgaben in der Konsole (F12)', sw(x.debug, (v) => { x.debug = v; touch(); }));
+      row(ce, lab('Testlauf', 'expert.dryRun'), 'nichts wird verändert, nur protokolliert', sw(x.dryRun, (v) => { x.dryRun = v; touch(); }));
+      row(ce, lab('Obergrenze erster Scan', 'expert.firstScanMax'), 'Profilbesucher / Interaktionen', numIn(x.firstScanMax, (v) => { x.firstScanMax = v; touch(); }, 10, 1000000));
+      const lim = row(ce, lab('Höchstzahl der Einträge auf der Blockierliste', 'expert.limit'), '', numIn(x.limit, (v) => { x.limit = v; touch(); }, 1, 1e9));
+      lim.querySelector('.vaf-num').style.width = '120px';
 
       // ---- Fuß ----
       const foot = document.createElement('div'); foot.className = 'vaf-foot';
@@ -4126,10 +4186,11 @@
     const iv = setInterval(() => { if (!el.isConnected) clearInterval(iv); else updateCounts(); }, 5000);
   }
   async function updateCounts() {
-    const e1 = document.getElementById('vaf-cur-n'), e3 = document.getElementById('vaf-q-n');
+    // „Derzeit blockiert: Summe (blockiert + Warteliste) / Höchstzahl“
+    const e1 = document.getElementById('vaf-cur-n');
     const b = G.get('blocked_count', null), lim = S().expert.limit;
-    if (e1) e1.textContent = `${b == null ? '?' : fmtN(b)} / ${fmtN(lim)}`;
-    if (e3) e3.textContent = fmtN(await Queue.count());
+    const q = await Queue.count();
+    if (e1) e1.innerHTML = b == null ? `<b>?</b> (${fmtN(q)} auf der Warteliste) / ${fmtN(lim)}` : `<b>${fmtN(b + q)}</b> (${fmtN(b)} + ${fmtN(q)} auf der Warteliste) / ${fmtN(lim)}`;
   }
   // „Nach Anwenden der neuen Einstellungen“: aus dem Gedächtnis aller bekannten Mitglieder
   let projT = null;
@@ -4138,9 +4199,13 @@
     if (!e || !draft) return;
     e.textContent = 'rechne …';
     if (ingestDue()) {
-      e.textContent = 'Blockierliste wird eingelesen …';
-      e.title = 'Nach dem Update liest das Skript die Blockierliste einmal ins Gedächtnis ein. Erst danach lässt sich die Zahl berechnen.';
-      setTimeout(projectLater, 10000);   // das Einlesen kann auch in einem anderen Tab laufen
+      const pg = G.get('ingest_prog', null);
+      if (pg && now() - pg.at < 120000 && pg.total) {
+        const pct = Math.min(100, Math.floor(pg.n * 100 / pg.total));
+        e.textContent = pg.phase === 'verarbeiten' ? `Blockierliste wird verarbeitet: ${fmtN(pg.n)} von ${fmtN(pg.total)} (${pct} %)` : `Blockierliste wird eingelesen: ${fmtN(pg.n)} von ${fmtN(pg.total)} (${pct} %)`;
+      } else e.textContent = 'Blockierliste wird eingelesen …';
+      e.title = 'Das Skript gleicht die Blockierliste mit seinem Gedächtnis ab (nach Updates und täglich nur die neuesten Einträge, monatlich alle). Erst danach lässt sich die Zahl berechnen.';
+      setTimeout(projectLater, 2500);   // das Einlesen kann auch in einem anderen Tab laufen
       return;
     }
     const p = await projection(S(), draft);
@@ -5038,34 +5103,36 @@
     async del(id) { await FickStore.del(id); Bus.emit('fick'); },
     idOf: (uid) => 'p:' + uid,
     async forMember(uid, nick) {
-      let p = await Fick.get(Fick.idOf(uid));
+      let p = await Fick.byUid(uid);
       if (!p) p = { id: Fick.idOf(uid), status: null, statusAt: 0, profiles: [], meets: [], history: [], created: now(), main: { pf: 'poppen', uid: String(uid), nick } };
-      if (nick && p.main) p.main.nick = nick;
-      const url = 'https://www.poppen.de' + pathOfName(p.main.nick || nick || '');
+      const mainPop = p.main && (!p.main.pf || p.main.pf === 'poppen');
+      if (nick && mainPop) p.main.nick = nick;
+      const url = 'https://www.poppen.de' + pathOfName(nick || (pm(p) && pm(p).nick) || '');
       if (nick && !p.profiles.some((x) => x.pf === 'poppen' && x.uid === String(uid))) p.profiles.unshift({ pf: 'poppen', url, name: nick, uid: String(uid) });
       else for (const x of p.profiles) if (x.pf === 'poppen' && x.uid === String(uid) && nick) { x.url = url; x.name = nick; }
       return p;
     },
-    // Einträge ohne poppen-Hauptprofil, die ein poppen-Profil dieses Mitglieds enthalten (z. B. aus dem JOYclub-Import),
-    // zu einer poppen-Person machen: Hauptprofil = poppen, fremdes Hauptprofil bleibt als Profil (main:true).
+    // Person zu einer poppen-uid finden – egal, ob das poppen-Profil Hauptprofil ist oder (z. B. nach dem
+    // Zurückschreiben durch das JOYclub-Skript, das sein Profil zum Hauptprofil macht) unter `profiles` steht.
+    async byUid(uid) {
+      uid = String(uid);
+      const p = await Fick.get(Fick.idOf(uid));
+      if (p && !p.deleted) return p;
+      return (await Fick.all()).find((q) => !q.deleted && pmUid(q) === uid) || null;
+    },
+    // Einträge, die ein poppen-Profil dieses Mitglieds nur per Link (ohne uid) enthalten: uid nachtragen.
+    // Hauptprofil und Kennung bleiben unverändert (seit 2.38 – vorher wurde zur p:-Person umgebaut, was mit dem
+    // JOYclub-Skript hin und her ginge).
     async adopt(uid, nick) {
       uid = String(uid);
+      const have = await Fick.byUid(uid);
+      if (have) return have;
       const key = nick ? linkKey({ url: 'https://www.poppen.de' + pathOfName(nick) }) : '';
-      const all = await Fick.all();
-      const cands = all.filter((q) => !pm(q) && (q.profiles || []).some((x) => x.pf === 'poppen' && (x.uid === uid || (key && linkKey(x) === key))));
-      if (!cands.length) return null;
-      let t = await Fick.get(Fick.idOf(uid));
-      if (!t) t = { id: Fick.idOf(uid), status: null, statusAt: 0, profiles: [], meets: [], history: [], created: now(), main: { pf: 'poppen', uid, nick } };
-      for (const q of cands) {
-        const hadExt = 'ext' in t, hadImp = 'imported' in t;
-        mergeFick(t, q);
-        if (!hadExt) delete t.ext;
-        if (!hadImp) delete t.imported;
-        t.main = { ...(t.main || {}), pf: 'poppen', uid, nick: nick || (t.main && t.main.nick) };
-        t.history = [...(t.history || []), { at: now(), what: `Mit poppen-Profil verbunden (aus ${PLATFORMS[(q.main && q.main.pf) || 'other'] ? pfLabel((q.main && q.main.pf) || 'other') : 'Import'})` }];
-        await Fick.del(q.id);
-      }
-      for (const x of t.profiles) if (x.pf === 'poppen' && (x.uid === uid || (key && linkKey(x) === key))) { x.uid = uid; if (nick) x.name = nick; }
+      if (!key) return null;
+      const t = (await Fick.all()).find((q) => !q.deleted && (q.profiles || []).some((x) => x.pf === 'poppen' && !x.uid && linkKey(x) === key));
+      if (!t) return null;
+      for (const x of t.profiles) if (x.pf === 'poppen' && !x.uid && linkKey(x) === key) { x.uid = uid; if (nick) x.name = nick; }
+      t.history = [...(t.history || []), { at: now(), what: 'Mit poppen-Profil verbunden' }];
       await Fick.put(t);
       return t;
     },
@@ -5080,8 +5147,15 @@
   };
   const isFickDone = (p) => p.status === 'done' || p.status === 'never';
   // Hauptprofil auf poppen.de? (Personen aus dem JOYclub-Import behalten ihr fremdes Hauptprofil)
-  const pm = (p) => (p && p.main && (!p.main.pf || p.main.pf === 'poppen') && p.main.uid ? p.main : null);
-  const foreignUrl = (p) => (p && p.main && !pm(p) && p.main.url) || '';
+  // poppen-Profil der Person: Hauptprofil oder (seit JOYclub 1.96 möglich) ein Eintrag in `profiles`
+  const pm = (p) => {
+    if (!p) return null;
+    if (p.main && (!p.main.pf || p.main.pf === 'poppen') && p.main.uid) return p.main;
+    const x = (p.profiles || []).find((y) => y && y.pf === 'poppen' && y.uid && !y.dead && !y.deleted && !y.gone);
+    return x ? { pf: 'poppen', uid: String(x.uid), nick: x.name || x.nick || '', url: x.url } : null;
+  };
+  const pmUid = (p) => { const m = pm(p); return m ? String(m.uid) : ''; };
+  const foreignUrl = (p) => (p && p.main && p.main.pf && p.main.pf !== 'poppen' && p.main.url) || '';
 
   // ---------- Profil-Fakten (Persönliche Details) ----------
   function detailsFrom(doc = document) {
@@ -5152,7 +5226,7 @@
   async function fickButton(uid, pi) {
     const bar = pi.send.parentElement;
     let b = bar.querySelector('#vaf-fick-btn');
-    const p = await Fick.get(Fick.idOf(uid));
+    const p = await Fick.byUid(uid);
     const st = p && p.status;
     const i = st ? FSTATES[st].i : 0;
     const label = st ? FSTATES[st].label : 'Ficken?';
@@ -5240,7 +5314,7 @@
 
   // Abschnitt „Fickliste“ unter „Fotos“ und „Videos“
   async function fickSection(uid, nick) {
-    const p = await Fick.get(Fick.idOf(uid));
+    const p = await Fick.byUid(uid);
     let sec = document.getElementById('vaf-fick-sec');
     if (!p) { if (sec) sec.remove(); return; }
     if (sec && sec.dataset.u === String(p.updated)) return;
@@ -5419,7 +5493,7 @@
     prev.sort((a, b) => a.at - b.at);
     const last = prev[prev.length - 1];
     if (last && last.hash === h && !force) return;
-    const p = await Fick.get(Fick.idOf(uid));
+    const p = await Fick.byUid(uid);
     const img = await Images.get(uid);
     await DB.put('archive', { uid: String(uid), nick, at: now(), reason: last && last.nick !== nick ? `Nick geändert (${last.nick} → ${nick})` : reason, html, hash: h, img });
     // ohne Fickliste-Eintrag nur den letzten Stand behalten
@@ -5430,7 +5504,7 @@
     ensureStyle();
     const list = (await DB.byIndex('archive', 'uid', String(uid))).sort((a, b) => a.at - b.at);
     const m = await Members.get(uid);
-    const p = await Fick.get(Fick.idOf(uid));
+    const p = await Fick.byUid(uid);
     if (!list.length) { el.innerHTML = `<div style="padding:24px;color:#e8e8e8"><h2>Profil-Archiv</h2><p>Für ${esc((m && m.nick) || (p && p.main && p.main.nick) || (p && p.ext && p.ext.name) || uid)} gibt es noch keinen gespeicherten Stand. Er entsteht, sobald du das Profil öffnest.</p></div>`; return; }
     let idx = list.length - 1;
     try { const k = sessionStorage.getItem('vaf_arch_' + uid); if (k != null && list[+k]) idx = +k; } catch {}
@@ -5518,8 +5592,8 @@
     const rows = [];
     for (const p of persons) {
       const m = await memberOf(p);
-      const name = (p.main && (m && m.nick || p.main.nick)) || (p.ext && p.ext.name) || '?';
-      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : ((p.profiles || []).find((x) => x.pf === OWN_PF && x.url) || {}).url || foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq([...(p.main && p.main.pf && !pm(p) ? [p.main.pf] : []), ...(p.profiles || []).map((x) => x.pf)]),
+      const name = (m && m.nick) || (pm(p) && pm(p).nick) || (p.main && p.main.nick) || (p.ext && p.ext.name) || '?';
+      const base = { p, name, del: !!(m && m.del) || !!(p.ext && p.ext.gone), inactive: m && m.active === false, url: pm(p) ? profileUrl(name) : ((p.profiles || []).find((x) => x.pf === OWN_PF && x.url) || {}).url || foreignUrl(p) || '/setting/profile#extern=' + encodeURIComponent(p.id), arch: '/setting/profile#archiv=' + encodeURIComponent(pm(p) ? pm(p).uid : p.id), pfs: uniq([...(p.main && p.main.pf && p.main.pf !== 'poppen' ? [p.main.pf] : []), ...(p.profiles || []).map((x) => x.pf)]),
         badges: uniq([...(foreignUrl(p) ? [p.main.pf + '|'] : []), ...otherProfiles(p).map((x) => `${x.pf}|${x.pf === 'other' ? (x.pfName || '') : ''}`)]) };
       if (!(p.meets || []).length) rows.push({ ...base, t: null });
       for (const t of p.meets || []) rows.push({ ...base, t });
@@ -5631,7 +5705,12 @@
     const me = Me.get() || await loadMe();
     const persons = await Fick.all();
     for (const p of persons) for (const x of p.profiles || []) { if (isDead(x)) x.dead = true; delete x.deleted; delete x.gone; }
-    for (const p of persons) if (pm(p)) { const m = await Members.get(pm(p).uid); if (m && m.nick) { p.main.nick = m.nick; } }
+    for (const p of persons) if (pm(p)) {
+      const m = await Members.get(pm(p).uid);
+      if (!(m && m.nick)) continue;
+      if (p.main && (!p.main.pf || p.main.pf === 'poppen')) p.main.nick = m.nick;           // poppen ist Hauptprofil
+      else for (const x of p.profiles || []) if (x.pf === 'poppen' && String(x.uid) === String(m.uid)) x.name = m.nick;   // JOYclub-Hauptprofil bleibt
+    }
     const payload = { format: 'fickliste', version: 1, platform: 'poppen', exported: new Date().toISOString(), persons };
     const enc = await encryptJSON(payload, me.nick);
     download(`fickliste-poppen-${stamp()}.json`, JSON.stringify({ format: 'fickliste-enc', platform: 'poppen', account: me.nick, ...enc }));
@@ -5658,7 +5737,7 @@
     if (!data || !Array.isArray(data.persons)) { toast(Array.isArray(data && data.templates) ? 'Das ist eine Textvorlagen-Datei (Fickliste → Meine Fickliste, Textvorlagen → Messenger).' : 'Keine Fickliste in der Datei.'); return; }
     const from = data.platform || 'joyclub';
     const local = await Fick.all();
-    const mainLink = (p) => (!p.main ? null : pm(p) ? { pf: 'poppen', url: 'https://www.poppen.de' + pathOfName(p.main.nick || '') } : p.main.url ? { pf: p.main.pf, url: p.main.url } : null);
+    const mainLink = (p) => (!p.main ? null : pm(p) ? { pf: 'poppen', url: 'https://www.poppen.de' + pathOfName(pm(p).nick || '') } : p.main.url ? { pf: p.main.pf, url: p.main.url } : null);
     const keysOf = (p) => uniq([...(p.profiles || []), mainLink(p)].map(linkKey).filter(Boolean));
     const index = new Map();
     for (const p of local) for (const k of keysOf(p)) { if (!index.has(k)) index.set(k, new Set()); index.get(k).add(p.id); }
@@ -6082,9 +6161,13 @@
       const stage = bi ? mopStage(bi.lo) : -1;
       if (!bi || stage < 0 || !mopTypeOk(m) || (stage === 0 && !mopPlusDeclared(m))) { if (b) b.remove(); continue; }   // Stufe 0 nur bei „Plus-size“-Angabe
       if (!b) { b = document.createElement('div'); b.className = 'vaf-fig vaf-mark'; (x.host || x.card).prepend(b); }
-      b.textContent = `${mopLabel(stage)} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}`;
-      b.title = `${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg`;
-      b.style.cssText = `background:${MOP_COLORS[stage]};color:#fff`;
+      // nur bei Änderung schreiben – sonst löst jedes Neuschreiben den Seitenbeobachter erneut aus (Endlosschleife)
+      const txt = `${mopLabel(stage)} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}`;
+      if (b.textContent !== txt) b.textContent = txt;
+      const ttl = `${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg`;
+      if (b.title !== ttl) b.title = ttl;
+      const css = `background:${MOP_COLORS[stage]};color:#fff`;
+      if (b.dataset.css !== css) { b.style.cssText = css; b.dataset.css = css; }
     }
   }
 
@@ -6260,6 +6343,7 @@
       return true;
     }
 
+    if (kind === 'abgemeldet' || kind === 'login') watchRelogin();
     if (kind === 'abgemeldet') {
       rememberResume();
             specialPanel('Nicht eingeloggt', 'Nicht eingeloggt – bitte <a href="/login" style="color:#ffc21a">anmelden</a>.<br>Danach geht es automatisch weiter.');
@@ -6306,6 +6390,18 @@
     return false;
   }
 
+  // Nach dem Anmelden lädt poppen die Seite nicht neu (SPA) → beobachten; sobald wieder angemeldet:
+  // Hinweis weg und einmal neu laden, damit das Skript voll startet (Wiederaufnahme über G.resume)
+  let reloginWatch = null;
+  function watchRelogin() {
+    if (reloginWatch) return;
+    reloginWatch = setInterval(() => {
+      if (pageKind() !== 'normal') return;
+      clearInterval(reloginWatch); reloginWatch = null;
+      const t = document.getElementById('vaf-toast'); if (t) t.remove();
+      setTimeout(() => location.reload(), 300);
+    }, 1000);
+  }
   // Login-Seite: "Angemeldet bleiben" einschalten, bei ausgefüllten Feldern einmal "Anmelden" klicken
   async function handleLoginPage() {
     await sleep(1500);                                   // dem Browser Zeit für das automatische Ausfüllen geben
@@ -6333,7 +6429,13 @@
       if (b) { b.style.boxShadow = '0 0 0 4px #ffc21a'; b.scrollIntoView({ block: 'center' }); }
     };
 
+    // der Browser füllt die Felder manchmal erst später aus → bis zu 20 s warten
     if (!filled(user) || !filled(pass)) {
+      specialPanel('Login', 'Warte auf die gespeicherten Anmeldedaten des Browsers …');
+      await waitFor(() => filled(document.querySelector('input#username')) && filled(document.querySelector('input#password')), 20000);
+    }
+    if (!filled(document.querySelector('input#username')) || !filled(document.querySelector('input#password'))) {
+      if (!document.querySelector('input#password')) return;            // inzwischen angemeldet
       specialPanel('Nicht eingeloggt', 'Nicht eingeloggt – bitte anmelden.<br>Danach geht es automatisch weiter.');
       mark();
       return;
@@ -6869,6 +6971,46 @@
     }
     return { text: out.join(''), missing: uniq(missing) };
   }
+  // Kürzel (poppen und JOYclub) → Unicode-Smileys, für Kommentare und Beiträge (dort zeigt poppen Kürzel nur als Text).
+  // Nur ganze Kürzel: Kürzel mit Buchstabe/Ziffer am Rand dürfen nicht an Buchstaben/Ziffern hängen; „12:30“ bleibt;
+  // Links bleiben unangetastet.
+  let smUniToks = null;
+  function smileysToUnicode(text) {
+    const s = String(text || '');
+    if (!s) return s;
+    const toks = smUniToks || (smUniToks = [...new Set([...SM.joyTokens, ...SM.poppenTokens])].filter(Boolean).sort((a, b) => b.length - a.length));
+    const an = (c) => !!c && /[\p{L}\p{N}]/u.test(c);
+    const uni = (tk) => {
+      let p = SM.poppenToUnicode[tk] != null ? tk : SM.joyToPoppen[tk];
+      if (p == null) return null;
+      const u = SM.poppenToUnicode[p];
+      return u != null ? u : (emojiRe.test(p) ? p : null);
+    };
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+      if (/^(https?:\/\/|www\.)/i.test(s.slice(i))) { const m = s.slice(i).match(/^\S+/); out.push(m[0]); i += m[0].length; continue; }
+      let done = false;
+      for (const tk of toks) {
+        if (!s.startsWith(tk, i)) continue;
+        const prev = i ? s[i - 1] : '', next = s[i + tk.length] || '';
+        if (an(tk[0]) && an(prev)) continue;
+        if (an(tk[tk.length - 1]) && an(next)) continue;
+        if (tk[0] === ':' && /\d/.test(prev) && /\d/.test(tk[1] || '')) continue;      // Uhrzeit
+        const u = uni(tk); if (u == null) continue;
+        out.push(u); i += tk.length; done = true; break;
+      }
+      if (!done) { out.push(s[i]); i++; }
+    }
+    return out.join('');
+  }
+  // Kommentare und Gruppen-Beiträge: Kürzel vor dem Absenden in Unicode umwandeln
+  rewritePageRequest((method, path, b) => {
+    if (method !== 'POST' || !b || typeof b.content !== 'string') return null;
+    if (!/^(v2\/comment\/add|group-feed\/status-update\/add)$/.test(path)) return null;
+    const c = smileysToUnicode(b.content);
+    return c !== b.content ? { ...b, content: c } : null;
+  });
   // Codes/Emojis entfernen → Vergleichstext (Abschnitt 4.3)
   function stripSmileys(text) {
     let s = String(text || '');
@@ -7189,6 +7331,8 @@
   let bkApplying = false;              // während des Anwendens eingegangener Daten nicht zurücksenden
   const bkOut = () => G.get('bk_out', { nextSeq: 1, items: [] });
   function bkSend(kind, data) {
+    return;                                            // 2.38: alter Postfach-Abgleich abgeschaltet
+    // eslint-disable-next-line no-unreachable
     if (BK_MODE !== 'poppen' || bkApplying) return;
     const o = bkOut();
     o.items.push({ seq: o.nextSeq, ts: now(), kind, data });
@@ -7503,19 +7647,12 @@
   }
 
   // ---------- Verdrahtung ----------
+  // 2.38: Der alte Postfach-Abgleich mit dem JOYclub-Skript entfällt (JOYclub 1.96 nutzt die gemeinsame Ablage
+  // „opa-gemeinsam“ und füllt das Postfach nicht mehr). Es bleiben nur der Rahmen und der Papierkorb.
   function bkStartPoppen() {
     bkEmbed();
-    setInterval(bkApplyInbox, 3000);
-    setInterval(bkTrimOut, 7000);
-    try { GM_addValueChangeListener('vaf2_bk_in', () => bkApplyInbox().catch(() => {})); } catch {}
     tplPurgeTrash();
-    // erster Kontakt / Speicher zurückgesetzt → Vollabgleich
-    setTimeout(async () => {
-      const acked = G.get('bk_out_acked', 0) || 0, nextSeq = bkOut().nextSeq;
-      if (!G.get('bk_full_sent', 0) || acked >= nextSeq) { bkSend('full', await bkFullData()); G.set('bk_full_sent', now()); }
-    }, 8000);
-    // Funktionstest beim Start und täglich
-    setTimeout(() => { if (now() - G.get('bk_test_at', 0) > DAY) { G.set('bk_test_at', now()); bkTest().catch(() => {}); } }, 12000);
+    for (const k of ['bk_out', 'bk_in', 'bk_out_acked', 'bk_full_sent', 'bk_test', 'bk_test_at']) { try { G.del(k); } catch {} }
   }
 
   // =====================================================================================
@@ -8548,7 +8685,7 @@
     const used = new Set(grUsedFields(cms, g, rules));
     const uid = String(pr.uid || '');
     if (used.has('single')) pr.single = (pr.relCats || []).length === 0;
-    if (used.has('fickliste') && uid) { const p = await Fick.get(Fick.idOf(uid)).catch(() => null); pr.fickArr = [p && p.status != null ? String(p.status) : '0']; }
+    if (used.has('fickliste') && uid) { const p = await Fick.byUid(uid).catch(() => null); pr.fickArr = [p && p.status != null ? String(p.status) : '0']; }
     if (used.has('whitelist')) { const m = uid ? await Members.get(uid) : null; pr.white = !!whiteReason(m, pr.nick); }
     if (used.has('ignoriert') && uid) pr.ign = (await grMyIgnore()).has(uid);
     if (used.has('ignoriert_mich') && uid) pr.ignByHim = (await grByHim()).has(uid);
@@ -9587,7 +9724,7 @@
     for (const m of list) {
       const t = typeCode(m.g); if (!f.g.includes(t)) continue;
       const ages = xxlAge(m); if (ages.length && !ages.some((a) => a >= f.age[0] && (f.age[1] >= 99 || a <= f.age[1]))) continue;
-      if (f.radius > 0) { if (m.dist && m.dist.km > f.radius) continue; }
+      if (f.radius > 0) { if (!m.dist || !isFinite(m.dist.km)) { out.noDist = (out.noDist || 0) + 1; continue; } if (m.dist.km > f.radius) continue; }
       if (f.pics && isPlaceholderAvatar(m.avatar)) continue;
       if (f.online && !(m.lastLogin && now() - m.lastLogin < 15 * 60000)) continue;
       if (f.verified && m.fake !== 'done') continue;
@@ -9601,7 +9738,7 @@
       }
       if (f.msgok) { const r = msgOf(m); if (r && !r.ok) continue; if (!r) MsgQ.want(m.uid, m.nick); }
       if (f.lf.length && !(m.lf || []).some((c) => f.lf.includes(String(c)))) continue;
-      if (f.rel && m.rel && Array.isArray(m.rel.cats)) { const single = !m.rel.cats.length; if ((f.rel === 'single') !== single) continue; }
+      if (f.rel && m.rel) { const single = Array.isArray(m.rel.cats) ? !m.rel.cats.length : typeof m.rel.single === 'boolean' ? m.rel.single : null; if (single !== null && (f.rel === 'single') !== single) continue; }
       const tr = m.tr || {};
       if (f.zod && !(tr.zodiac || []).map(String).includes(f.zod)) continue;
       if (f.smoker && !(tr.smoker || []).map(String).includes(f.smoker)) continue;
@@ -9668,6 +9805,7 @@
       .vaf-xxl .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;width:100%}
       .vaf-xxl .card{background:#1f1f1f;border-radius:16px;overflow:hidden;color:#e8e8e8;text-decoration:none;display:flex;flex-direction:column}
       .vaf-xxl .card .pic{aspect-ratio:1/1;background:#2a2a2a center/cover no-repeat;position:relative;display:flex;align-items:center;justify-content:center;font-size:42px;color:#555}
+      .vaf-xxl .card .pic .ini{font-style:normal}
       .vaf-xxl .card .bd{position:absolute;left:8px;top:8px;border-radius:6px;padding:2px 7px;font-size:12px;font-weight:700;color:#fff}
       .vaf-xxl .card .tx{padding:10px 12px}.vaf-xxl .card b{display:block;color:#fff;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .vaf-xxl .card span{color:#a6a6a6;font-size:13px}
@@ -9676,6 +9814,48 @@
     document.head.appendChild(st);
   }
   const xxlRadiusFmt = (r) => (r ? r + ' km' : 'Weltweit');
+  // Profilbilder: gespeicherte Kopie zuerst; fehlt sie, mit gültiger Adresse kopieren, sonst (abgelaufen/fehlend) die
+  // Adresse gedrosselt über messenger/group/item/p2p auffrischen (kein Profilbesuch) – sichtbare Karten zuerst.
+  const XxlPics = (() => {
+    const q = [], inq = new Set();
+    let busy = false, io = null;
+    async function fill(card) {
+      const uid = card.dataset.uid, pic = card.querySelector('.pic');
+      if (!pic || pic.dataset.vafImg) return true;
+      const data = await Images.get(uid).catch(() => '');
+      if (data) { pic.style.backgroundImage = `url('${data}')`; pic.dataset.vafImg = '1'; const i = pic.querySelector('.ini'); if (i) i.remove(); return true; }
+      return false;
+    }
+    async function one(uid) {
+      const m = await Members.get(uid).catch(() => null);
+      if (!m) return;
+      let url = m.avatar;
+      if (!url || isPlaceholderAvatar(url) || avatarExpired(url)) {
+        if (m.avTry && now() - m.avTry < 3 * DAY) return;
+        await Members.update(uid, (x) => { x.avTry = now(); });
+        if (!(await Resolver.ensureTested().catch(() => false))) return;
+        const d = await Resolver.raw(uid).catch(() => null);
+        const gd = d && d.group_data;
+        if (!gd || String(gd.uid) !== String(uid) || !gd.avatar || isPlaceholderAvatar(gd.avatar)) return;
+        await seen({ uid: String(uid), nickname: gd.nickname || m.nick, gender: gd.gender, age: gd.age, avatar: gd.avatar, payclass: gd.payclass }, 'ID-Auflösung', { images: false }).catch(() => {});
+        url = gd.avatar;
+      }
+      if (url && !avatarExpired(url)) Images.want(uid, url);
+    }
+    async function pump() {
+      if (busy) return; busy = true;
+      try { while (q.length) { const uid = q.shift(); inq.delete(uid); try { await one(uid); } catch {} } } finally { busy = false; }
+    }
+    function want(uid, front) { if (inq.has(uid)) { if (front) { q.splice(q.indexOf(uid), 1); q.unshift(uid); } return; } inq.add(uid); front ? q.unshift(uid) : q.push(uid); pump(); }
+    Bus.on('img', (uid) => { for (const c of document.querySelectorAll(`.vaf-xxl .card[data-uid="${uid}"]`)) fill(c); });
+    return {
+      async scan(grid) {
+        if (!io) io = new IntersectionObserver((ents) => { for (const e of ents) if (e.isIntersecting) { io.unobserve(e.target); fill(e.target).then((ok) => { if (!ok) want(e.target.dataset.uid, true); }); } }, { rootMargin: '300px' });
+        for (const c of grid.querySelectorAll('.card[data-uid]')) io.observe(c);
+      },
+    };
+  })();
+  const xxlPicsFor = (grid) => { try { XxlPics.scan(grid); } catch (e) { warn('XXL-Bilder', e); } };
   async function xxlRender(view, fbox) {
     let f = xxlF();
     const save = () => { G.set('xxl_filter', f); };
@@ -9686,15 +9866,18 @@
     const draw = () => {
       for (const old of view.querySelectorAll('.more')) old.remove();
       const rows = xxlFilter(list, f);
-      sorts.innerHTML = XXL_SORTS.map(([k, n]) => `<span class="chip${f.sort === k ? ' on' : ''}" data-sort="${k}">${esc(n)}</span>`).join('') + `<span class="cnt">${fmtN(rows.length)} Treffer</span>`;
+      sorts.innerHTML = XXL_SORTS.map(([k, n]) => `<span class="chip${f.sort === k ? ' on' : ''}" data-sort="${k}">${esc(n)}</span>`).join('') + `<span class="cnt">${fmtN(rows.length)} Treffer</span>` +
+        (rows.noDist ? `<span class="cnt" title="poppen hat bei der Sichtung keine Entfernung angezeigt – mit gesetztem Radius lässt sich nicht prüfen, ob sie im Umkreis liegen.">${fmtN(rows.noDist)} ohne bekannte Entfernung ausgeblendet</span>` : '');
       sorts.querySelectorAll('[data-sort]').forEach((c) => c.addEventListener('click', () => { f.sort = c.dataset.sort; save(); shown = 120; draw(); }));
       grid.innerHTML = rows.slice(0, shown).map(({ m, bi, ages }) => {
         const st = bi ? mopStage(bi.lo) : -1;
         const badge = bi ? `<span class="bd" style="background:${MOP_COLORS[Math.max(0, st)]}" title="${esc(`${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg${bi.pair ? ' (einer von beiden)' : ''}`)}">${esc(mopLabel(Math.max(0, st)))} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}</span>` : '<span class="bd" style="background:#555">BMI unklar</span>';
-        const pic = !isPlaceholderAvatar(m.avatar) ? ` style="background-image:url('${esc(m.avatar)}')"` : '';
+        const live = m.avatar && !isPlaceholderAvatar(m.avatar) && !avatarExpired(m.avatar);
+        const pic = live && !m.img ? ` style="background-image:url('${esc(m.avatar)}')"` : '';
         const meta = [(m.g || []).map((c) => TYPE_NAMES[c] || c).join(' & ') || '', ages.length ? ages.join('/') + ' Jahre' : '', m.dist ? Math.round(m.dist.km) + ' km' : (m.city || '')].filter(Boolean).join(' · ');
-        return `<a class="card" href="${esc(pathOfName(m.nick))}"><div class="pic"${pic}>${pic ? '' : esc((m.nick || '?')[0].toUpperCase())}${badge}</div><div class="tx"><b>${esc(m.nick)}</b><span>${esc(meta)}</span></div></a>`;
+        return `<a class="card" data-uid="${esc(m.uid)}" href="${esc(pathOfName(m.nick))}"><div class="pic"${pic}>${pic || m.img ? '' : `<i class="ini">${esc((m.nick || '?')[0].toUpperCase())}</i>`}${badge}</div><div class="tx"><b>${esc(m.nick)}</b><span>${esc(meta)}</span></div></a>`;
       }).join('') || `<div style="color:#a6a6a6">Keine Treffer. Die ${esc(xxlName())}-Suche im Opa-Scan füllt diese Liste.</div>`;
+      xxlPicsFor(grid);
       if (rows.length > shown) { const b = document.createElement('button'); b.type = 'button'; b.className = 'vaf-btn more'; b.textContent = `Weitere ${fmtN(Math.min(120, rows.length - shown))} anzeigen`; b.addEventListener('click', () => { shown += 120; draw(); }); grid.after(b); }
     };
     const upd = () => { save(); shown = 120; draw(); };
@@ -10277,7 +10460,7 @@
     if (!foreign.status && foreign.meets.length) foreign.status = 'done';      // H: ohne Status, aber mit Treffen
     if (!foreign.status || foreign.status === 'no') return 0;                    // G: „Nein, danke!“ → nichts
     const E = account.nick || ('Profil ' + account.uid);
-    let own = await Fick.adopt(account.uid, account.nick).catch(() => null) || await Fick.get(Fick.idOf(account.uid));
+    let own = await Fick.adopt(account.uid, account.nick).catch(() => null) || await Fick.byUid(account.uid);
     if (!own) own = await Fick.forMember(account.uid, account.nick);
     const S0 = own.status || null;
     const terms = fiTerms(tpls);
@@ -10785,14 +10968,20 @@
     setInterval(evilTick, 5 * 60000);
     // Oberfläche aktuell halten (die Seite baut Teile laufend neu auf)
     let t = null;
-    new MutationObserver(() => { clearTimeout(t); t = setTimeout(ensureUi, 250); }).observe(document.body, { childList: true, subtree: true });
+    // entprellt, aber spätestens jede Sekunde (unruhige Seiten dürfen die Ergänzungen nicht aushungern)
+    let lastUi = 0;
+    const runUi = () => { lastUi = now(); ensureUi(); };
+    new MutationObserver(() => {
+      clearTimeout(t);
+      if (now() - lastUi > 1000) runUi(); else t = setTimeout(runUi, 250);
+    }).observe(document.body, { childList: true, subtree: true });
     W.addEventListener('hashchange', ensureUi);
     let last = location.pathname + location.hash;
     setInterval(() => { const cur = location.pathname + location.hash; if (cur !== last) { last = cur; ensureUi(); checkReblock().catch(() => {}); } }, 500);
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, readTermFile, termShare, feedMark, sharedOwnerCheck, awoCalc, awoStage, awoBadges, chatSend, insertIntoChat, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, readTermFile, termShare, feedMark, sharedOwnerCheck, awoCalc, awoStage, awoBadges, chatSend, insertIntoChat, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, smileysToUnicode, avatarExpired, ingestBlocklist, XxlPics };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

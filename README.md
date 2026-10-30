@@ -126,12 +126,13 @@ Die Daten in einem Browser-Profil gehören genau **einem poppen-Konto**. Beim er
 
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
 
-- Titel mit Versionsnummer. Kopfzeile: derzeit blockiert, Warteliste, nach Anwenden der neuen Einstellungen (derzeit blockiert − fallen weg + kommen dazu, aus dem Gedächtnis berechnet), Warteliste. Damit die Zahl stimmt, liest das Skript nach jedem Update und danach wöchentlich die Blockierliste still ins Gedächtnis ein (ohne etwas zu ändern).
+- **Anmeldung:** Auf der Anmeldeseite wartet das Skript bis zu 20 Sekunden auf die vom Browser gespeicherten Anmeldedaten; nach erfolgter Anmeldung lädt die Seite neu.
+- Titel mit Versionsnummer. Kopfzeile: „Derzeit blockiert: n (Blockierliste + Warteliste) / Höchstzahl“ und „Nach Anwenden der neuen Einstellungen“ (derzeit blockiert − fallen weg + kommen dazu, aus dem Gedächtnis berechnet). Damit die Zahl stimmt, gleicht das Skript die Blockierliste still mit dem Gedächtnis ab, ohne etwas zu ändern: beim ersten Mal und monatlich vollständig, sonst täglich bzw. nach einem Update nur die neuesten Einträge. Währenddessen steht dort der Fortschritt („Blockierliste wird eingelesen: n von x (… %)“).
 - Je Gruppe: Schalter „Visuelle Einstufung“/„Ignorieren aktiv“, darunter „Grenzen altern mit mir“, Grenzen (eine Zeile „Global“ bzw. je Quelle mit „Werte der ersten Zeile übernehmen“), Bezeichnungen (oben Einzahl, unten Mehrzahl), Profiltypen; bei Paaren Paar-Regel, getrenntes Alter (je eine Zeile für Frau und Mann), Sugar Daddy/Mom.
 - Allgemein: Warnalter, Whitelist (mit Gruppen), automatische Whitelist (nur lesbar).
 - Gruppen: verwaltete Gruppen mit Schalter „Mitglieder whitelisten“, übrige Gruppen mit Haken für den Gruppen-Scan.
 - Automatik, automatische Anmeldung, Wartungsseite. Die Regeln für Gruppenanfragen stehen im Regel-Editor der jeweiligen Gruppe (Anfragen- bzw. Bearbeiten-Seite).
-- **Experten-Einstellungen** (immer zugeklappt): Debug, Testlauf, Obergrenze erster Scan, Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000), Rangfolge der Quellen (untereinander, mit ▲▼), **Gemeinsame Grenzen für alle Quellen**, Pause zwischen Sperren, Messdauer der Figur, Schonfrist, API-Rekorder, **ID-Auflösung** (Selbsttest), **Kontobindung**, Datensicherung, Gedächtnis-Export/-Import, Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren).
+- **Experten-Einstellungen** (immer zugeklappt): **Gemeinsame Grenzen für alle Quellen**, Rangfolge der Quellen (untereinander, mit ▲▼), API-Rekorder, **Kontobindung**, Datensicherung, **Gedächtnis** (Wissen über andere Mitglieder, Fickliste & Textvorlagen: Export/Import), Warteliste (Anzeigen, **Jetzt abarbeiten**, Leeren), am Ende Debug, Testlauf, Obergrenze erster Scan und Höchstzahl der Einträge auf der Blockierliste (Standard 10.000.000). Feste Werte im Skript: Pause zwischen Sperren 1–3 s, Messung gültig 90 Tage (unbekannt 30), Schonfrist 30 Tage.
 - Wer die Seite mit ungespeicherten Änderungen verlässt, wird gefragt.
 - **Regeln geändert:** Beim Speichern zeigt ein Popup, wie viele Sperren wegfallen oder dazukommen und wie viele Notizen abweichen: speichern und anwenden, nur entsperren, nur sperren, nur speichern oder verwerfen.
 
@@ -141,7 +142,7 @@ Beim Öffnen passiert nichts automatisch. Unter „Benutzer hinzufügen“ stehe
 
 | Button | Wirkung |
 |---|---|
-| **Reparieren** | liest die ganze Liste über die Schnittstelle; nicht mehr Blockierte fallen aus dem Gedächtnis, Einträge mit Opa-Notiz werden übernommen, fehlende Notizen ergänzt |
+| **Reparieren** | liest die ganze Liste über die Schnittstelle; nicht mehr Blockierte fallen aus dem Gedächtnis, Einträge mit Opa-Notiz werden übernommen, alle Notizen abgeglichen (auch von Hand geänderte und die von Hand Blockierter), fehlende Notizen ergänzt; ersetzt das monatliche vollständige Einlesen |
 | **Synchronisieren – poppen.de hat Vorrang** | übernimmt Einträge mit Opa-Notiz samt Quelle (unbekannte Quelle → „Sync“); im Skript Blockierte, die auf poppen.de fehlen, gelten als entsperrt |
 | **Synchronisieren – Script hat Vorrang** | blockiert im Skript Blockierte neu und entsperrt Einträge mit Opa-Notiz, die das Skript nicht (mehr) blockieren würde – nach einer Rückfrage mit Zahlen |
 | Notizen abgleichen (Haken) | passt Opa-Notizen an die aktuelle Vorlage an |
@@ -215,7 +216,9 @@ Inhalt: { format:'fickliste', version:1, platform, exported, persons:[
 
 ## Gruppen-Newsfeed
 
-Auf `/groups/feed` bekommt jeder Beitrag einen **Rahmen in der Farbe seines Verfassers** (grün, orange, rot, weiß …); in der Zeile unter dem Gruppennamen steht nach dem Nick die Einstufung mit Alter, bei „Moppel-Liebhaber“ auch die Figur-Stufe („Üppig · BMI 41“). Kommentierende bekommen die Einstufung hinter dem Nick. Das Gruppenbild bleibt unverändert. Verfasser (`feed/groups`, nicht der Gruppenbesitzer) und Kommentierende (`v2/comment/list`) kommen nebenbei ins Gedächtnis (Quelle Gruppen).
+Auf `/groups/feed` bekommt jeder Beitrag einen **Rahmen in der Farbe seines Verfassers** (grün, orange, rot, weiß …); in der Zeile unter dem Gruppennamen steht nach dem Nick die Einstufung mit Alter, bei „Moppel-Liebhaber“ auch die Figur-Stufe („Üppig · BMI 41“). Kommentierende bekommen die Einstufung hinter dem Nick. Das Gruppenbild bleibt unverändert. Verfasser (`feed/groups`, nicht der Gruppenbesitzer) und Kommentierende (`v2/comment/list`) kommen nebenbei ins Gedächtnis (Quelle Gruppen), mit Fakecheck-Stand und Single-Status.
+
+**Smileys:** In Kommentaren und Beiträgen zeigt poppen Kürzel nur als Text. Das Skript wandelt sie beim Absenden (`v2/comment/add`, `group-feed/status-update/add`) in Unicode-Smileys um: poppen-Kürzel („:D“ → 😃, „;)“ → 😉) und JOYclub-Kürzel („*kuss*“ → 💋). Nur ganze Kürzel; Uhrzeiten wie „12:30“ und Links bleiben unverändert.
 
 ## Messenger: Termine
 
@@ -258,7 +261,7 @@ Bei Paaren lassen sich „Paar (Frau)“ und „Paar (Mann)“ getrennt anhaken;
 
 - **XXL-Suche** (letzte Quelle im Opa-Scan; beim ersten Öffnen an, wenn „Moppel-Liebhaber“ an ist): je ausgewähltem Profiltyp von 18 bis unter die Ignorier-Grenze, im eingestellten Radius (75 km = Suche mit 100 km, Rest verworfen), Figur „Plus-size“, vermessen über die Suchfilter (siehe oben, grob 2 Suchabfragen je Person). Paare: Größe/Gewicht gehören zu einem der beiden (angezeigt als „einer von beiden“). BMI, Figur-Angabe, Entfernung, Anmeldedatum u. a. kommen ins Gedächtnis.
 - **Menüpunkt unter „Entdecken“** nach „Popsters“, benannt nach der Mehrzahl der höchsten Stufe (Standard „XXL“), mit Frau- bzw. Mann-Symbol je nach eigener Suche.
-- **Seite** (`/search/member#xxl`) wie die Mitgliedersuche, aber aus dem Gedächtnis (ab „Plus-Size“). poppens eigene Suche wird auf dieser Seite unterdrückt (keine echte Suche, deine gespeicherten Suchfilter bleiben unverändert); der Menüpunkt ist hervorgehoben. Die Filter ersetzen poppens Suchfilter in der linken Leiste, im poppen-Design (Klapplisten, Schieberegler, Kästchen): Geschlecht, Alter, Radius, mit Bildern, jetzt online, nur verifiziert, Figur (Plus-Size + eigene Stufen), „auch unklarer BMI“, „nur anschreibbare“ (ungeprüfte bleiben und werden im Hintergrund geprüft), Suche nach, Beziehungsstatus (aus selbst geöffneten Profilen, unbekannt bleibt drin), Sternzeichen, Raucher, Sexualität, Größe 130–220, Gewicht 0–300. Die Ergebnisse nutzen die ganze restliche Breite. Sortierung: Entfernung, BMI (Standard), Alter, letzter Login, Anmeldedatum. Neue Messungen aus einem Scan in einem anderen Tab erscheinen von selbst.
+- **Seite** (`/search/member#xxl`) wie die Mitgliedersuche, aber aus dem Gedächtnis (ab „Plus-Size“). poppens eigene Suche wird auf dieser Seite unterdrückt (keine echte Suche, deine gespeicherten Suchfilter bleiben unverändert); der Menüpunkt ist hervorgehoben. Die Filter ersetzen poppens Suchfilter in der linken Leiste, im poppen-Design (Klapplisten, Schieberegler, Kästchen): Geschlecht, Alter, Radius, mit Bildern, jetzt online, nur verifiziert, Figur (Plus-Size + eigene Stufen), „auch unklarer BMI“, „nur anschreibbare“ (ungeprüfte bleiben und werden im Hintergrund geprüft), Suche nach, Beziehungsstatus (aus selbst geöffneten Profilen, unbekannt bleibt drin), Sternzeichen, Raucher, Sexualität, Größe 130–220, Gewicht 0–300. Die Ergebnisse nutzen die ganze restliche Breite. Sortierung: Entfernung, BMI (Standard), Alter, letzter Login, Anmeldedatum. Neue Messungen aus einem Scan in einem anderen Tab erscheinen von selbst. Mit gesetztem Radius fallen Mitglieder ohne bekannte Entfernung heraus; ein Hinweis nennt ihre Zahl. Profilbilder kommen aus der gespeicherten Kopie. poppens Bildadressen laufen nach einigen Tagen ab; bei abgelaufener oder fehlender Adresse holt das Skript gedrosselt eine neue (`messenger/group/item/p2p`, kein Profilbesuch, höchstens alle 3 Tage je Mitglied) und speichert eine Kopie. Sichtbare Karten kommen zuerst.
 
 ### Anschreibbar
 
@@ -297,18 +300,15 @@ Schneidet die Abfragen der Seite an `/v2-api/` mit (nur neue Muster, je zwei Bei
 
 ---
 
-## Abgleich mit JOYclub (Briefkasten)
+## Abgleich mit JOYclub (gemeinsame Ablage)
 
-Fickliste und Textvorlagen gleichen sich automatisch mit dem [JOYclub-Skript](https://github.com/Schimmelreiter/joyclub-opa-scan) ab, ohne Export/Import von Hand.
+Das Skript teilt Fickliste, Textvorlagen und Termin-Datei mit dem [JOYclub-Skript](https://github.com/Schimmelreiter/joyclub-opa-scan) (ab 1.96) über eine gemeinsame Ablage, ohne Export/Import von Hand.
 
-- Beide Skripte betten eine leere, neutrale Seite (GitHub Pages: `schimmelreiter.github.io/joyclub-opa-scan/briefkasten.html`) unsichtbar ein und tauschen über deren lokalen Speicher aus. Der Seiten-Code von poppen.de und JOYclub kommt nicht heran.
-- Auf **joyclub.de** läuft das Skript nur passiv (nur der Briefkasten, keine Oberfläche, keine Eingriffe). Volle Funktion nur auf poppen.de.
-- Geändertes wird sofort gesendet; Eingänge für die Fickliste übernimmt das Skript, sobald ein poppen.de-Tab offen ist.
-- **Abgleich je Feld** über einen gemerkten Stand (Dreiwege): gleich → nichts; nur eine Seite geändert → übernehmen; beide geändert → Mischregeln, sonst Rückfrage. Gelöschte Textvorlagen liegen 30 Tage im **Papierkorb**.
-- Smileys werden dabei zwischen den Plattformen übersetzt.
-- Status unter *Opa-Schutz → Experten-Einstellungen → „Abgleich mit JOYclub“* (zuletzt geprüft, letzter Abgleich). Blockiert eine Sicherheitsrichtlinie oder ein Werbeblocker den Briefkasten, bleiben Export/Import von Hand der Weg.
-
-**Einrichtung:** Das JOYclub-Repo braucht die Datei `briefkasten.html` (leer) und eine leere `.nojekyll`, mit eingeschalteten GitHub Pages. Ohne diese Seite findet kein automatischer Abgleich statt.
+- Beide Skripte betten eine leere, neutrale Seite (GitHub Pages, `opa-gemeinsam`) unsichtbar ein und lesen und schreiben deren lokalen Speicher. Der Seiten-Code von poppen.de und JOYclub kommt nicht heran. Das Format steht in [FORMAT.md](FORMAT.md).
+- Jeder Eintrag ist versioniert; gleichzeitiges Schreiben wird gemischt oder landet im Papierkorb (Textvorlagen 30 Tage).
+- Das JOYclub-Skript macht beim Speichern sein Profil zum Hauptprofil; das poppen-Profil steht dann unter „Auch auf …“. Das poppen-Skript findet solche Personen trotzdem und baut sie nicht um.
+- Smileys werden zwischen den Plattformen übersetzt.
+- Der frühere Austausch per Nachricht über den alten Briefkasten ist seit 2.38 abgeschaltet. Blockiert eine Sicherheitsrichtlinie oder ein Werbeblocker die Ablage, bleiben Export/Import von Hand der Weg.
 
 ## Lizenz
 

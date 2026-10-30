@@ -1,6 +1,17 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.38 (30.10.2026)
+- Smileys in Kommentaren und Gruppen-Beiträgen: Kürzel (poppen wie „:D“, „;)“ und JOYclub wie „*kuss*“) werden beim Absenden in Unicode-Smileys umgewandelt, weil poppen sie dort nur als Text zeigt. Nur ganze Kürzel; Uhrzeiten („12:30“) und Links bleiben unverändert
+- Fickliste: Personen, bei denen das JOYclub-Skript (ab 1.96) sein Profil zum Hauptprofil gemacht hat, werden über das poppen-Profil unter „Auch auf …“ gefunden. Das Skript baut solche Einträge nicht mehr zur poppen-Person um (vorher hätten sich beide Skripte hin und her umgebaut)
+- Alter Briefkasten-Austausch mit dem JOYclub-Skript abgeschaltet; beide Skripte nutzen nur noch die gemeinsame Ablage
+- Blockierliste einlesen: nur beim ersten Mal, nach einer Formatänderung und monatlich vollständig; sonst täglich bzw. nach einem Update nur die neuesten Einträge, bis bekannte kommen. Entfernte Einträge erkennt das Skript über die Nummernliste. Fortschritt in den Einstellungen („Blockierliste wird eingelesen: n von x (… %)“, danach „… verarbeitet“). „Reparieren“ gleicht zusätzlich alle Notizen ab, auch von Hand geänderte und die von Hand Blockierter
+- Einstellungen: Kopfzeile „Derzeit blockiert: n (Blockierliste + Warteliste) / Höchstzahl“. „Gemeinsame Grenzen“ steht oben in den Experten-Einstellungen; Debug, Testlauf, Obergrenze und Höchstzahl stehen am Ende. Entfallen sind die Zeilen Pause zwischen Sperren, Messung gültig, Schonfrist (feste Werte: 1–3 s, 90/30 Tage, 30 Tage), ID-Auflösung, Abgleich mit JOYclub und der AWO-Hinweis. „Gedächtnis“ heißt jetzt „Wissen über andere Mitglieder, Fickliste & Textvorlagen“
+- Anmeldung: Die Seite wartet bis zu 20 Sekunden auf die vom Browser gespeicherten Anmeldedaten. Nach der Anmeldung lädt die Seite neu, statt den Hinweis „Nicht eingeloggt“ stehen zu lassen
+- XXL-Seite: Ist ein Radius gesetzt, fallen Mitglieder ohne bekannte Entfernung heraus (mit Hinweis, wie viele). Profilbilder kommen aus der gespeicherten Kopie; fehlt sie, wird das Bild kopiert. Bei abgelaufener oder fehlender Bildadresse holt das Skript gedrosselt eine neue (ohne Profilbesuch), sichtbare Karten zuerst
+- Gedächtnis: Fakecheck-Stand und Single-Status aus Vorschauen (Feed, Kommentare, Likes) werden gemerkt; der XXL-Filter „Beziehungsstatus“ nutzt beides
+- Behoben: Auf /search-Seiten fehlten die Opa-Schutz-Einträge im Profilmenü. Die Figur-Plaketten wurden bei jeder Änderung der Seite neu geschrieben und hielten so die Menü-Ergänzung ab
+
 2.37 (30.10.2026)
 - Kontobindung der gemeinsamen Ablage jetzt auch für die Fickliste: Steht in den Textvorlagen ein `owner`, der nicht zu den eigenen „Ich“-Profilen gehört, schreibt das Skript weder Fickliste noch Textvorlagen (auch nicht beim Import, Umzug oder aus dem Rettungsanker) und meldet „Die gemeinsame Ablage gehört einem anderen Konto“
 

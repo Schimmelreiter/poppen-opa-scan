@@ -74,7 +74,7 @@ Eine Person je Eintrag. Alle Felder sind optional außer `id`.
 |---|---|
 | `status` | `null` · `"want"` (Will ich) · `"done"` (Gefickt) · `"no"` (Nein, danke!) · `"never"` (Nie wieder!) |
 | `statusAt` | Zeitpunkt der Statusänderung (ms) |
-| `main` | Hauptprofil `{ pf, uid, nick, url? }` (bei poppen: `uid` + `nick`; bei anderen Plattformen `url`) |
+| `main` | Hauptprofil `{ pf, uid, nick, url? }` (bei poppen: `uid` + `nick`; bei anderen Plattformen `url`). Jedes Skript darf sein Profil zum Hauptprofil machen; das poppen-Profil steht dann in `profiles[]` (`pf:"poppen"`, `uid`). Das poppen-Skript findet eine Person über die uid in `main` **oder** `profiles[]` und baut Hauptprofil und `id` nicht um (seit 2.38). |
 | `profiles[]` | weitere Profile („Auch auf …“), siehe unten |
 | `meets[]` | Treffen, siehe unten |
 | `notes`, `notesAt`, `notesBy` | Anmerkungen (bis 8000 Zeichen), Zeitpunkt, `{ pf, acc }` |
@@ -196,4 +196,4 @@ Smileys: 😁 = breit grinsend, 😳 = große, ungläubige Augen.
 ## Änderungsliste
 | schema | Änderung |
 |---|---|
-| 1 | erste Fassung (poppen 2.32); Ergänzungen 2.33: IDs `j:`, Plattform-Codes, `updatedBy`-Felder, Feldlisten, Fallliste des Imports; 2.34: Textvorlagen-Regelwerk (JOYclub-Schreibweise, `x:`-IDs, `pfIds`, `owner`, `base`/`hash` in der Sicherungsdatei), Kontobindung (keine Formatänderung) |
+| 1 | erste Fassung (poppen 2.32); Ergänzungen 2.33: IDs `j:`, Plattform-Codes, `updatedBy`-Felder, Feldlisten, Fallliste des Imports; 2.34: Textvorlagen-Regelwerk (JOYclub-Schreibweise, `x:`-IDs, `pfIds`, `owner`, `base`/`hash` in der Sicherungsdatei), Kontobindung (keine Formatänderung); 2.38: poppen-Profil darf unter `profiles[]` stehen, wenn ein anderes Skript `main` belegt (keine Formatänderung) |
