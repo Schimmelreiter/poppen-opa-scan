@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.36
+// @version      2.37
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.36';
+  const VERSION = '2.37';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -6395,7 +6395,7 @@
     // kleine Stores sofort, große gechunkt mit Yield (kein Einfrieren bei vielen Mitgliedern)
     const tt2 = toast('Stelle Daten wieder her …', 0);
     for (const st of ['kv', 'queue']) { await DB.clear(st); await DB.putMany(st, d.stores[st] || []); }
-    if (fick) { try { await BkRpc.call('putMany', { s: 'fick', list: fick.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || now() })) }, 60000); FickStore.invalidate(); } catch (e) { toast('Fickliste konnte nicht in den Briefkasten geschrieben werden: ' + esc(e.message)); } }
+    if (fick) { try { await assertSharedWrite(); await BkRpc.call('putMany', { s: 'fick', list: fick.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || now() })) }, 60000); FickStore.invalidate(); } catch (e) { toast('Fickliste konnte nicht in den Briefkasten geschrieben werden: ' + esc(e.message)); } }
     for (const st of ['members', 'images', 'archive']) {
       await DB.clear(st);
       const arr = d.stores[st] || [];
@@ -6518,7 +6518,7 @@
       try { persons = await decryptJSON(d.fick, d.account.nick); } catch (e) { warn('Fickliste der Datei nicht lesbar', e); }
       if (persons && sameProfile) {
         // eigene Sicherung: neuere Einträge gewinnen
-        try { await BkRpc.call('putMany', { s: 'fick', list: persons.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || 0 })) }, 60000); FickStore.invalidate(); fickNote = `<br>Fickliste: ${fmtN(persons.length)} Einträge abgeglichen.`; } catch (e) { fickNote = '<br>Fickliste: Briefkasten nicht erreichbar.'; }
+        try { await assertSharedWrite(); await BkRpc.call('putMany', { s: 'fick', list: persons.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || 0 })) }, 60000); FickStore.invalidate(); fickNote = `<br>Fickliste: ${fmtN(persons.length)} Einträge abgeglichen.`; } catch (e) { fickNote = `<br>Fickliste: ${esc(e.message || 'Briefkasten nicht erreichbar.')}`; }
       } else if (persons) {
         tt.innerHTML = `Gedächtnis gemischt: <b>${fmtN(neu)}</b> neu, <b>${fmtN(erg)}</b> ergänzt, <b>${fmtN(eig)}</b> unverändert.`;
         const n = await fickImportForeign(persons, d.account, d.templates).catch((e) => { warn('Fickliste-Import', e); return 0; });
@@ -9792,6 +9792,7 @@
       async put(p) {
         let c = await ensure();
         if (readOnly) throw new Error('Briefkasten nicht erreichbar – die Fickliste kann gerade nicht gespeichert werden.');
+        await assertSharedWrite();
         let v = clone(p); delete v.__fromBk;
         for (let attempt = 0; attempt < 4; attempt++) {
           c = cache || c;
@@ -9814,12 +9815,34 @@
       async del(id) {
         await ensure();
         if (readOnly) throw new Error('Briefkasten nicht erreichbar');
+        await assertSharedWrite();
         await BkRpc.call('del', { s: 'fick', k: id, by: by() });
         if (cache) cache.delete(id);
       },
       invalidate() { cache = null; },
     };
   })();
+
+  // ---------- Kontobindung der gemeinsamen Ablage (Regelwerk 3.4) ----------
+  //  Steht in tpl ein `owner` (ich-ID eines JOYclub-Kontos), der nicht unter den eigenen „Ich“-Profilen ist, gehört die
+  //  Ablage einem anderen Konto: dann weder in `tpl` noch in `fick` schreiben. Ergebnis 10 Minuten gemerkt.
+  const SHARED_BLOCK_MSG = 'Die gemeinsame Ablage gehört einem anderen Konto – Fickliste und Textvorlagen werden hier nicht geschrieben.';
+  async function sharedOwnerCheck(force = false, remoteTpl = null) {
+    if (!force && !remoteTpl && Owner.sharedAt && now() - Owner.sharedAt < 10 * 60000) return Owner.sharedOk !== false;
+    let remote = remoteTpl;
+    if (!remote) { try { remote = await BkRpc.call('all', { s: 'tpl' }, 20000); } catch { return Owner.sharedOk !== false; } }
+    const owners = [...new Set((remote || []).map((r) => r && r.owner).filter(Boolean))];
+    let ok = true;
+    if (owners.length) {
+      const ich = await ichList();
+      const ids = new Set(ich.map((i) => i.id || `${i.pf}:${i.uid}`));
+      ok = owners.every((o) => ids.has(o));
+    }
+    if (!ok && Owner.sharedOk !== false) warn(SHARED_BLOCK_MSG);
+    Owner.sharedOk = ok; Owner.sharedAt = now();
+    return ok;
+  }
+  async function assertSharedWrite() { if (!(await sharedOwnerCheck())) throw new Error(SHARED_BLOCK_MSG); }
 
   // ---------- Textvorlagen: Briefkasten = gemeinsamer Bestand, Tampermonkey-Speicher = Zwischenspeicher ----------
   // Textvorlagen in der gemeinsamen Ablage nach dem gemeinsamen Regelwerk (FORMAT.md, „Textvorlagen“):
@@ -9935,13 +9958,7 @@
       let remote;
       try { remote = await BkRpc.call('all', { s: 'tpl' }, 20000); } catch { return; }
       // Gehört die Ablage jemand anderem (owner nicht unter den eigenen „Ich“-Profilen)? → nur lesen
-      const owners = [...new Set((remote || []).map((r) => r && r.owner).filter(Boolean))];
-      if (owners.length) {
-        const ich = await ichList();
-        const ids = new Set(ich.map((i) => i.id || `${i.pf}:${i.uid}`));
-        Owner.sharedOk = owners.every((o) => ids.has(o));
-        if (!Owner.sharedOk) { warn('Gemeinsame Textvorlagen gehören einem anderen Konto – kein Abgleich'); return; }
-      } else Owner.sharedOk = true;
+      if (!(await sharedOwnerCheck(true, remote || []))) return;
       if (!Owner.mayWriteShared()) return;
       const R = this.remote();
       const local = getTpls();
@@ -10065,6 +10082,7 @@
   async function migrateFick232() {
     const list = await KV.get('mig232_fick', null);
     if (!list || !list.length) { const st = G.get('mig232', {}); G.set('mig232', { ...st, fickPending: false }); return; }
+    await assertSharedWrite();
     await BkRpc.call('putMany', { s: 'fick', list: list.map((p) => ({ ...p, updatedAt: p.updatedAt || p.updated || now() })) }, 60000);
     await KV.set('mig232_fick', null);
     const st = G.get('mig232', {}); G.set('mig232', { ...st, fickPending: false });
@@ -10143,7 +10161,7 @@
       const q = G.get('mir_q', ''); if (q) { const l = JSON.parse(await unGzB64(q)); for (const it of l) if (!(await DB.get('queue', it.uid))) await DB.put('queue', it); }
       const a = G.get('mir_arch', ''); if (a) await DB.putMany('archive', JSON.parse(await unGzB64(a)));
       const f = G.get('mir_fick', '');
-      if (f) { const l = JSON.parse(await unGzB64(f)); try { await BkRpc.call('putMany', { s: 'fick', list: l }, 60000); FickStore.invalidate(); } catch (e) { warn('Rettungsanker Fickliste', e); } }
+      if (f) { const l = JSON.parse(await unGzB64(f)); try { await assertSharedWrite(); await BkRpc.call('putMany', { s: 'fick', list: l }, 60000); FickStore.invalidate(); } catch (e) { warn('Rettungsanker Fickliste', e); } }
       Members.cached().clear();
       tt.textContent = `Wiederhergestellt: ${fmtN(n)} Mitglieder${f ? ' und die Fickliste' : ''}.`;
       setTimeout(() => tt.remove(), 8000);
@@ -10774,7 +10792,7 @@
     ensureUi();
     Bus.on('settings', () => { headerButton(); updateRecorderMenu(); });
     Bus.on('on', () => headerButton());
-    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, readTermFile, termShare, feedMark, awoCalc, awoStage, awoBadges, chatSend, insertIntoChat, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
+    if (S().expert.debug) W.__opaSchutz = { S, saveSettings, Members, Queue, Etappe, KV, DB, G, api, classify, Recorder, Fick, BL, Prio, G, refreshFriendsFavs, ingestUserInfo, getTpls, setTpls, openTemplates, translateSmileys, stripSmileys, tplImport, insertTemplate, bkMergeTemplate, bkMergePerson, tplTrash, tplRestore, BK_MODE, seen, judge, openScanPopup, openScanProgress, openScanOrProgress, Scan, grEval, grDecide, grConflict, grDNF, grSetRules, grRules, grUsedFields, grEditorUi, grReqExtraLine, grProbe, grMetaLine, GR_FIELDS, grOptions, scanVisitors, scanInteractions, scanGroups, scanGroupsWhite, scanGroupsBlack, groupLead, refreshEvilFromBlockers, syncEvilNames, buildEvilList, fillBlockers, privacyBlockersUi, friendsUi, discoverMenuLink, friendsProfileSection, scanSearch, scanVisitors, Me, loadMe, ageWithMe, shiftLimits, myAgeNow, projection, limitsOf, SearchGuard, searchAll, grNormRules, grMoveKid, grRuns, grMainGroups, grOpsFor, grField, GrDone, gaProcessGroup, gaSplitNote, gaRemovedNote, gaKick, Resolver, idresSelfTest, resolveMissing, profileStateUi, pstateNote, scanXxl, xxlLoad, xxlFilter, measureGrid, xxlPageOn, scanEvents, evtToFick, tplImportFile, tplExportForFile, HandleStore, readTermFile, termShare, feedMark, sharedOwnerCheck, awoCalc, awoStage, awoBadges, chatSend, insertIntoChat, tplMergeAdd, tplGaps, Owner, evtMeetFrom, evtWhite, autoWhite, pkSelect, pkSlider, blockPageApi, mopOptions, VisAuto, mopSeek, mopPick, bodyInfo, mopStage, msgOf, MsgQ, FickStore, BkRpc, Crypt, migrate232, mirrorRun, mirrorRestore, TplSync, ichList, bkServer, fickImportForeign, openOldDb, KV };
     log(`Version ${VERSION} bereit.`);
   }
   // Betriebsart (Briefkasten): nur auf poppen.de volle Funktion; auf joyclub.de passiv (nur Briefkasten einbetten);

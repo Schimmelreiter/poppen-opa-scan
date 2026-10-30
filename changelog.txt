@@ -1,6 +1,9 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.37 (30.10.2026)
+- Kontobindung der gemeinsamen Ablage jetzt auch für die Fickliste: Steht in den Textvorlagen ein `owner`, der nicht zu den eigenen „Ich“-Profilen gehört, schreibt das Skript weder Fickliste noch Textvorlagen (auch nicht beim Import, Umzug oder aus dem Rettungsanker) und meldet „Die gemeinsame Ablage gehört einem anderen Konto“
+
 2.36 (30.10.2026)
 - Termin-Datei für alle Skripte gemeinsam: Stand (Name, Änderungsdatum, roher Text mit allen vier Angaben) im Briefkasten; eine neuere Datei gewinnt, eine Datei mit anderem Namen nur nach Rückfrage „für alle wechseln?“; ohne eigene Datei oder ohne Leseerlaubnis gilt der Stand aus dem Briefkasten
 - Messenger: Klick auf einen Termin hängt ihn an den vorhandenen Text an (eigene Zeile, ohne Return) und sendet die Nachricht; kommt sie nicht durch, erscheint „Nicht gesendet“

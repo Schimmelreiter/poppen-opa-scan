@@ -144,7 +144,7 @@ Mit JOYclub-Skript im Browser-Profil ist der JOYclub-Server maßgeblich (Regeln 
 - Fremde Datei: Schalter „Auch Textvorlagen migrieren“ (Standard aus). Aus = Fall C (nie anfassen). An = Fall B: wie A, aber ohne Löschen; beim ersten Import nur neue Namen anlegen und gleiche Texte verknüpfen. „Termine“ einer fremden Datei wird nie übernommen (nur im Fickliste-Import angezeigt).
 - Danach ein Bericht je Vorlage: neu · übernommen · zusammengeführt · übersprungen (Grund) · gelöscht · Grenze von 100 erreicht.
 
-**Kontobindung (3.4):** Jedes Skript bindet seinen Tampermonkey-Speicher an genau ein Konto seiner Plattform (poppen: `vaf2_owner { uid, nick, seit }`). Ist ein anderes Konto angemeldet, bleibt das Skript komplett aus und schreibt weder in `fick` noch in `tpl`.
+**Kontobindung (3.4):** Jedes Skript bindet seinen Tampermonkey-Speicher an genau ein Konto seiner Plattform (poppen: `vaf2_owner { uid, nick, seit }`). Ist ein anderes Konto angemeldet, bleibt das Skript komplett aus und schreibt weder in `fick` noch in `tpl`. Steht in `tpl` ein `owner`, der nicht unter den eigenen `ich`-Einträgen ist, schreibt das Skript ebenfalls weder in `tpl` noch in `fick` (poppen ab 2.37).
 
 ### `arch`
 Reserviert für ein gemeinsames Profil-Archiv. Das poppen-Skript führt sein Archiv derzeit verschlüsselt lokal.

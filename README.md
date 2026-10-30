@@ -122,7 +122,7 @@ Geblockt wird über `ignore/add`, die Notiz über `ignore/comment/add`. Die Noti
 
 ### Kontobindung
 
-Die Daten in einem Browser-Profil gehören genau **einem poppen-Konto**. Beim ersten Start mit vorhandenen Daten fragt das Skript einmal: „Gehören die vorhandenen Opa-Schutz-Daten zu <Nick>?“ Ist ein anderes Konto angemeldet (z. B. versehentlich im falschen Browser-Profil), bleibt das Skript **komplett aus** – keine Scans, kein Schreiben, kein Briefkasten – und zeigt nur einen roten Hinweis. Übergeben lassen sich die Daten nur bewusst: Experten-Einstellungen › **Kontobindung** › „Daten an anderes Konto übergeben“ (das nächste andere Konto wird innerhalb von 7 Tagen gefragt). „Wiederherstellen“ lehnt Sicherungen eines anderen Kontos ab.
+Die Daten in einem Browser-Profil gehören genau **einem poppen-Konto**. Beim ersten Start mit vorhandenen Daten fragt das Skript einmal: „Gehören die vorhandenen Opa-Schutz-Daten zu <Nick>?“ Ist ein anderes Konto angemeldet (z. B. versehentlich im falschen Browser-Profil), bleibt das Skript **komplett aus** – keine Scans, kein Schreiben, kein Briefkasten – und zeigt nur einen roten Hinweis. Übergeben lassen sich die Daten nur bewusst: Experten-Einstellungen › **Kontobindung** › „Daten an anderes Konto übergeben“ (das nächste andere Konto wird innerhalb von 7 Tagen gefragt). „Wiederherstellen“ lehnt Sicherungen eines anderen Kontos ab. Gehört die gemeinsame Ablage laut `owner` einem anderen Konto, schreibt das Skript weder Fickliste noch Textvorlagen.
 
 ### Seite „Opa-Schutz“ (`/setting/profile#opa-schutz`)
 
