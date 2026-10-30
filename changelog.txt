@@ -1,6 +1,9 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.39 (30.10.2026)
+- Einstellungen, Karten Männer/Frauen/Paare: Einstellungen, die gerade nichts bewirken, werden ausgeblendet. Nur bei „Visuelle Einstufung“: „Grenzen altern mit mir“, Regler „Visuell“, Bezeichnungen. Nur bei „Ignorieren aktiv“: „Grenze altert mit mir“, Regler „Ignorieren ab“. Bei einem von beiden: Profiltypen, Paar-Regel, Getrenntes Alter, Sugar Daddy/Mom, „Werte der ersten Zeile übernehmen“. Leere Zeilen fallen weg; die Spalten behalten ihre Breite, auch wenn nur ein Schalter an ist
+
 2.38 (30.10.2026)
 - Smileys in Kommentaren und Gruppen-Beiträgen: Kürzel (poppen wie „:D“, „;)“ und JOYclub wie „*kuss*“) werden beim Absenden in Unicode-Smileys umgewandelt, weil poppen sie dort nur als Text zeigt. Nur ganze Kürzel; Uhrzeiten („12:30“) und Links bleiben unverändert
 - Fickliste: Personen, bei denen das JOYclub-Skript (ab 1.96) sein Profil zum Hauptprofil gemacht hat, werden über das poppen-Profil unter „Auch auf …“ gefunden. Das Skript baut solche Einträge nicht mehr zur poppen-Person um (vorher hätten sich beide Skripte hin und her umgebaut)

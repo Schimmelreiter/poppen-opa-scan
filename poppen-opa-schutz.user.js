@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.38
+// @version      2.39
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.38';
+  const VERSION = '2.39';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -3927,33 +3927,46 @@
       for (const gk of GROUP_KEYS) {
         const g = draft.groups[gk];
         const c = card(body, GROUP_NAMES[gk]);
-        // Schalter über ihrer Spalte; die „altern mit mir“-Schalter sind immer bedienbar
+        // Abhängige Einstellungen ausblenden: data-dep = v (Visuelle Einstufung), i (Ignorieren), vi (eines von beiden).
+        // Ganze Zeilen fallen weg (Höhe sparen); Zellen in einer Zeile mit beiden Spalten werden nur unsichtbar
+        // (data-keep), damit die andere Spalte Platz und Größe behält.
+        const dep = (el, d, keep = false) => { el.dataset.dep = d; if (keep) el.dataset.keep = '1'; return el; };
+        const depUpd = () => {
+          for (const el of c.querySelectorAll('[data-dep]')) {
+            const d = el.dataset.dep, on = d === 'v' ? g.visual : d === 'i' ? g.ignore : (g.visual || g.ignore);
+            if (el.dataset.keep) el.style.visibility = on ? '' : 'hidden'; else el.style.display = on ? '' : 'none';
+          }
+        };
+        // Schalter über ihrer Spalte
         pairRow(c,
-          swCell(sw(g.visual, (v) => { g.visual = v; touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`)),
-          swCell(sw(g.ignore, (v) => { g.ignore = v; touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`)));
-        pairRow(c,
+          swCell(sw(g.visual, (v) => { g.visual = v; depUpd(); touch(); }), lab('Visuelle Einstufung', `groups.${gk}.visual`)),
+          swCell(sw(g.ignore, (v) => { g.ignore = v; depUpd(); touch(); }), lab('Ignorieren aktiv', `groups.${gk}.ignore`)));
+        const ageRow = pairRow(c,
           swCell(sw(g.ageVisual, (v) => { g.ageVisual = v; touch(); }, 'Hebt die Grenzen der visuellen Einstufung an deinem Geburtstag um ein Jahr an'), lab('Grenzen altern mit mir', `groups.${gk}.ageVisual`)),
           swCell(sw(g.ageIgnore, (v) => { g.ageIgnore = v; touch(); }, 'Hebt die Grenze „Ignorieren ab“ an deinem Geburtstag um ein Jahr an. Wer schon blockiert ist, wird dadurch nicht entsperrt.'), lab('Grenze altert mit mir', `groups.${gk}.ageIgnore`)));
+        dep(ageRow, 'vi'); { const cells = [...ageRow.children].slice(-2); dep(cells[0], 'v', true); dep(cells[1], 'i', true); }
         if (gk === 'p') {
           const sel = document.createElement('select');
           sel.innerHTML = '<option value="any">einer über der Grenze</option><option value="all">beide über der Grenze</option>';
           sel.value = g.coupleMode; sel.addEventListener('change', () => { g.coupleMode = sel.value; touch(); });
-          gRow(c, lab('Paar-Regel', 'groups.p.coupleMode'), '', sel);
+          dep(gRow(c, lab('Paar-Regel', 'groups.p.coupleMode'), '', sel), 'vi');
           const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = !!g.separate;
           chk.addEventListener('change', () => { g.separate = chk.checked; rerender(); touch(); });
-          gRow(c, lab('Getrenntes Alter', 'groups.p.separate'), '', chk);
+          dep(gRow(c, lab('Getrenntes Alter', 'groups.p.separate'), '', chk), 'vi');
         }
         const rowsFor = (key, who) => {
           const grid = document.createElement('div');
           grid.className = 'vaf-srcgrid' + (shared ? ' shared' : '');
           const w = who ? who + ' · ' : '';
-          grid.innerHTML = `${shared ? '' : '<div></div>'}<div class="vaf-h">${w}Visuell: Stufe 1 bis · Stufe 2 bis</div><div class="vaf-h">${w}Ignorieren ab</div>`;
+          grid.innerHTML = `${shared ? '' : '<div></div>'}<div class="vaf-h" data-dep="v" data-keep="1">${w}Visuell: Stufe 1 bis · Stufe 2 bis</div><div class="vaf-h" data-dep="i" data-keep="1">${w}Ignorieren ab</div>`;
+          dep(grid, 'vi');
           const keys = shared ? ['global'] : SRC_KEYS.filter((sk) => SOURCES[sk].avail);   // Partygäste: ausgeblendet, intern = Profilbesucher
           for (const sk of keys) {
             if (!g[key][sk]) g[key][sk] = [...g[key].interaktionen];
             const v = g[key][sk];
             const s1 = slider(18, AGE_MAX, [v[0], v[1]], (x) => { v[0] = x[0]; v[1] = x[1]; touch(); });
             const s2 = slider(18, AGE_MAX, [v[2]], (x) => { v[2] = x[0]; touch(); });
+            dep(s1, 'v', true); dep(s2, 'i', true);
             if (shared) { s1.title = s2.title = 'Gilt für alle Quellen · 99 = offenes Ende'; grid.append(s1, s2); continue; }
             const name = document.createElement('div');
             name.innerHTML = lab(esc(SOURCES[sk].label), `groups.${gk}.${key}.${sk}`); name.title = SOURCES[sk].tip;
@@ -3965,16 +3978,16 @@
           b.style.whiteSpace = 'nowrap';   // einzeilig; wächst nach links
           b.addEventListener('click', () => { const f = g[key][SRC_KEYS[0]]; for (const sk of SRC_KEYS) g[key][sk] = [...f]; rerender(); touch(); });
           const brow = document.createElement('div'); brow.style.cssText = 'display:flex;justify-content:flex-end;padding:11px 0;border-bottom:1px solid #2c2c2c';
-          brow.appendChild(b); c.appendChild(brow);
+          brow.appendChild(b); c.appendChild(dep(brow, 'vi'));
         };
         if (gk === 'p' && g.separate) { rowsFor('srcW', 'Frau'); rowsFor('srcM', 'Mann'); } else rowsFor('src', '');
         if (gk === 'p') {
-          gRow(c, lab('Sugar Daddy', 'groups.p.sugarDaddy'), 'Mann deutlich älter als die Frau', sw(g.sugarDaddy.on, (v) => { g.sugarDaddy.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarDaddy.gap, (x) => { g.sugarDaddy.gap = x; touch(); }, 1, 60), 'Jahren');
-          gRow(c, lab('Sugar Mom', 'groups.p.sugarMom'), 'Frau deutlich älter als der Mann', sw(g.sugarMom.on, (v) => { g.sugarMom.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarMom.gap, (x) => { g.sugarMom.gap = x; touch(); }, 1, 60), 'Jahren');
+          dep(gRow(c, lab('Sugar Daddy', 'groups.p.sugarDaddy'), 'Mann deutlich älter als die Frau', sw(g.sugarDaddy.on, (v) => { g.sugarDaddy.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarDaddy.gap, (x) => { g.sugarDaddy.gap = x; touch(); }, 1, 60), 'Jahren'), 'vi');
+          dep(gRow(c, lab('Sugar Mom', 'groups.p.sugarMom'), 'Frau deutlich älter als der Mann', sw(g.sugarMom.on, (v) => { g.sugarMom.on = v; touch(); }), 'Altersabstand ab', numIn(g.sugarMom.gap, (x) => { g.sugarMom.gap = x; touch(); }, 1, 60), 'Jahren'), 'vi');
         }
         const lbl = document.createElement('div'); lbl.className = 'vaf-lbls';
         [0, 2, 4, 1, 3, 5].forEach((i) => { const t = g.labels[i]; const inp = txtIn(t, (v) => { g.labels[i] = v.trim() || DEFAULTS.groups[gk].labels[i]; touch(); }, i % 2 ? 'Mehrzahl' : 'Einzahl'); inp.style.minWidth = '0'; lbl.appendChild(inp); });
-        gRow(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Oben Einzahl, unten Mehrzahl', lbl);
+        dep(gRow(c, lab('Bezeichnungen', `groups.${gk}.labels`), 'Oben Einzahl, unten Mehrzahl', lbl), 'v');
         const types = document.createElement('div'); types.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap';
         for (const t of ['m', 'w', 'p', 'ts', 'tv']) {
           const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:6px;align-items:center';
@@ -3986,7 +3999,8 @@
           });
           l.append(ch, TYPE_NAMES[t]); types.appendChild(l);
         }
-        gRow(c, lab('Profiltypen', `groups.${gk}.types`), '', types).classList.add('vaf-last');
+        dep(gRow(c, lab('Profiltypen', `groups.${gk}.types`), '', types), 'vi').classList.add('vaf-last');
+        depUpd();
       }
 
       // ---- Allgemein ----
