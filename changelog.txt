@@ -1,6 +1,10 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.41 (01.11.2026)
+- Opa-Scan: Ist „Benutzer ist Moppel-Liebhaber“ aus, wird die XXL-Suche nicht mehr angeboten und läuft auch nicht, selbst wenn sie früher angehakt war. Die Auswahl bleibt gespeichert und gilt wieder, sobald der Schalter an ist
+- Einstellungen, Karte „Moppel-Liebhaber“: Bei ausgeschaltetem Schalter sind die Einstellungen darunter ausgeblendet
+
 2.40 (01.11.2026)
 - XXL-Seite: Treffer ohne Bild zeigen poppens Platzhalter wie im Profil (Mann/Frau/Paar) statt des Anfangsbuchstabens. Für Mitglieder, die nie ein Bild hatten, fragt das Skript keine neue Bildadresse mehr ab
 - poppens Zufalls-Platzhalter (random_avatar) gelten nicht mehr als echtes Bild, etwa beim Filter „Mit Bildern“

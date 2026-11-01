@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.40
+// @version      2.41
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.40';
+  const VERSION = '2.41';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -3462,9 +3462,10 @@
     { k: 'gruppen_wl', src: 'gruppen', title: 'Gruppen (Whitelist)', sub: 'Leitung aller Gruppen; Mitglieder verwalteter Gruppen, wenn du sie allein leitest', fn: scanGroupsWhite, def: true },
     { k: 'gruppen_bl', src: 'gruppen', title: 'Gruppen (Blacklist)', sub: 'Mitglieder deiner Gruppen nach den Regeln prüfen', fn: scanGroupsBlack, def: false },
     { k: 'suche', title: 'Mitgliedersuche', sub: 'Ganz Deutschland, Alter für Alter', fn: scanSearch },
-    { k: 'xxl', title: 'XXL-Suche', sub: 'Figur ab „Plus-Size“ im eingestellten Radius, über die Suchfilter vermessen (ohne Profilbesuch)', fn: scanXxl, def: () => mopOn() },
+    { k: 'xxl', title: 'XXL-Suche', sub: 'Figur ab „Plus-Size“ im eingestellten Radius, über die Suchfilter vermessen (ohne Profilbesuch)', fn: scanXxl, def: () => mopOn(), avail: () => mopOn() },   // nur für Moppel-Liebhaber; Auswahl bleibt gespeichert
   ];
   const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : typeof sc.def === 'function' ? !!sc.def() : sc.def !== false; return o; };
+  const scanAvail = (sc) => !!sc && !!sc.fn && (!sc.avail || sc.avail());
   const scanActive = () => { const s = G.get('scan_state', null); return !!(s && s.running); };
 
   function statsHtml(total) {
@@ -3512,7 +3513,7 @@
       try {
         for (let si = s.si || 0; si < keys.length; si++) {
           if (this.stopFlag || (this.live() || {}).stopped || handingOver()) break;
-          const sc = SCANS.find((x) => x.k === keys[si]); if (!sc || !sc.fn) continue;
+          const sc = SCANS.find((x) => x.k === keys[si]); if (!scanAvail(sc)) continue;
           this.patch({ si, title: sc.title, phase: sc.title, b2: 0, cur: '', b1: Math.round(si / keys.length * 100) });
           const ctx = {
             stop: () => this.stopFlag || !!(this.live() || {}).stopped || handingOver(),
@@ -3557,10 +3558,9 @@
     const m = modal({ title: `${W1}-Scan`, sub: '' });
     const groups = G.get('groups', null);
     const sel = scanSel();
-    const rows = SCANS.map((sc) => {
+    const rows = SCANS.filter((sc) => !sc.avail || sc.avail()).map((sc) => {
       let sub = sc.sub;
       if (sc.k === 'gruppen_wl' && groups) sub = `${groups.attended.length + groups.managed.length} Gruppen, ${groups.managed.length} verwaltet`;
-      if (sc.k === 'xxl') sub = mopOn() ? sub : 'nur für Moppel-Liebhaber (Einstellungen)';
       if (sc.k === 'gruppen_bl' && groups) sub = groups.attended.length === 1 ? '1 Gruppe, in der du Mitglied bist' : `${groups.attended.length} Gruppen, in denen du Mitglied bist`;
       const on = sc.fn && sel[sc.k];
       return `<label class="vaf-scanrow${sc.fn ? '' : ' vaf-scanrow-off'}">
@@ -3571,7 +3571,7 @@
     m.body.querySelectorAll('[data-sel]').forEach((c) => c.addEventListener('change', () => { const st = { ...G.get('scan_sel', {}) }; st[c.dataset.sel] = c.checked; G.set('scan_sel', st); }));
     const start = () => {
       const sl = scanSel();
-      const ks = SCANS.filter((x) => x.fn && sl[x.k]).map((x) => x.k);
+      const ks = SCANS.filter((x) => scanAvail(x) && sl[x.k]).map((x) => x.k);
       if (!ks.length) { toast('Kein Scan ausgewählt.'); return; }
       Scan.start(ks);
       openScanProgress(m);
@@ -4062,7 +4062,9 @@
         const mp = draft.moppel;
         const cm = card(body, 'Moppel-Liebhaber');
         const r0 = document.createElement('div'); r0.className = 'vaf-srcgrid shared';
-        r0.append(swCell(sw(mp.on, (v) => { mp.on = v; touch(); }), lab('Benutzer ist Moppel-Liebhaber', 'moppel.on')), document.createElement('div'));
+        // alles unter dem Schalter nur bei „Benutzer ist Moppel-Liebhaber“
+        const mopVis = () => { [...cm.children].slice(1).forEach((e) => { e.style.display = mp.on ? '' : 'none'; }); r0.classList.toggle('vaf-last', !mp.on); };
+        r0.append(swCell(sw(mp.on, (v) => { mp.on = v; mopVis(); touch(); }), lab('Benutzer ist Moppel-Liebhaber', 'moppel.on')), document.createElement('div'));
         cm.appendChild(r0);
         // Legende (Bezeichnungen in Segmentfarbe) + Regler 25–60 mit drei Griffen
         const r1 = document.createElement('div'); r1.className = 'vaf-srcgrid shared';
@@ -4091,6 +4093,7 @@
           l.append(ch, name); mt.appendChild(l);
         }
         gm(lab('Profiltypen', 'moppel.types'), '', mt).classList.add('vaf-last');
+        mopVis();
       }
 
       // ---- AWO-Faktor (Events) ----
