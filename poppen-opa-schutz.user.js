@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.41
+// @version      2.42
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.41';
+  const VERSION = '2.42';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -1476,7 +1476,7 @@
   // Treffer einer Quelle verarbeiten: einstufen, vormerken, ggf. auf die Warteliste
   // Ergebnis: { hits, white, near, unclear, queued }
   async function judge(list, src, { enqueue = true } = {}) {
-    const res = { total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0 };
+    const res = { total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0, inQueue: 0, notQueued: 0 };
     for (const x of list) {
       res.total++;
       const m = x.uid ? await Members.get(x.uid) : null;
@@ -1487,8 +1487,10 @@
       if (!c.ignore) continue;
       res.hits++;
       if (m && m.blk && !m.unblk) { res.known++; continue; }
-      if (enqueue && await Queue.add(x, src)) res.queued++;
+      if (!enqueue) { res.notQueued++; continue; }                 // z. B. Events: nur einfärben
+      if (await Queue.add(x, src)) res.queued++; else res.inQueue++;   // stand schon auf der Warteliste
     }
+    scanLiveAdd(res);
     return res;
   }
 
@@ -1736,7 +1738,7 @@
   // Quellen (Scans). Jede liefert Mitglieder an judge(); Fortschritt über ctx.
   //   ctx = { stop: () => bool, step(i, n, text), add(res) }
   // =====================================================================================
-  const newRes = () => ({ total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0, unblocked: 0, whitelisted: 0, kicked: 0 });
+  const newRes = () => ({ total: 0, hits: 0, white: 0, near: 0, unclear: 0, queued: 0, known: 0, inQueue: 0, notQueued: 0, unblocked: 0, whitelisted: 0, kicked: 0 });
   const addRes = (a, b) => { for (const k of Object.keys(b)) a[k] = (a[k] || 0) + (b[k] || 0); return a; };
 
   // ---------- Interaktionen: Likes ----------
@@ -2447,7 +2449,7 @@
     for (const p of plan) {
       for (let age = AGE_MAX; age >= p.from && !ctx.stop(); age--) {
         ctx.outer && ctx.outer(done++, steps);
-        ctx.phase && ctx.phase(`Mitgliedersuche: ${TYPE_NAMES[p.t]} · ${age} Jahre`);
+        ctx.phase && ctx.phase(`${TYPE_NAMES[p.t]} · ${age} Jahre`);
         await searchAll({ ...base, genders: [p.t], age_min: age, age_max: age }, ctx, async (users) => {
           for (const u of users) await seen(u, 'Suche', { images: false });
           addRes(res, await judge(users, 'Suche'));
@@ -3466,17 +3468,26 @@
   ];
   const scanSel = () => { const st = G.get('scan_sel', {}); const o = {}; for (const sc of SCANS) if (sc.fn) o[sc.k] = sc.k in st ? !!st[sc.k] : typeof sc.def === 'function' ? !!sc.def() : sc.def !== false; return o; };
   const scanAvail = (sc) => !!sc && !!sc.fn && (!sc.avail || sc.avail());
+  // Zwischenstand der gerade laufenden Quelle (judge und XXL zählen hier mit; am Ende der Quelle zählt deren Ergebnis)
+  var scanLive = null;   // var: judge kann theoretisch vor dieser Zeile laufen
+  function scanLiveAdd(r) { if (scanLive && r) addRes(scanLive, r); }
   const scanActive = () => { const s = G.get('scan_state', null); return !!(s && s.running); };
 
   function statsHtml(total) {
     return `<span>Mitglieder gelesen</span><b>${fmtN(total.total)}</b><span>Über der Grenze</span><b>${fmtN(total.hits)}</b>` +
-      `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
+      `<span>Neu auf der Warteliste</span><b>${fmtN(total.queued)}</b><span>Schon auf der Warteliste</span><b>${fmtN(total.inQueue || 0)}</b><span>Schon blockiert</span><b>${fmtN(total.known)}</b>` +
+      (total.notQueued ? `<span>Nicht eingereiht (nur einfärben)</span><b>${fmtN(total.notQueued)}</b>` : '') +
+      (total.unclear ? `<span>Unklar (Alter unbekannt)</span><b>${fmtN(total.unclear)}</b>` : '') +
       `<span>Whitelist</span><b>${fmtN(total.white)}</b><span>Vorgemerkt (knapp unter der Grenze)</span><b>${fmtN(total.near)}</b>` +
       (total.whitelisted || total.unblocked ? `<span>Gruppen-Whitelist neu / entsperrt</span><b>${fmtN(total.whitelisted)} / ${fmtN(total.unblocked)}</b>` : '') +
       (total.kicked ? `<span>Besonders böse entfernt</span><b>${fmtN(total.kicked)}</b>` : '') +
-      (total.xxlFound ? `<span>${esc(xxlName())}-Suche: gefunden / vermessen (ohne Profilbesuch)</span><b>${fmtN(total.xxlFound)} / ${fmtN(total.xxlMeasured || 0)}</b>` +
-        (total.xxlQueries ? `<span>${esc(xxlName())}-Suche: Suchabfragen</span><b>${fmtN(total.xxlQueries)}</b>` : '') +
-        `<span>${esc(mopLabel(1))} · ${esc(mopLabel(2))} · ${esc(mopLabel(3))}</span><b>${fmtN(total.xxl1 || 0)} · ${fmtN(total.xxl2 || 0)} · ${fmtN(total.xxl3 || 0)}</b>` : '');
+      // XXL-Zeilen nur bei „Benutzer ist Moppel-Liebhaber“ (beim Anzeigen geprüft)
+      (mopOn() && (total.xxlFound || total.xxlKnown || total.xxlNew) ?
+        `<span>Plus-Size gefunden</span><b>${fmtN(total.xxlFound || 0)}</b>` +
+        `<span>Bereits vermessen</span><b>${fmtN(total.xxlKnown || 0)}</b>` +
+        `<span>Neu vermessen</span><b>${fmtN(total.xxlNew || 0)}</b>` +
+        [1, 2, 3].map((k) => `<span>Neue ${esc(mopLabel(k, true))}</span><b>${fmtN(total['xxlNew' + k] || 0)}</b>`).join('') +
+        (total.xxlQueries ? `<span>${esc(xxlName())}-Suche: Suchabfragen</span><b>${fmtN(total.xxlQueries)}</b>` : '') : '');
   }
 
   async function statusLine() {
@@ -3509,6 +3520,12 @@
       const keys = s.keys || [];
       const notes = s.notes || [], errors = s.errors || [];
       const beat = setInterval(() => { const x = this.live(); if (x && x.running) { x.ts = now(); x.tab = TAB_ID; G.set('scan_state', x); } }, 5000);
+      let liveSig = '';
+      const liveBeat = setInterval(() => {               // Zahlen laufen mit (etwa jede Sekunde)
+        if (!scanLive) return;
+        const st = addRes({ ...total }, scanLive), sig = JSON.stringify(st);
+        if (sig !== liveSig) { liveSig = sig; this.patch({ stats: st }); }
+      }, 1000);
       const handingOver = () => { const ho = G.get('scan_handover', null); return ho && ho.tab !== TAB_ID && now() - ho.at < 60000; };
       try {
         for (let si = s.si || 0; si < keys.length; si++) {
@@ -3523,12 +3540,14 @@
             error: (what, e) => { errors.push(`${what}: ${e.message}`); this.patch({ errors }); },
             notes,
           };
-          try { const r = await sc.fn(ctx); addRes(total, r); } catch (e) { errors.push(`${sc.title}: ${e.message}`); warn(sc.title, e); }
+          scanLive = newRes();
+          try { const r = await sc.fn(ctx); addRes(total, r); } catch (e) { addRes(total, scanLive); errors.push(`${sc.title}: ${e.message}`); warn(sc.title, e); }
+          scanLive = null;
           this.patch({ stats: total, notes, errors });
           G.set('scan_last_' + keys[si], now());
         }
       } finally {
-        clearInterval(beat);
+        clearInterval(beat); clearInterval(liveBeat); scanLive = null;
         this.running = false;
         if (handingOver()) { Lock.release('scan'); return; }   // anderer Tab übernimmt → Zustand bleibt „running“
         const stopped = this.stopFlag || !!(this.live() || {}).stopped;
@@ -6135,6 +6154,8 @@
         if (ctx.stop()) break;
         if (opts.keep && !opts.keep(u)) continue;
         const leaves = seenIn.get(uid) || [];
+        let prevBi = null;
+        try { const mp0 = Members.cached().get(uid) || await Members.get(uid).catch(() => null); prevBi = mp0 ? bodyInfo(mp0) : null; } catch {}
         const m0 = await seen(u, opts.src || 'Vermessung', { images: false });
         if (!m0) continue;
         if (leaves.length === 1) {
@@ -6156,7 +6177,7 @@
           stat.unknownW++;
           await Members.update(uid, (x) => { if (!x.body && !x.bodyS) x.bodyUnk = now(); if (opts.figc && !((x.g || []).length >= 2)) x.figc = [opts.figc]; });
         }
-        if (opts.onPerson) { try { await opts.onPerson(await Members.get(uid)); } catch {} }
+        if (opts.onPerson) { try { await opts.onPerson(await Members.get(uid), { known: !!prevBi, fresh: leaves.length === 1 && !prevBi }); } catch {} }
       }
       try { G.set('xxl_rev', now()); } catch {}
     }
@@ -9627,12 +9648,20 @@
         const st = await measureGrid({ ...base, genders: [p.t], age_min: 18, age_max: p.to }, ctx, {
           src: 'XXL-Suche', figc: 6, couple: p.t === 'p',
           keep: (u) => !(r === 75 && typeof u.distance === 'number' && u.distance > 75),
-          onPerson: async (m) => {
-            res.total++;
+          onPerson: async (m, info = {}) => {
+            res.total++; scanLiveAdd({ total: 1 });
             if (!m || !mopTypeOk(m)) return;
             found++;
+            const d = { xxlFound: 1 };
             const bi = bodyInfo(m);
-            if (bi) { const sg = mopStage(bi.lo); if (sg >= 0) stageN[sg]++; }
+            const sg = bi ? mopStage(bi.lo) : -1;
+            if (sg >= 0) stageN[sg]++;
+            if (info.known) { res.xxlKnown = (res.xxlKnown || 0) + 1; d.xxlKnown = 1; }
+            else if (info.fresh) {
+              res.xxlNew = (res.xxlNew || 0) + 1; d.xxlNew = 1;
+              if (sg >= 1) { res['xxlNew' + sg] = (res['xxlNew' + sg] || 0) + 1; d['xxlNew' + sg] = 1; }
+            }
+            scanLiveAdd(d);
             msgMaybeQueue(m);
           },
         });
