@@ -1,6 +1,11 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.40 (01.11.2026)
+- XXL-Seite: Treffer ohne Bild zeigen poppens Platzhalter wie im Profil (Mann/Frau/Paar) statt des Anfangsbuchstabens. Für Mitglieder, die nie ein Bild hatten, fragt das Skript keine neue Bildadresse mehr ab
+- poppens Zufalls-Platzhalter (random_avatar) gelten nicht mehr als echtes Bild, etwa beim Filter „Mit Bildern“
+- Einstellungen: Kopfzeile „Mit neuen Einstellungen:“ statt „Nach Anwenden der neuen Einstellungen:“, damit der Fortschritt beim Einlesen nicht umbricht
+
 2.39 (30.10.2026)
 - Einstellungen, Karten Männer/Frauen/Paare: Einstellungen, die gerade nichts bewirken, werden ausgeblendet. Nur bei „Visuelle Einstufung“: „Grenzen altern mit mir“, Regler „Visuell“, Bezeichnungen. Nur bei „Ignorieren aktiv“: „Grenze altert mit mir“, Regler „Ignorieren ab“. Bei einem von beiden: Profiltypen, Paar-Regel, Getrenntes Alter, Sugar Daddy/Mom, „Werte der ersten Zeile übernehmen“. Leere Zeilen fallen weg; die Spalten behalten ihre Breite, auch wenn nur ein Schalter an ist
 

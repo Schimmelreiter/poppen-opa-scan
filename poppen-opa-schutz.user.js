@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.39
+// @version      2.40
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
@@ -30,7 +30,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.39';
+  const VERSION = '2.40';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -90,7 +90,7 @@
     const m = /\/(\d{3,10})-[0-9A-F]{16,}/i.exec(String(src || ''));
     return m ? m[1] : '';
   }
-  const isPlaceholderAvatar = (src) => !src || /image_null_|avatar-[\w-]+\.[\w]+\.svg|avatar-(man|woman|couple|female|male)|plc-images|plcblur|\/v2-static\//i.test(src);
+  const isPlaceholderAvatar = (src) => !src || /image_null_|random_avatar_|avatar-[\w-]+\.[\w]+\.svg|avatar-(man|woman|couple|female|male)|plc-images|plcblur|\/v2-static\//i.test(src);
 
   // Alter aus "Mann · 48 Jahre · 15 km" (Paare: "45/42 Jahre", "45 & 42 Jahre" …)
   function agesFromText(text) {
@@ -1156,6 +1156,7 @@
         m.ages = x.ages; m.ageAt = isoDay(today);
         if (x.by && x.by.some(Boolean)) m.by = x.by;
       }
+      if (x.avatar && /\/image_null_\w+\.jpe?g/i.test(x.avatar)) m.avatarPh = x.avatar;   // poppens Platzhalter (wie im Profil)
       if (x.avatar && !isPlaceholderAvatar(x.avatar)) { if (m.avatar !== x.avatar) m.avatarNew = true; m.avatar = x.avatar; }
       if (x.pay) {
         m.pay = x.pay;
@@ -3897,7 +3898,7 @@
     settingsDirty = false;
     el.id = 'vaf-set';
     const W1 = word();
-    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <a class="vaf-ver" href="${REPO_URL}/blob/main/changelog.txt" target="_blank" rel="noopener" title="Was ist neu? (Changelog)">${esc(VERSION)}</a><a class="vaf-hlink" href="${REPO_URL}#readme" target="_blank" rel="noopener">Anleitung</a><a class="vaf-hlink" href="${REPO_URL}/issues" target="_blank" rel="noopener">Fehler melden</a></h2><div class="vaf-info"><div>Derzeit blockiert: <span id="vaf-cur-n">…</span></div><div>Nach Anwenden der neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
+    el.innerHTML = `<h2 style="margin-top:4px">${esc(W1)}-Schutz <a class="vaf-ver" href="${REPO_URL}/blob/main/changelog.txt" target="_blank" rel="noopener" title="Was ist neu? (Changelog)">${esc(VERSION)}</a><a class="vaf-hlink" href="${REPO_URL}#readme" target="_blank" rel="noopener">Anleitung</a><a class="vaf-hlink" href="${REPO_URL}/issues" target="_blank" rel="noopener">Fehler melden</a></h2><div class="vaf-info"><div>Derzeit blockiert: <span id="vaf-cur-n">…</span></div><div>Mit neuen Einstellungen: <b id="vaf-after-n">…</b></div></div><div id="vaf-set-body"></div>`;
     const body = el.querySelector('#vaf-set-body');
     const touch = () => { settingsDirty = true; projectLater(); };
     const lab = (text, path) => `<span data-path="${path}">${text}</span>`;
@@ -9830,6 +9831,12 @@
   const xxlRadiusFmt = (r) => (r ? r + ' km' : 'Weltweit');
   // Profilbilder: gespeicherte Kopie zuerst; fehlt sie, mit gültiger Adresse kopieren, sonst (abgelaufen/fehlend) die
   // Adresse gedrosselt über messenger/group/item/p2p auffrischen (kein Profilbesuch) – sichtbare Karten zuerst.
+  // poppens Platzhalter wie im Profil: gemerkte Adresse, sonst nach Profiltyp
+  const xxlPlaceholder = (m) => {
+    if (m.avatarPh) return m.avatarPh;
+    const t = typeCode(m.g);
+    return `https://www.poppen.de/images/plc/jpg/de/image_null_${t === 'p' ? 'couple' : t === 'w' ? 'female' : 'male'}_300.jpg`;
+  };
   const XxlPics = (() => {
     const q = [], inq = new Set();
     let busy = false, io = null;
@@ -9845,6 +9852,7 @@
       if (!m) return;
       let url = m.avatar;
       if (!url || isPlaceholderAvatar(url) || avatarExpired(url)) {
+        if ((!url || isPlaceholderAvatar(url)) && m.avatarPh && !m.img) return;   // nie ein Bild gehabt: poppens Platzhalter genügt
         if (m.avTry && now() - m.avTry < 3 * DAY) return;
         await Members.update(uid, (x) => { x.avTry = now(); });
         if (!(await Resolver.ensureTested().catch(() => false))) return;
@@ -9887,7 +9895,8 @@
         const st = bi ? mopStage(bi.lo) : -1;
         const badge = bi ? `<span class="bd" style="background:${MOP_COLORS[Math.max(0, st)]}" title="${esc(`${bi.h} cm · ${bi.exact ? bi.wlo : `${bi.wlo}–${bi.whi}`} kg${bi.pair ? ' (einer von beiden)' : ''}`)}">${esc(mopLabel(Math.max(0, st)))} · BMI ${Math.floor(bi.lo)}${bi.exact ? '' : '+'}</span>` : '<span class="bd" style="background:#555">BMI unklar</span>';
         const live = m.avatar && !isPlaceholderAvatar(m.avatar) && !avatarExpired(m.avatar);
-        const pic = live && !m.img ? ` style="background-image:url('${esc(m.avatar)}')"` : '';
+        const ph = !live && !m.img ? xxlPlaceholder(m) : '';
+        const pic = live && !m.img ? ` style="background-image:url('${esc(m.avatar)}')"` : ph ? ` style="background-image:url('${esc(ph)}')"` : '';
         const meta = [(m.g || []).map((c) => TYPE_NAMES[c] || c).join(' & ') || '', ages.length ? ages.join('/') + ' Jahre' : '', m.dist ? Math.round(m.dist.km) + ' km' : (m.city || '')].filter(Boolean).join(' · ');
         return `<a class="card" data-uid="${esc(m.uid)}" href="${esc(pathOfName(m.nick))}"><div class="pic"${pic}>${pic || m.img ? '' : `<i class="ini">${esc((m.nick || '?')[0].toUpperCase())}</i>`}${badge}</div><div class="tx"><b>${esc(m.nick)}</b><span>${esc(meta)}</span></div></a>`;
       }).join('') || `<div style="color:#a6a6a6">Keine Treffer. Die ${esc(xxlName())}-Suche im Opa-Scan füllt diese Liste.</div>`;
