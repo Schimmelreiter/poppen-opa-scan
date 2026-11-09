@@ -1,14 +1,13 @@
 // ==UserScript==
 // @name         Poppen.de – Besucher nach Alter ignorieren
 // @namespace    local.visitor-age-filter
-// @version      2.42
+// @version      2.43
 // @description  Opa-Schutz für poppen.de: erkennt Mitglieder über einer Altersgrenze (Besucher, Likes, Sticker, Nachrichten, Gruppen, Mitgliedersuche) und blockiert sie in Etappen. Dazu Fickliste, Figur-Badges, Gruppen-Whitelist und mehr.
 // @homepageURL  https://github.com/Schimmelreiter/poppen-opa-scan
 // @supportURL   https://github.com/Schimmelreiter/poppen-opa-scan/issues
 // @updateURL    https://raw.githubusercontent.com/Schimmelreiter/poppen-opa-scan/main/poppen-opa-schutz.user.js
 // @downloadURL  https://raw.githubusercontent.com/Schimmelreiter/poppen-opa-scan/main/poppen-opa-schutz.user.js
 // @match        https://www.poppen.de/*
-// @match        https://www.joyclub.de/*
 // @match        https://schimmelreiter.github.io/joyclub-opa-scan/briefkasten.html*
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzAiIGZpbGw9IiMyYjJiMmIiIHN0cm9rZT0iI2U1MzkzNSIgc3Ryb2tlLXdpZHRoPSI1Ii8+PHRleHQgeD0iMzIiIHk9IjQxIiBmb250LWZhbWlseT0iQXJpYWwsSGVsdmV0aWNhLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMjUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmaWxsPSIjZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj41MCs8L3RleHQ+PGxpbmUgeDE9IjEyIiB5MT0iNTIiIHgyPSI1MiIgeTI9IjEyIiBzdHJva2U9IiNlNTM5MzUiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+
 // @grant        GM_getValue
@@ -30,7 +29,7 @@
 
 (function () {
   'use strict';
-  const VERSION = '2.42';
+  const VERSION = '2.43';
   const REPO_URL = 'https://github.com/Schimmelreiter/poppen-opa-scan';
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   // Eingebaute Funktionen gleich beim Start festhalten (das Skript läuft in der Seitenwelt; spätere Veränderungen
@@ -136,15 +135,22 @@
     };
   })();
 
-  // Tab-Kennung (bleibt beim Seitenwechsel im selben Tab erhalten)
+  // Tab-Kennung (bleibt beim Seitenwechsel im selben Tab erhalten) – im sessionStorage, NICHT im Fensternamen:
+  // window.name gehört der Seite und fremden Frames (z. B. „jaf-…“ des JOYclub-Skripts). Bis 2.42 hing hier „;vaf:<id>“ am
+  // Namen jedes Fensters; dieser Rest wird einmalig nur im obersten Fenster entfernt. In Frames: nichts am Namen tun.
   const TAB_ID = (() => {
+    const rnd = () => Math.random().toString(36).slice(2, 10);
+    if (W.top !== W) return rnd();
+    let id = '';
+    try { id = sessionStorage.getItem('vaf_tab') || ''; } catch {}
     try {
-      const m = /(?:^|;)vaf:([a-z0-9]+)/.exec(W.name || '');
-      if (m) return m[1];
-      const id = Math.random().toString(36).slice(2, 10);
-      W.name = (W.name ? W.name + ';' : '') + 'vaf:' + id;
-      return id;
-    } catch { return Math.random().toString(36).slice(2, 10); }
+      const nm = W.name || '';
+      const m = /(?:^|;)vaf:([a-z0-9]+)/.exec(nm);
+      if (m) { if (!id) id = m[1]; W.name = nm.replace(/;?vaf:[a-z0-9]+/g, '').replace(/^;/, ''); }
+    } catch {}
+    if (!id) id = rnd();
+    try { sessionStorage.setItem('vaf_tab', id); } catch {}
+    return id;
   })();
 
   // SVG-Symbol aus Pfaddaten

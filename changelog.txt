@@ -1,6 +1,10 @@
 Changelog – poppen.de Opa-Scan (Userscript)
 Neueste Version oben.
 
+2.43 (09.11.2026)
+- Behoben: Das Skript hängte seine Tab-Kennung („;vaf:…“) an den Namen jedes Fensters, auch an fremde Frames auf joyclub.de. Dadurch erkannte das JOYclub-Skript seine Hintergrund-Frames nicht mehr, und Party-Scans brachen seit etwa 28.10. ab (JOYclub-Skript ab 2.01 robust dagegen). Die Kennung liegt jetzt im sessionStorage; Fensternamen fasst das Skript nicht mehr an, alte Reste entfernt es einmalig nur im eigenen obersten Fenster
+- Das Skript läuft nicht mehr auf joyclub.de (dort hatte es seit 2.38 nichts mehr zu tun). Die gemeinsame Ablage bleibt unverändert
+
 2.42 (01.11.2026)
 - Opa-Scan, Statistik: Neue Zeile „Schon auf der Warteliste“. Treffer, die schon auf der Warteliste standen, fehlten bisher; jetzt ergeben Neu + Schon auf der Warteliste + Schon blockiert die Zahl „Über der Grenze“. Bei Events heißt die Zeile „Nicht eingereiht (nur einfärben)“. Mitglieder mit unbekanntem Alter erscheinen als „Unklar“
 - Opa-Scan: Die Zahlen laufen während des Scans mit (etwa jede Sekunde). Bisher standen sie bis zum Ende einer Quelle auf 0, bei der langen Mitgliedersuche also sehr lange

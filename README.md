@@ -308,7 +308,7 @@ Das Skript teilt Fickliste, Textvorlagen und Termin-Datei mit dem [JOYclub-Skrip
 - Jeder Eintrag ist versioniert; gleichzeitiges Schreiben wird gemischt oder landet im Papierkorb (Textvorlagen 30 Tage).
 - Das JOYclub-Skript macht beim Speichern sein Profil zum Hauptprofil; das poppen-Profil steht dann unter „Auch auf …“. Das poppen-Skript findet solche Personen trotzdem und baut sie nicht um.
 - Smileys werden zwischen den Plattformen übersetzt.
-- Der frühere Austausch per Nachricht über den alten Briefkasten ist seit 2.38 abgeschaltet. Blockiert eine Sicherheitsrichtlinie oder ein Werbeblocker die Ablage, bleiben Export/Import von Hand der Weg.
+- Der frühere Austausch per Nachricht über den alten Briefkasten ist seit 2.38 abgeschaltet; seit 2.43 läuft das Skript nicht mehr auf joyclub.de und verändert keine Fensternamen (die Tab-Kennung liegt im sessionStorage). Blockiert eine Sicherheitsrichtlinie oder ein Werbeblocker die Ablage, bleiben Export/Import von Hand der Weg.
 
 ## Lizenz
 
